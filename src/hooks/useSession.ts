@@ -65,6 +65,36 @@ export function useSession() {
     );
   }, [sessions]);
 
+  // Kill oldest running sessions when over the limit
+  const enforceMaxSessions = useCallback(
+    async (excludeId?: string) => {
+      const current = sessionsRef.current;
+      const running = current
+        .filter((s) => s.status === "running" && s.id !== excludeId)
+        .sort((a, b) => a.lastActiveAt - b.lastActiveAt); // oldest first
+
+      const totalRunning = running.length + (excludeId ? 1 : 0);
+      if (totalRunning <= MAX_RUNNING_SESSIONS) return;
+
+      const toKill = running.slice(0, totalRunning - MAX_RUNNING_SESSIONS);
+      for (const session of toKill) {
+        try {
+          await invoke("destroy_pty_session", { sessionId: session.id });
+        } catch (err) {
+          console.error(`Failed to kill excess session ${session.id}:`, err);
+        }
+      }
+
+      const killIds = new Set(toKill.map((s) => s.id));
+      setSessions((prev) =>
+        prev.map((s) =>
+          killIds.has(s.id) ? { ...s, status: "stopped" } : s
+        )
+      );
+    },
+    []
+  );
+
   const createSession = useCallback(
     async (name: string | undefined, directory: string, dangerouslySkipPermissions = false) => {
       const id = uuidv4();
@@ -183,36 +213,6 @@ export function useSession() {
       )
     );
   }, []);
-
-  // Kill oldest running sessions when over the limit
-  const enforceMaxSessions = useCallback(
-    async (excludeId?: string) => {
-      const current = sessionsRef.current;
-      const running = current
-        .filter((s) => s.status === "running" && s.id !== excludeId)
-        .sort((a, b) => a.lastActiveAt - b.lastActiveAt); // oldest first
-
-      const totalRunning = running.length + (excludeId ? 1 : 0);
-      if (totalRunning <= MAX_RUNNING_SESSIONS) return;
-
-      const toKill = running.slice(0, totalRunning - MAX_RUNNING_SESSIONS);
-      for (const session of toKill) {
-        try {
-          await invoke("destroy_pty_session", { sessionId: session.id });
-        } catch (err) {
-          console.error(`Failed to kill excess session ${session.id}:`, err);
-        }
-      }
-
-      const killIds = new Set(toKill.map((s) => s.id));
-      setSessions((prev) =>
-        prev.map((s) =>
-          killIds.has(s.id) ? { ...s, status: "stopped" } : s
-        )
-      );
-    },
-    []
-  );
 
   const selectSession = useCallback(
     (id: string) => {
