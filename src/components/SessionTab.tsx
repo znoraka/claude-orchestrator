@@ -2,10 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import type { Session } from "../types";
 
 function shortenPath(path: string): string {
-  const home = path.replace(/^\/Users\/[^/]+/, "~");
-  const parts = home.split("/");
-  if (parts.length <= 3) return home;
-  return parts[0] + "/.../" + parts[parts.length - 1];
+  const parts = path.split("/");
+  return parts[parts.length - 1] || path;
 }
 
 interface SessionTabProps {
