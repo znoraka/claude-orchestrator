@@ -22,6 +22,8 @@ struct SessionMeta {
     directory: String,
     #[serde(default, rename = "claudeSessionId", skip_serializing_if = "Option::is_none")]
     claude_session_id: Option<String>,
+    #[serde(default, rename = "dangerouslySkipPermissions")]
+    dangerously_skip_permissions: bool,
 }
 
 fn sessions_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {

@@ -21,6 +21,7 @@ export function useSession() {
         lastActiveAt: number;
         directory: string;
         claudeSessionId?: string;
+        dangerouslySkipPermissions?: boolean;
       }>
     >("load_sessions")
       .then((saved) => {
@@ -33,6 +34,7 @@ export function useSession() {
             lastActiveAt: s.lastActiveAt,
             directory: s.directory,
             claudeSessionId: s.claudeSessionId,
+            dangerouslySkipPermissions: s.dangerouslySkipPermissions,
           }));
           setSessions(restored);
         }
@@ -59,6 +61,7 @@ export function useSession() {
       lastActiveAt: s.lastActiveAt,
       directory: s.directory,
       claudeSessionId: s.claudeSessionId,
+      dangerouslySkipPermissions: s.dangerouslySkipPermissions,
     }));
     invoke("save_sessions", { sessions: metas }).catch((err) =>
       console.error("Failed to save sessions:", err)
