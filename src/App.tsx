@@ -33,6 +33,7 @@ export default function App() {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [skipPermissions, setSkipPermissions] = useState(true);
+  const [creating, setCreating] = useState(false);
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
   // Clipboard image handler: inject path into active session's PTY
@@ -71,12 +72,17 @@ export default function App() {
     setShowDirDialog(true);
   };
 
-  const handleDirConfirm = () => {
+  const handleDirConfirm = async () => {
     const dir = dirInput.trim();
-    if (!dir) return;
+    if (!dir || creating) return;
+    setCreating(true);
     localStorage.setItem("claude-orchestrator-last-dir", dir);
-    createSession(undefined, dir, skipPermissions);
     setShowDirDialog(false);
+    try {
+      await createSession(undefined, dir, skipPermissions);
+    } finally {
+      setCreating(false);
+    }
   };
 
   const handleDirCancel = () => {
@@ -259,9 +265,10 @@ export default function App() {
               </button>
               <button
                 onClick={handleDirConfirm}
-                className="px-3 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded transition-colors"
+                disabled={creating}
+                className="px-3 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors"
               >
-                Create
+                {creating ? "Creating…" : "Create"}
               </button>
             </div>
           </div>
