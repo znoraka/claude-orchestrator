@@ -1,4 +1,5 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback, type CSSProperties, type ReactElement } from "react";
+import { List } from "react-window";
 import type { Session, SessionUsage } from "../types";
 import SessionTab from "./SessionTab";
 
@@ -17,6 +18,13 @@ interface SessionGroup {
   label: string;
   sessions: Session[];
 }
+
+type FlatItem =
+  | { type: "header"; label: string }
+  | { type: "session"; session: Session };
+
+const HEADER_HEIGHT = 32;
+const SESSION_HEIGHT = 64;
 
 function groupSessionsByTime(sessions: Session[]): SessionGroup[] {
   const todayStart = new Date();
@@ -51,6 +59,58 @@ function groupSessionsByTime(sessions: Session[]): SessionGroup[] {
     .map(([label, arr]) => ({ label, sessions: arr }));
 }
 
+interface RowExtraProps {
+  flatItems: FlatItem[];
+  activeSessionId: string | null;
+  sessionUsage: Map<string, SessionUsage>;
+  onSelectSession: (id: string) => void;
+  onRenameSession: (id: string, name: string) => void;
+  onDeleteSession: (id: string) => void;
+}
+
+function VirtualRow({
+  index,
+  style,
+  flatItems,
+  activeSessionId,
+  sessionUsage,
+  onSelectSession,
+  onRenameSession,
+  onDeleteSession,
+}: RowExtraProps & {
+  index: number;
+  style: CSSProperties;
+  ariaAttributes: {
+    "aria-posinset": number;
+    "aria-setsize": number;
+    role: "listitem";
+  };
+}): ReactElement | null {
+  const item = flatItems[index];
+  if (item.type === "header") {
+    return (
+      <div style={style} className="px-2 pt-3 pb-1 flex items-end">
+        <span className="text-[11px] font-semibold text-[var(--section-label)] uppercase tracking-wider">
+          {item.label}
+        </span>
+      </div>
+    );
+  }
+  const { session } = item;
+  return (
+    <div style={style}>
+      <SessionTab
+        session={session}
+        isActive={session.id === activeSessionId}
+        usage={sessionUsage.get(session.id)}
+        onClick={() => onSelectSession(session.id)}
+        onRename={(name) => onRenameSession(session.id, name)}
+        onDelete={() => onDeleteSession(session.id)}
+      />
+    </div>
+  );
+}
+
 export default function Sidebar({
   sessions,
   activeSessionId,
@@ -63,6 +123,8 @@ export default function Sidebar({
 }: SidebarProps) {
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const listContainerRef = useRef<HTMLDivElement>(null);
+  const [listHeight, setListHeight] = useState(400);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -73,6 +135,18 @@ export default function Sidebar({
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // Measure available height for the virtual list
+  useEffect(() => {
+    if (!listContainerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setListHeight(entry.contentRect.height);
+      }
+    });
+    observer.observe(listContainerRef.current);
+    return () => observer.disconnect();
   }, []);
 
   const filteredSessions = useMemo(() => {
@@ -88,6 +162,37 @@ export default function Sidebar({
   const groupedSessions = useMemo(
     () => groupSessionsByTime(filteredSessions),
     [filteredSessions]
+  );
+
+  // Flatten groups into a single list of items for virtualization
+  const flatItems = useMemo<FlatItem[]>(() => {
+    const items: FlatItem[] = [];
+    for (const group of groupedSessions) {
+      items.push({ type: "header", label: group.label });
+      for (const session of group.sessions) {
+        items.push({ type: "session", session });
+      }
+    }
+    return items;
+  }, [groupedSessions]);
+
+  const getItemSize = useCallback(
+    (index: number) => {
+      return flatItems[index].type === "header" ? HEADER_HEIGHT : SESSION_HEIGHT;
+    },
+    [flatItems]
+  );
+
+  const rowProps = useMemo<RowExtraProps>(
+    () => ({
+      flatItems,
+      activeSessionId,
+      sessionUsage,
+      onSelectSession,
+      onRenameSession,
+      onDeleteSession,
+    }),
+    [flatItems, activeSessionId, sessionUsage, onSelectSession, onRenameSession, onDeleteSession]
   );
 
   return (
@@ -139,35 +244,21 @@ export default function Sidebar({
       </div>
 
       {/* Session list */}
-      <div className="flex-1 overflow-y-auto">
-        {groupedSessions.map((group) => (
-          <div key={group.label} className="mb-1">
-            <div className="px-2 pt-3 pb-1">
-              <span className="text-[11px] font-semibold text-[var(--section-label)] uppercase tracking-wider">
-                {group.label}
-              </span>
-            </div>
-            {group.sessions.map((session) => (
-              <SessionTab
-                key={session.id}
-                session={session}
-                isActive={session.id === activeSessionId}
-                usage={sessionUsage.get(session.id)}
-                onClick={() => onSelectSession(session.id)}
-                onRename={(name) => onRenameSession(session.id, name)}
-                onDelete={() => onDeleteSession(session.id)}
-              />
-            ))}
-          </div>
-        ))}
-
-        {filteredSessions.length === 0 && sessions.length > 0 && (
+      <div className="flex-1 min-h-0" ref={listContainerRef}>
+        {flatItems.length > 0 ? (
+          <List
+            style={{ height: listHeight, width: "100%" }}
+            rowComponent={VirtualRow}
+            rowCount={flatItems.length}
+            rowHeight={getItemSize}
+            rowProps={rowProps}
+            overscanCount={5}
+          />
+        ) : filteredSessions.length === 0 && sessions.length > 0 ? (
           <div className="px-3 py-8 text-center text-xs text-[var(--text-secondary)]">
             No matching sessions.
           </div>
-        )}
-
-        {sessions.length === 0 && (
+        ) : sessions.length === 0 ? (
           <div className="px-3 py-12 text-center">
             <p className="text-xs text-[var(--text-secondary)] mb-3">
               No sessions yet
@@ -179,7 +270,7 @@ export default function Sidebar({
               Create your first session
             </button>
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* Footer */}
