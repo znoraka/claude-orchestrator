@@ -53,7 +53,7 @@ export default function App() {
     (path: string) => {
       if (!activeSessionId) return;
       const writeFn = writeTextCallbacks.current.get(activeSessionId);
-      writeFn?.(path + " ");
+      writeFn?.("'" + path.replace(/'/g, "'\\''") + "' ");
     },
     [activeSessionId]
   );
