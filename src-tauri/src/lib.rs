@@ -17,10 +17,15 @@ struct CachedEntry<T> {
     value: T,
 }
 
+/// Incremental cache entry for usage: tracks byte offset so we only parse new lines.
+struct IncrementalUsageEntry {
+    byte_offset: u64,
+    value: SessionUsage,
+}
+
 /// Caches expensive JSONL parsing results, keyed by file path.
-/// Re-reads only when the file's mtime has changed.
 struct JsonlCache {
-    usage: HashMap<PathBuf, CachedEntry<SessionUsage>>,
+    usage: HashMap<PathBuf, IncrementalUsageEntry>,
     title: HashMap<PathBuf, CachedEntry<Option<String>>>,
 }
 
@@ -354,14 +359,34 @@ struct SessionUsage {
     cost_usd: f64,
 }
 
-fn parse_session_usage(jsonl_path: &std::path::Path, pricing: &PricingConfig) -> Result<SessionUsage, String> {
-    let file = std::fs::File::open(jsonl_path)
+/// Parse usage from a JSONL file starting at `byte_offset`.
+/// Returns the accumulated usage and the new byte offset.
+fn parse_session_usage_incremental(
+    jsonl_path: &std::path::Path,
+    byte_offset: u64,
+    base_usage: &SessionUsage,
+    pricing: &PricingConfig,
+) -> Result<(SessionUsage, u64), String> {
+    use std::io::{BufRead, Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(jsonl_path)
         .map_err(|e| format!("Failed to open file: {}", e))?;
+
+    let file_len = file.metadata()
+        .map_err(|e| format!("Failed to get metadata: {}", e))?
+        .len();
+
+    // If file hasn't grown (or shrank), return cached value
+    if file_len <= byte_offset {
+        return Ok((base_usage.clone(), byte_offset));
+    }
+
+    file.seek(SeekFrom::Start(byte_offset))
+        .map_err(|e| format!("Seek error: {}", e))?;
+
     let reader = std::io::BufReader::new(file);
+    let mut usage = base_usage.clone();
 
-    let mut usage = SessionUsage::default();
-
-    use std::io::BufRead;
     for line in reader.lines() {
         let line = line.map_err(|e| format!("Read error: {}", e))?;
         if line.is_empty() {
@@ -397,7 +422,7 @@ fn parse_session_usage(jsonl_path: &std::path::Path, pricing: &PricingConfig) ->
         }
     }
 
-    Ok(usage)
+    Ok((usage, file_len))
 }
 
 #[tauri::command]
@@ -408,27 +433,33 @@ fn get_session_usage(
 ) -> Result<SessionUsage, String> {
     let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
 
-    let mtime = match file_mtime(&jsonl_path) {
-        Some(t) => t,
-        None => return Ok(SessionUsage::default()),
-    };
-
-    // Check cache
-    {
-        let cache = state.jsonl_cache.lock().map_err(|e| e.to_string())?;
-        if let Some(entry) = cache.usage.get(&jsonl_path) {
-            if entry.mtime == mtime {
-                return Ok(entry.value.clone());
-            }
-        }
+    if !jsonl_path.exists() {
+        return Ok(SessionUsage::default());
     }
 
-    let usage = parse_session_usage(&jsonl_path, &state.pricing)?;
+    // Get current offset and base usage from cache (or start from scratch)
+    let (byte_offset, base_usage) = {
+        let cache = state.jsonl_cache.lock().map_err(|e| e.to_string())?;
+        match cache.usage.get(&jsonl_path) {
+            Some(entry) => (entry.byte_offset, entry.value.clone()),
+            None => (0, SessionUsage::default()),
+        }
+    };
 
-    // Update cache
-    {
+    let (usage, new_offset) = parse_session_usage_incremental(
+        &jsonl_path,
+        byte_offset,
+        &base_usage,
+        &state.pricing,
+    )?;
+
+    // Update cache with new offset
+    if new_offset != byte_offset {
         let mut cache = state.jsonl_cache.lock().map_err(|e| e.to_string())?;
-        cache.usage.insert(jsonl_path, CachedEntry { mtime, value: usage.clone() });
+        cache.usage.insert(jsonl_path, IncrementalUsageEntry {
+            byte_offset: new_offset,
+            value: usage.clone(),
+        });
     }
 
     Ok(usage)
