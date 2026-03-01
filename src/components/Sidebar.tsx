@@ -1,10 +1,12 @@
-import { useState, useMemo } from "react";
-import type { Session } from "../types";
+import { useState, useMemo, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import type { Session, SessionUsage } from "../types";
 import SessionTab from "./SessionTab";
 
 interface SidebarProps {
   sessions: Session[];
   activeSessionId: string | null;
+  sessionUsage: Map<string, SessionUsage>;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
   onRenameSession: (id: string, name: string) => void;
@@ -52,6 +54,7 @@ function groupSessionsByTime(sessions: Session[]): SessionGroup[] {
 export default function Sidebar({
   sessions,
   activeSessionId,
+  sessionUsage,
   onSelectSession,
   onCreateSession,
   onRenameSession,
@@ -74,8 +77,20 @@ export default function Sidebar({
     [filteredSessions]
   );
 
+  const [todayCost, setTodayCost] = useState(0);
+  useEffect(() => {
+    const fetch = () => {
+      invoke<number>("get_total_cost_today")
+        .then(setTodayCost)
+        .catch(() => {});
+    };
+    fetch();
+    const interval = setInterval(fetch, 10_000);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
-    <div className="w-64 h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-4 pt-4 pb-3">
+    <div className="w-64 h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-2 pt-4 pb-3">
       {/* Header with branding */}
       <div className="px-2 pb-3 flex items-center gap-2">
         <div className="w-7 h-7 rounded-lg bg-[var(--accent)] flex items-center justify-center text-white text-sm font-bold">
@@ -135,6 +150,7 @@ export default function Sidebar({
                 key={session.id}
                 session={session}
                 isActive={session.id === activeSessionId}
+                usage={sessionUsage.get(session.id)}
                 onClick={() => onSelectSession(session.id)}
                 onRename={(name) => onRenameSession(session.id, name)}
                 onDelete={() => onDeleteSession(session.id)}
@@ -172,6 +188,11 @@ export default function Sidebar({
         <span className="text-[11px] text-[var(--text-secondary)]">
           active sessions
         </span>
+        {todayCost > 0 && (
+          <span className="text-[11px] text-[var(--text-secondary)] ml-auto">
+            ${todayCost.toFixed(2)} today
+          </span>
+        )}
       </div>
     </div>
   );

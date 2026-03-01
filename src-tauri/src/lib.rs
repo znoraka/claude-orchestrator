@@ -167,7 +167,8 @@ fn get_conversation_title(claude_session_id: String, directory: String) -> Resul
     };
 
     // Build the Claude projects path: ~/.claude/projects/<encoded-path>/<session-id>.jsonl
-    let encoded_path = expanded_dir.replace('/', "-");
+    let trimmed_dir = expanded_dir.trim_end_matches('/');
+    let encoded_path = trimmed_dir.replace('/', "-");
     let jsonl_path = std::path::PathBuf::from(&home)
         .join(".claude")
         .join("projects")
@@ -216,6 +217,226 @@ fn get_conversation_title(claude_session_id: String, directory: String) -> Resul
     Ok(None)
 }
 
+#[derive(Serialize, Clone, Default)]
+struct SessionUsage {
+    #[serde(rename = "inputTokens")]
+    input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    output_tokens: u64,
+    #[serde(rename = "cacheCreationInputTokens")]
+    cache_creation_input_tokens: u64,
+    #[serde(rename = "cacheReadInputTokens")]
+    cache_read_input_tokens: u64,
+    #[serde(rename = "costUsd")]
+    cost_usd: f64,
+}
+
+/// Returns (input, output, cache_create, cache_read) prices per 1M tokens.
+fn model_pricing(model: &str) -> (f64, f64, f64, f64) {
+    if model.contains("opus") {
+        (15.0, 75.0, 18.75, 1.50)
+    } else if model.contains("haiku") {
+        (0.80, 4.0, 1.0, 0.08)
+    } else {
+        // Sonnet and unknown models
+        (3.0, 15.0, 3.75, 0.30)
+    }
+}
+
+#[tauri::command]
+fn get_session_usage(claude_session_id: String, directory: String) -> Result<SessionUsage, String> {
+    let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
+
+    let expanded_dir = if directory.starts_with('~') {
+        directory.replacen('~', &home, 1)
+    } else {
+        directory.clone()
+    };
+
+    let trimmed_dir = expanded_dir.trim_end_matches('/');
+    let encoded_path = trimmed_dir.replace('/', "-");
+    let jsonl_path = std::path::PathBuf::from(&home)
+        .join(".claude")
+        .join("projects")
+        .join(&encoded_path)
+        .join(format!("{}.jsonl", claude_session_id));
+
+    if !jsonl_path.exists() {
+        return Ok(SessionUsage::default());
+    }
+
+    let file = std::fs::File::open(&jsonl_path)
+        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut usage = SessionUsage::default();
+
+    use std::io::BufRead;
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("Read error: {}", e))?;
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
+            if parsed.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+                let msg = parsed.get("message");
+                let model = msg
+                    .and_then(|m| m.get("model"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("");
+
+                if let Some(u) = msg.and_then(|m| m.get("usage")) {
+                    let inp = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let out = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let cc = u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let cr = u.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                    usage.input_tokens += inp;
+                    usage.output_tokens += out;
+                    usage.cache_creation_input_tokens += cc;
+                    usage.cache_read_input_tokens += cr;
+
+                    // Per-message cost based on that message's model
+                    let (ip, op, cp, rp) = model_pricing(model);
+                    usage.cost_usd += (inp as f64 * ip
+                        + out as f64 * op
+                        + cc as f64 * cp
+                        + cr as f64 * rp)
+                        / 1_000_000.0;
+                }
+            }
+        }
+    }
+
+    Ok(usage)
+}
+
+/// Compute cost from a single JSONL file, only counting entries from today.
+fn cost_from_jsonl(path: &std::path::Path, today: &str) -> f64 {
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return 0.0,
+    };
+    let reader = std::io::BufReader::new(file);
+    let mut cost = 0.0;
+    use std::io::BufRead;
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
+            if parsed.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+                continue;
+            }
+            // Check timestamp starts with today's date
+            if let Some(ts) = parsed.get("timestamp").and_then(|t| t.as_str()) {
+                if !ts.starts_with(today) {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+            let msg = parsed.get("message");
+            let model = msg
+                .and_then(|m| m.get("model"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
+            if let Some(u) = msg.and_then(|m| m.get("usage")) {
+                let inp = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let out = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cc = u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cr = u.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let (ip, op, cp, rp) = model_pricing(model);
+                cost += (inp as f64 * ip + out as f64 * op + cc as f64 * cp + cr as f64 * rp)
+                    / 1_000_000.0;
+            }
+        }
+    }
+    cost
+}
+
+#[tauri::command]
+fn get_total_cost_today() -> Result<f64, String> {
+    let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
+    let projects_dir = std::path::PathBuf::from(&home)
+        .join(".claude")
+        .join("projects");
+
+    if !projects_dir.exists() {
+        return Ok(0.0);
+    }
+
+    // Today's date in UTC (matching JSONL timestamp format)
+    let today = {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Format as YYYY-MM-DD using chrono-free approach
+        let secs_per_day = 86400u64;
+        // Get local midnight by using local offset
+        // Simple approach: use the current date from timestamp
+        let days = now / secs_per_day;
+        let y;
+        let m;
+        let d;
+        // Civil date from days since epoch (algorithm from Howard Hinnant)
+        {
+            let z = days as i64 + 719468;
+            let era = if z >= 0 { z } else { z - 146096 } / 146097;
+            let doe = (z - era * 146097) as u64;
+            let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+            y = yoe as i64 + era * 400;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            d = doy - (153 * mp + 2) / 5 + 1;
+            m = if mp < 10 { mp + 3 } else { mp - 9 };
+        }
+        let year = if m <= 2 { y + 1 } else { y };
+        format!("{:04}-{:02}-{:02}", year, m, d)
+    };
+
+    let mut total = 0.0;
+
+    // Walk all project subdirectories
+    let project_entries = std::fs::read_dir(&projects_dir)
+        .map_err(|e| format!("Read projects dir: {}", e))?;
+
+    for project_entry in project_entries.flatten() {
+        if !project_entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let session_entries = match std::fs::read_dir(project_entry.path()) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in session_entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            // Skip files not modified today (quick filter before parsing)
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    let age = std::time::SystemTime::now()
+                        .duration_since(modified)
+                        .unwrap_or_default();
+                    if age.as_secs() > 86400 {
+                        continue;
+                    }
+                }
+            }
+            total += cost_from_jsonl(&path, &today);
+        }
+    }
+
+    Ok(total)
+}
+
 #[tauri::command]
 fn save_clipboard_image(base64_data: String) -> Result<String, String> {
     clipboard_image::save_image_from_base64(&base64_data)
@@ -238,6 +459,8 @@ pub fn run() {
             load_sessions,
             list_directories,
             get_conversation_title,
+            get_session_usage,
+            get_total_cost_today,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

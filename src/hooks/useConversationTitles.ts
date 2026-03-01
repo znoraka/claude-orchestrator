@@ -26,7 +26,7 @@ export function useConversationTitles(
 
     if (pending.length === 0) return;
 
-    const interval = setInterval(() => {
+    const tryResolve = () => {
       for (const session of pending) {
         if (resolvedRef.current.has(session.id)) continue;
 
@@ -42,7 +42,11 @@ export function useConversationTitles(
           })
           .catch(() => {});
       }
-    }, 3000);
+    };
+
+    // Check immediately, then poll every second
+    tryResolve();
+    const interval = setInterval(tryResolve, 1000);
 
     return () => clearInterval(interval);
   }, [sessions, renameSession]);

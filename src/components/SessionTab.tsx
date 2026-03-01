@@ -1,14 +1,21 @@
 import { useState, useRef, useEffect } from "react";
-import type { Session } from "../types";
+import type { Session, SessionUsage } from "../types";
 
 function shortenPath(path: string): string {
   const parts = path.split("/");
   return parts[parts.length - 1] || path;
 }
 
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return String(n);
+}
+
 interface SessionTabProps {
   session: Session;
   isActive: boolean;
+  usage?: SessionUsage;
   onClick: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
@@ -17,6 +24,7 @@ interface SessionTabProps {
 export default function SessionTab({
   session,
   isActive,
+  usage,
   onClick,
   onRename,
   onDelete,
@@ -92,6 +100,11 @@ export default function SessionTab({
         {session.directory && (
           <span className="text-[10px] text-[var(--text-tertiary)] truncate block mt-0.5">
             {shortenPath(session.directory)}
+          </span>
+        )}
+        {usage && (usage.inputTokens > 0 || usage.outputTokens > 0) && (
+          <span className="text-[10px] text-[var(--text-tertiary)] truncate block mt-0.5">
+            {formatTokens(usage.inputTokens + usage.outputTokens)} tokens · ${usage.costUsd.toFixed(2)}
           </span>
         )}
       </div>

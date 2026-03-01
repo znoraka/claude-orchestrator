@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSession } from "./hooks/useSession";
 import { useClipboard } from "./hooks/useClipboard";
 import { useConversationTitles } from "./hooks/useConversationTitles";
+import { useSessionUsage } from "./hooks/useSessionUsage";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
 
@@ -24,6 +25,9 @@ export default function App() {
 
   // Auto-fetch conversation titles from Claude's JSONL files
   useConversationTitles(sessions, renameSession);
+
+  // Fetch token usage for sessions
+  const sessionUsage = useSessionUsage(sessions);
 
   // Directory dialog state
   const [showDirDialog, setShowDirDialog] = useState(false);
@@ -99,6 +103,7 @@ export default function App() {
       <Sidebar
         sessions={sortedSessions}
         activeSessionId={activeSessionId}
+        sessionUsage={sessionUsage}
         onSelectSession={selectSession}
         onCreateSession={handleNewSession}
         onRenameSession={renameSession}
@@ -141,7 +146,7 @@ export default function App() {
                       {session.name}
                     </p>
                     {session.directory && (
-                      <p className="text-xs text-[var(--text-secondary)] mb-6 font-mono opacity-60">
+                      <p className="text-xs py-2 text-[var(--text-secondary)] mb-6 font-mono opacity-60">
                         {session.directory}
                       </p>
                     )}

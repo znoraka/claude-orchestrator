@@ -8,3 +8,11 @@ export interface Session {
   claudeSessionId?: string;
   dangerouslySkipPermissions?: boolean;
 }
+
+export interface SessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  costUsd: number;
+}
