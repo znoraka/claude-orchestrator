@@ -1,6 +1,7 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -16,6 +17,10 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const onExitRef = useRef(onExit);
   const onTitleChangeRef = useRef(onTitleChange);
   const onActivityRef = useRef(onActivity);
@@ -58,12 +63,15 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
     });
 
     const fitAddon = new FitAddon();
+    const searchAddon = new SearchAddon();
     term.loadAddon(fitAddon);
+    term.loadAddon(searchAddon);
     term.open(containerRef.current);
     fitAddon.fit();
 
     termRef.current = term;
     fitAddonRef.current = fitAddon;
+    searchAddonRef.current = searchAddon;
 
     // Send user input to PTY; track prompt submissions (Enter key) for tab ordering
     term.onData((data) => {
@@ -125,11 +133,101 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
     }
   }, [writeText]);
 
+  // Cmd+F to toggle search bar
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey && e.key === "f" && isActive) {
+        e.preventDefault();
+        setShowSearch((prev) => {
+          if (prev) {
+            searchAddonRef.current?.clearDecorations();
+            setSearchQuery("");
+            termRef.current?.focus();
+            return false;
+          }
+          setTimeout(() => searchInputRef.current?.focus(), 0);
+          return true;
+        });
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isActive]);
+
+  const handleSearch = (query: string) => {
+    setSearchQuery(query);
+    if (!query) {
+      searchAddonRef.current?.clearDecorations();
+      return;
+    }
+    searchAddonRef.current?.findNext(query);
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      if (e.shiftKey) {
+        searchAddonRef.current?.findPrevious(searchQuery);
+      } else {
+        searchAddonRef.current?.findNext(searchQuery);
+      }
+    } else if (e.key === "Escape") {
+      searchAddonRef.current?.clearDecorations();
+      setSearchQuery("");
+      setShowSearch(false);
+      termRef.current?.focus();
+    }
+  };
+
   return (
-    <div
-      ref={containerRef}
-      className="terminal-container w-full h-full"
-      style={{ display: isActive ? "block" : "none" }}
-    />
+    <div className="relative w-full h-full" style={{ display: isActive ? "block" : "none" }}>
+      {showSearch && (
+        <div className="absolute top-2 right-4 z-10 flex items-center gap-1.5 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-1.5 shadow-lg">
+          <input
+            ref={searchInputRef}
+            value={searchQuery}
+            onChange={(e) => handleSearch(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
+            placeholder="Find in terminal..."
+            className="bg-transparent text-xs text-[var(--text-primary)] outline-none w-48 placeholder:text-[var(--text-tertiary)]"
+          />
+          <button
+            onClick={() => searchAddonRef.current?.findPrevious(searchQuery)}
+            className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] p-0.5"
+            title="Previous (Shift+Enter)"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+            </svg>
+          </button>
+          <button
+            onClick={() => searchAddonRef.current?.findNext(searchQuery)}
+            className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] p-0.5"
+            title="Next (Enter)"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          <button
+            onClick={() => {
+              searchAddonRef.current?.clearDecorations();
+              setSearchQuery("");
+              setShowSearch(false);
+              termRef.current?.focus();
+            }}
+            className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] p-0.5 ml-1"
+            title="Close (Esc)"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        className="terminal-container w-full h-full"
+      />
+    </div>
   );
 }

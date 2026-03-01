@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Session, SessionUsage } from "../types";
 import SessionTab from "./SessionTab";
@@ -61,6 +61,18 @@ export default function Sidebar({
   onDeleteSession,
 }: SidebarProps) {
   const [filter, setFilter] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey && e.key === "k") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const filteredSessions = useMemo(() => {
     const q = filter.toLowerCase().trim();
@@ -128,6 +140,7 @@ export default function Sidebar({
             />
           </svg>
           <input
+            ref={searchRef}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search sessions..."
