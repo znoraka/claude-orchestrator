@@ -137,7 +137,8 @@ export default function App() {
               data-session-id={session.id}
               className="absolute inset-0"
               style={{
-                display: session.id === activeSessionId ? "block" : "none",
+                visibility: session.id === activeSessionId ? "visible" : "hidden",
+                pointerEvents: session.id === activeSessionId ? "auto" : "none",
               }}
             >
               {session.status === "stopped" ? (

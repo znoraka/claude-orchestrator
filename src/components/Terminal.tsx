@@ -116,8 +116,14 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
   // Focus terminal when tab becomes active
   useEffect(() => {
     if (isActive && termRef.current) {
-      termRef.current.focus();
-      fitAddonRef.current?.fit();
+      // Wait for the browser to paint the container at its correct size
+      // before fitting the terminal (container transitions from display:none)
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          fitAddonRef.current?.fit();
+          termRef.current?.focus();
+        });
+      });
     }
   }, [isActive]);
 
@@ -179,7 +185,7 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
   };
 
   return (
-    <div className="relative w-full h-full" style={{ display: isActive ? "block" : "none" }}>
+    <div className="relative w-full h-full">
       {showSearch && (
         <div className="absolute top-2 right-4 z-10 flex items-center gap-1.5 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-1.5 shadow-lg">
           <input
