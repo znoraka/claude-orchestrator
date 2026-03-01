@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    {
+      "identifier": "core:event:allow-emit",
+      "allow": [{ "event": "pty-*" }]
+    },
+    {
+      "identifier": "core:event:allow-listen",
+      "allow": [{ "event": "pty-*" }]
+    }
+  ]
+}
