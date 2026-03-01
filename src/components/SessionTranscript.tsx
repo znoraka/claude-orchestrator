@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Session } from "../types";
 
@@ -143,21 +143,23 @@ export default function SessionTranscript({ session, onResume }: Props) {
     return <>{parts}</>;
   };
 
-  // Compute per-message match offset for highlight indexing
-  const getMatchOffset = (msgIdx: number) => {
-    if (!searchQuery) return 0;
+  // Pre-compute per-message match offsets as prefix sums (O(n) instead of O(n²))
+  const matchOffsets = useMemo(() => {
+    if (!searchQuery) return [];
     const q = searchQuery.toLowerCase();
-    let offset = 0;
-    for (let i = 0; i < msgIdx; i++) {
+    const offsets: number[] = [0];
+    for (let i = 0; i < messages.length; i++) {
+      let count = 0;
       let idx = 0;
       const text = messages[i].text.toLowerCase();
       while ((idx = text.indexOf(q, idx)) !== -1) {
-        offset++;
+        count++;
         idx += q.length;
       }
+      offsets.push(offsets[i] + count);
     }
-    return offset;
-  };
+    return offsets;
+  }, [searchQuery, messages]);
 
   if (!session.directory) {
     return (
@@ -257,7 +259,7 @@ export default function SessionTranscript({ session, onResume }: Props) {
                   )}
                 </div>
                 <pre className="text-xs text-[var(--text-primary)] font-mono whitespace-pre-wrap break-words leading-relaxed">
-                  {renderHighlighted(msg.text, getMatchOffset(i))}
+                  {renderHighlighted(msg.text, matchOffsets[i] ?? 0)}
                 </pre>
               </div>
             ))}

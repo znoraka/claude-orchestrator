@@ -17,10 +17,12 @@ export function useConversationTitles(
 
   // Phase 1: extract first user message as title
   useEffect(() => {
+    // Only poll sessions that are running and still have default names
     const pending = sessions.filter(
       (s) =>
         s.claudeSessionId &&
         s.directory &&
+        s.status === "running" &&
         !resolvedRef.current.has(s.id) &&
         /^Session \d+$/.test(s.name)
     );
@@ -46,7 +48,7 @@ export function useConversationTitles(
     };
 
     tryResolve();
-    const interval = setInterval(tryResolve, 1000);
+    const interval = setInterval(tryResolve, 3000);
 
     return () => clearInterval(interval);
   }, [sessions, renameSession]);
@@ -94,7 +96,7 @@ export function useConversationTitles(
     };
 
     trySmartResolve();
-    const interval = setInterval(trySmartResolve, 3000);
+    const interval = setInterval(trySmartResolve, 10000);
 
     return () => clearInterval(interval);
   }, [sessions, renameSession]);

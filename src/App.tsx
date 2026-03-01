@@ -1,34 +1,28 @@
 import { useCallback, useRef, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useSession } from "./hooks/useSession";
+import { useSessionContext } from "./contexts/SessionContext";
 import { useClipboard } from "./hooks/useClipboard";
-import { useConversationTitles } from "./hooks/useConversationTitles";
-import { useSessionUsage } from "./hooks/useSessionUsage";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
 import SessionTranscript from "./components/SessionTranscript";
 
 export default function App() {
   const {
-    sortedSessions,
     sessions,
+    sortedSessions,
     activeSessionId,
+    sessionUsage,
+    todayCost,
+    selectSession,
     createSession,
     deleteSession,
     renameSession,
     markStopped,
     restartSession,
     touchSession,
-    selectSession,
-  } = useSession();
+  } = useSessionContext();
 
   const terminalsRef = useRef<HTMLDivElement>(null);
-
-  // Auto-fetch conversation titles from Claude's JSONL files
-  useConversationTitles(sessions, renameSession);
-
-  // Fetch token usage for sessions
-  const sessionUsage = useSessionUsage(sessions);
 
   // Directory dialog state
   const [showDirDialog, setShowDirDialog] = useState(false);
@@ -105,6 +99,7 @@ export default function App() {
         sessions={sortedSessions}
         activeSessionId={activeSessionId}
         sessionUsage={sessionUsage}
+        todayCost={todayCost}
         onSelectSession={selectSession}
         onCreateSession={handleNewSession}
         onRenameSession={renameSession}

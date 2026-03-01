@@ -9,7 +9,10 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
 
   useEffect(() => {
     const fetchUsage = () => {
-      const eligible = sessions.filter((s) => s.claudeSessionId && s.directory);
+      // Only poll running sessions — stopped sessions won't accumulate new tokens
+      const eligible = sessions.filter(
+        (s) => s.claudeSessionId && s.directory && s.status === "running"
+      );
       if (eligible.length === 0) return;
 
       for (const session of eligible) {
@@ -23,7 +26,8 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
             if (
               prev &&
               prev.inputTokens === usage.inputTokens &&
-              prev.outputTokens === usage.outputTokens
+              prev.outputTokens === usage.outputTokens &&
+              prev.costUsd === usage.costUsd
             )
               return;
             setUsageMap((m) => {
@@ -37,8 +41,34 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
     };
 
     fetchUsage();
-    const interval = setInterval(fetchUsage, 5000);
+    const interval = setInterval(fetchUsage, 15000);
     return () => clearInterval(interval);
+  }, [sessions]);
+
+  // Fetch once for stopped sessions that have no cached usage yet
+  useEffect(() => {
+    const stoppedWithoutUsage = sessions.filter(
+      (s) =>
+        s.claudeSessionId &&
+        s.directory &&
+        s.status === "stopped" &&
+        !usageMapRef.current.has(s.id)
+    );
+    for (const session of stoppedWithoutUsage) {
+      invoke<SessionUsage>("get_session_usage", {
+        claudeSessionId: session.claudeSessionId,
+        directory: session.directory,
+      })
+        .then((usage) => {
+          if (usage.inputTokens === 0 && usage.outputTokens === 0) return;
+          setUsageMap((m) => {
+            const next = new Map(m);
+            next.set(session.id, usage);
+            return next;
+          });
+        })
+        .catch(() => {});
+    }
   }, [sessions]);
 
   return usageMap;

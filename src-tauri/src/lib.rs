@@ -3,11 +3,96 @@ mod pty_manager;
 
 use pty_manager::PtyManager;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::SystemTime;
 use tauri::{AppHandle, Manager, State};
+
+/// Cached result for a JSONL file, invalidated when mtime changes.
+struct CachedEntry<T> {
+    mtime: SystemTime,
+    value: T,
+}
+
+/// Caches expensive JSONL parsing results, keyed by file path.
+/// Re-reads only when the file's mtime has changed.
+struct JsonlCache {
+    usage: HashMap<PathBuf, CachedEntry<SessionUsage>>,
+    title: HashMap<PathBuf, CachedEntry<Option<String>>>,
+}
+
+impl JsonlCache {
+    fn new() -> Self {
+        Self {
+            usage: HashMap::new(),
+            title: HashMap::new(),
+        }
+    }
+}
+
+/// Per-model pricing: (input, output, cache_create, cache_read) per 1M tokens.
+#[derive(Serialize, Deserialize, Clone)]
+struct ModelPricing {
+    input: f64,
+    output: f64,
+    cache_create: f64,
+    cache_read: f64,
+}
+
+/// Pricing config loaded from disk, keyed by model substring match.
+#[derive(Serialize, Deserialize, Clone)]
+struct PricingConfig {
+    /// Ordered list of (model_contains_substring, pricing).
+    /// First match wins, so put more specific patterns first.
+    models: Vec<(String, ModelPricing)>,
+}
+
+impl Default for PricingConfig {
+    fn default() -> Self {
+        Self {
+            models: vec![
+                ("opus".to_string(), ModelPricing { input: 15.0, output: 75.0, cache_create: 18.75, cache_read: 1.50 }),
+                ("haiku".to_string(), ModelPricing { input: 0.80, output: 4.0, cache_create: 1.0, cache_read: 0.08 }),
+                ("sonnet".to_string(), ModelPricing { input: 3.0, output: 15.0, cache_create: 3.75, cache_read: 0.30 }),
+            ],
+        }
+    }
+}
+
+impl PricingConfig {
+    /// Load from ~/.claude-orchestrator/pricing.json, falling back to defaults.
+    fn load() -> Self {
+        if let Ok(home) = std::env::var("HOME") {
+            let path = PathBuf::from(&home)
+                .join(".claude-orchestrator")
+                .join("pricing.json");
+            if let Ok(data) = std::fs::read_to_string(&path) {
+                if let Ok(config) = serde_json::from_str::<PricingConfig>(&data) {
+                    return config;
+                }
+                eprintln!("[pricing] Failed to parse {:?}, using defaults", path);
+            }
+        }
+        PricingConfig::default()
+    }
+
+    /// Look up pricing for a model string. Falls back to Sonnet pricing.
+    fn lookup(&self, model: &str) -> (f64, f64, f64, f64) {
+        for (pattern, p) in &self.models {
+            if model.contains(pattern.as_str()) {
+                return (p.input, p.output, p.cache_create, p.cache_read);
+            }
+        }
+        // Fallback: Sonnet pricing
+        (3.0, 15.0, 3.75, 0.30)
+    }
+}
 
 struct AppState {
     pty_manager: Mutex<PtyManager>,
+    jsonl_cache: Mutex<JsonlCache>,
+    pricing: PricingConfig,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -155,31 +240,30 @@ fn list_directories(partial: String) -> Result<Vec<String>, String> {
     Ok(results)
 }
 
-#[tauri::command]
-fn get_conversation_title(claude_session_id: String, directory: String) -> Result<Option<String>, String> {
+/// Resolve a JSONL path from session ID and directory.
+fn jsonl_path_for(claude_session_id: &str, directory: &str) -> Result<PathBuf, String> {
     let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
-
-    // Expand ~ in directory
     let expanded_dir = if directory.starts_with('~') {
         directory.replacen('~', &home, 1)
     } else {
-        directory.clone()
+        directory.to_string()
     };
-
-    // Build the Claude projects path: ~/.claude/projects/<encoded-path>/<session-id>.jsonl
     let trimmed_dir = expanded_dir.trim_end_matches('/');
     let encoded_path = trimmed_dir.replace('/', "-");
-    let jsonl_path = std::path::PathBuf::from(&home)
+    Ok(PathBuf::from(&home)
         .join(".claude")
         .join("projects")
         .join(&encoded_path)
-        .join(format!("{}.jsonl", claude_session_id));
+        .join(format!("{}.jsonl", claude_session_id)))
+}
 
-    if !jsonl_path.exists() {
-        return Ok(None);
-    }
+/// Get the mtime of a file, or None if it doesn't exist.
+fn file_mtime(path: &std::path::Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
 
-    let file = std::fs::File::open(&jsonl_path)
+fn parse_conversation_title(jsonl_path: &std::path::Path) -> Result<Option<String>, String> {
+    let file = std::fs::File::open(jsonl_path)
         .map_err(|e| format!("Failed to open conversation file: {}", e))?;
     let reader = std::io::BufReader::new(file);
 
@@ -189,7 +273,6 @@ fn get_conversation_title(claude_session_id: String, directory: String) -> Resul
         if line.is_empty() {
             continue;
         }
-        // Parse JSON and look for first user message
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
             if parsed.get("type").and_then(|t| t.as_str()) == Some("user") {
                 if let Some(content) = parsed
@@ -197,11 +280,9 @@ fn get_conversation_title(claude_session_id: String, directory: String) -> Resul
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_str())
                 {
-                    // Skip command messages like /review
                     if content.starts_with("<command-message>") {
                         continue;
                     }
-                    // Truncate to ~60 chars
                     let title: String = content.chars().take(60).collect();
                     let title = if content.chars().count() > 60 {
                         format!("{}…", title.trim_end())
@@ -213,8 +294,41 @@ fn get_conversation_title(claude_session_id: String, directory: String) -> Resul
             }
         }
     }
-
     Ok(None)
+}
+
+#[tauri::command]
+fn get_conversation_title(
+    claude_session_id: String,
+    directory: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+
+    let mtime = match file_mtime(&jsonl_path) {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+
+    // Check cache
+    {
+        let cache = state.jsonl_cache.lock().map_err(|e| e.to_string())?;
+        if let Some(entry) = cache.title.get(&jsonl_path) {
+            if entry.mtime == mtime {
+                return Ok(entry.value.clone());
+            }
+        }
+    }
+
+    let result = parse_conversation_title(&jsonl_path)?;
+
+    // Update cache
+    {
+        let mut cache = state.jsonl_cache.lock().map_err(|e| e.to_string())?;
+        cache.title.insert(jsonl_path, CachedEntry { mtime, value: result.clone() });
+    }
+
+    Ok(result)
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -231,41 +345,8 @@ struct SessionUsage {
     cost_usd: f64,
 }
 
-/// Returns (input, output, cache_create, cache_read) prices per 1M tokens.
-fn model_pricing(model: &str) -> (f64, f64, f64, f64) {
-    if model.contains("opus") {
-        (15.0, 75.0, 18.75, 1.50)
-    } else if model.contains("haiku") {
-        (0.80, 4.0, 1.0, 0.08)
-    } else {
-        // Sonnet and unknown models
-        (3.0, 15.0, 3.75, 0.30)
-    }
-}
-
-#[tauri::command]
-fn get_session_usage(claude_session_id: String, directory: String) -> Result<SessionUsage, String> {
-    let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
-
-    let expanded_dir = if directory.starts_with('~') {
-        directory.replacen('~', &home, 1)
-    } else {
-        directory.clone()
-    };
-
-    let trimmed_dir = expanded_dir.trim_end_matches('/');
-    let encoded_path = trimmed_dir.replace('/', "-");
-    let jsonl_path = std::path::PathBuf::from(&home)
-        .join(".claude")
-        .join("projects")
-        .join(&encoded_path)
-        .join(format!("{}.jsonl", claude_session_id));
-
-    if !jsonl_path.exists() {
-        return Ok(SessionUsage::default());
-    }
-
-    let file = std::fs::File::open(&jsonl_path)
+fn parse_session_usage(jsonl_path: &std::path::Path, pricing: &PricingConfig) -> Result<SessionUsage, String> {
+    let file = std::fs::File::open(jsonl_path)
         .map_err(|e| format!("Failed to open file: {}", e))?;
     let reader = std::io::BufReader::new(file);
 
@@ -296,8 +377,7 @@ fn get_session_usage(claude_session_id: String, directory: String) -> Result<Ses
                     usage.cache_creation_input_tokens += cc;
                     usage.cache_read_input_tokens += cr;
 
-                    // Per-message cost based on that message's model
-                    let (ip, op, cp, rp) = model_pricing(model);
+                    let (ip, op, cp, rp) = pricing.lookup(model);
                     usage.cost_usd += (inp as f64 * ip
                         + out as f64 * op
                         + cc as f64 * cp
@@ -311,8 +391,42 @@ fn get_session_usage(claude_session_id: String, directory: String) -> Result<Ses
     Ok(usage)
 }
 
+#[tauri::command]
+fn get_session_usage(
+    claude_session_id: String,
+    directory: String,
+    state: State<'_, AppState>,
+) -> Result<SessionUsage, String> {
+    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+
+    let mtime = match file_mtime(&jsonl_path) {
+        Some(t) => t,
+        None => return Ok(SessionUsage::default()),
+    };
+
+    // Check cache
+    {
+        let cache = state.jsonl_cache.lock().map_err(|e| e.to_string())?;
+        if let Some(entry) = cache.usage.get(&jsonl_path) {
+            if entry.mtime == mtime {
+                return Ok(entry.value.clone());
+            }
+        }
+    }
+
+    let usage = parse_session_usage(&jsonl_path, &state.pricing)?;
+
+    // Update cache
+    {
+        let mut cache = state.jsonl_cache.lock().map_err(|e| e.to_string())?;
+        cache.usage.insert(jsonl_path, CachedEntry { mtime, value: usage.clone() });
+    }
+
+    Ok(usage)
+}
+
 /// Compute cost from a single JSONL file, only counting entries from today.
-fn cost_from_jsonl(path: &std::path::Path, today: &str) -> f64 {
+fn cost_from_jsonl(path: &std::path::Path, today: &str, pricing: &PricingConfig) -> f64 {
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return 0.0,
@@ -350,7 +464,7 @@ fn cost_from_jsonl(path: &std::path::Path, today: &str) -> f64 {
                 let out = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                 let cc = u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                 let cr = u.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                let (ip, op, cp, rp) = model_pricing(model);
+                let (ip, op, cp, rp) = pricing.lookup(model);
                 cost += (inp as f64 * ip + out as f64 * op + cc as f64 * cp + cr as f64 * rp)
                     / 1_000_000.0;
             }
@@ -360,7 +474,7 @@ fn cost_from_jsonl(path: &std::path::Path, today: &str) -> f64 {
 }
 
 #[tauri::command]
-fn get_total_cost_today() -> Result<f64, String> {
+fn get_total_cost_today(state: State<'_, AppState>) -> Result<f64, String> {
     let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
     let projects_dir = std::path::PathBuf::from(&home)
         .join(".claude")
@@ -430,7 +544,7 @@ fn get_total_cost_today() -> Result<f64, String> {
                     }
                 }
             }
-            total += cost_from_jsonl(&path, &today);
+            total += cost_from_jsonl(&path, &today, &state.pricing);
         }
     }
 
@@ -439,21 +553,7 @@ fn get_total_cost_today() -> Result<f64, String> {
 
 #[tauri::command]
 fn generate_smart_title(claude_session_id: String, directory: String) -> Result<Option<String>, String> {
-    let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
-
-    let expanded_dir = if directory.starts_with('~') {
-        directory.replacen('~', &home, 1)
-    } else {
-        directory.clone()
-    };
-
-    let trimmed_dir = expanded_dir.trim_end_matches('/');
-    let encoded_path = trimmed_dir.replace('/', "-");
-    let jsonl_path = std::path::PathBuf::from(&home)
-        .join(".claude")
-        .join("projects")
-        .join(&encoded_path)
-        .join(format!("{}.jsonl", claude_session_id));
+    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
 
     if !jsonl_path.exists() {
         return Ok(None);
@@ -556,21 +656,7 @@ struct TranscriptMessage {
 
 #[tauri::command]
 fn get_session_transcript(claude_session_id: String, directory: String) -> Result<Vec<TranscriptMessage>, String> {
-    let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
-
-    let expanded_dir = if directory.starts_with('~') {
-        directory.replacen('~', &home, 1)
-    } else {
-        directory.clone()
-    };
-
-    let trimmed_dir = expanded_dir.trim_end_matches('/');
-    let encoded_path = trimmed_dir.replace('/', "-");
-    let jsonl_path = std::path::PathBuf::from(&home)
-        .join(".claude")
-        .join("projects")
-        .join(&encoded_path)
-        .join(format!("{}.jsonl", claude_session_id));
+    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
 
     if !jsonl_path.exists() {
         return Ok(vec![]);
@@ -651,6 +737,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             pty_manager: Mutex::new(PtyManager::new()),
+            jsonl_cache: Mutex::new(JsonlCache::new()),
+            pricing: PricingConfig::load(),
         })
         .invoke_handler(tauri::generate_handler![
             create_pty_session,

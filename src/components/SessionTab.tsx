@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 import type { Session, SessionUsage } from "../types";
 
 function shortenPath(path: string): string {
@@ -21,7 +21,7 @@ interface SessionTabProps {
   onDelete: () => void;
 }
 
-export default function SessionTab({
+export default memo(function SessionTab({
   session,
   isActive,
   usage,
@@ -122,4 +122,4 @@ export default function SessionTab({
       </button>
     </div>
   );
-}
+});

@@ -1,5 +1,4 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import type { Session, SessionUsage } from "../types";
 import SessionTab from "./SessionTab";
 
@@ -7,6 +6,7 @@ interface SidebarProps {
   sessions: Session[];
   activeSessionId: string | null;
   sessionUsage: Map<string, SessionUsage>;
+  todayCost: number;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
   onRenameSession: (id: string, name: string) => void;
@@ -55,6 +55,7 @@ export default function Sidebar({
   sessions,
   activeSessionId,
   sessionUsage,
+  todayCost,
   onSelectSession,
   onCreateSession,
   onRenameSession,
@@ -88,18 +89,6 @@ export default function Sidebar({
     () => groupSessionsByTime(filteredSessions),
     [filteredSessions]
   );
-
-  const [todayCost, setTodayCost] = useState(0);
-  useEffect(() => {
-    const fetch = () => {
-      invoke<number>("get_total_cost_today")
-        .then(setTodayCost)
-        .catch(() => {});
-    };
-    fetch();
-    const interval = setInterval(fetch, 10_000);
-    return () => clearInterval(interval);
-  }, []);
 
   return (
     <div className="w-64 h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-2 pt-4 pb-3">

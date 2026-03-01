@@ -59,8 +59,6 @@ impl PtyManager {
                 claude_args.push(sid.clone());
             }
         }
-        let claude_cmd = claude_args.join(" ");
-
         // Expand ~ in directory
         let expanded_dir = if directory.starts_with('~') {
             if let Ok(home) = std::env::var("HOME") {
@@ -78,7 +76,16 @@ impl PtyManager {
         let mut cmd = CommandBuilder::new(&shell);
         cmd.env("TERM", "xterm-256color");
 
-        let shell_cmd = format!("cd '{}' && exec {}", expanded_dir, claude_cmd);
+        // Shell-escape all components to prevent injection via directory names or args.
+        // Each value is wrapped in single quotes with internal single quotes escaped
+        // as '\'' (end quote, literal quote, start quote).
+        fn shell_escape(s: &str) -> String {
+            format!("'{}'", s.replace('\'', "'\\''"))
+        }
+
+        let escaped_dir = shell_escape(&expanded_dir);
+        let escaped_args: Vec<String> = claude_args.iter().map(|a| shell_escape(a)).collect();
+        let shell_cmd = format!("cd {} && exec {}", escaped_dir, escaped_args.join(" "));
         eprintln!("[pty_manager] Spawning: {} -lc \"{}\"", shell, shell_cmd);
         cmd.arg("-lc");
         cmd.arg(&shell_cmd);
