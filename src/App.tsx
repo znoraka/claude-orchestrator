@@ -157,12 +157,12 @@ export default function App() {
 
       {/* Directory picker dialog */}
       {showDirDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 dialog-backdrop">
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl p-6 w-96 shadow-2xl">
-            <h2 className="text-base font-semibold text-[var(--text-primary)] mb-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 dialog-backdrop" onMouseDown={handleDirCancel}>
+          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl p-8 w-96 shadow-2xl flex flex-col gap-3" onMouseDown={(e) => e.stopPropagation()}>
+            <h2 className="text-base font-semibold text-[var(--text-primary)]">
               New Session
             </h2>
-            <label className="flex items-center gap-2.5 mb-4 cursor-pointer select-none">
+            <label className="flex items-center gap-2.5 cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={skipPermissions}
@@ -173,10 +173,11 @@ export default function App() {
                 Skip permissions
               </span>
             </label>
-            <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
+            <div>
+            <label className="block text-xs text-[var(--text-secondary)] pb-2">
               Working directory
             </label>
-            <div className="relative mb-4">
+            <div className="relative">
               <input
                 autoFocus
                 value={dirInput}
@@ -229,7 +230,8 @@ export default function App() {
                 </div>
               )}
             </div>
-            <div className="flex justify-end gap-2">
+            </div>
+            <div className="flex justify-end gap-3">
               <button
                 onClick={handleDirCancel}
                 className="px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
