@@ -86,6 +86,13 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
       onTitleChangeRef.current?.(title);
     });
 
+    // Replay any accumulated scrollback (from before this terminal mounted)
+    invoke<string>("get_pty_scrollback", { sessionId })
+      .then((data) => {
+        if (data) term.write(data);
+      })
+      .catch(() => {});
+
     // Listen for PTY output
     const unlistenOutput = listen<string>(`pty-output-${sessionId}`, (event) => {
       term.write(event.payload);

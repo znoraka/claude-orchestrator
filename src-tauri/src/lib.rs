@@ -181,6 +181,12 @@ fn destroy_pty_session(session_id: String, state: State<'_, AppState>) -> Result
 }
 
 #[tauri::command]
+fn get_pty_scrollback(session_id: String, state: State<'_, AppState>) -> Result<String, String> {
+    let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
+    manager.get_scrollback(&session_id)
+}
+
+#[tauri::command]
 fn list_directories(partial: String) -> Result<Vec<String>, String> {
     let expanded = if partial.starts_with('~') {
         if let Ok(home) = std::env::var("HOME") {
@@ -745,6 +751,7 @@ pub fn run() {
             write_to_pty,
             resize_pty,
             destroy_pty_session,
+            get_pty_scrollback,
             save_clipboard_image,
             save_sessions,
             load_sessions,

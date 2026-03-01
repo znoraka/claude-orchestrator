@@ -5,6 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter};
 
+/// Maximum scrollback buffer size per session (1 MB).
+const MAX_SCROLLBACK_BYTES: usize = 1_024 * 1_024;
+
 pub struct PtySession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
@@ -12,12 +15,24 @@ pub struct PtySession {
 
 pub struct PtyManager {
     sessions: Arc<Mutex<HashMap<String, PtySession>>>,
+    /// Accumulated PTY output per session, replayed when the terminal remounts.
+    scrollback: Arc<Mutex<HashMap<String, Vec<u8>>>>,
 }
 
 impl PtyManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            scrollback: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Retrieve accumulated scrollback for a session.
+    pub fn get_scrollback(&self, session_id: &str) -> Result<String, String> {
+        let scrollback = self.scrollback.lock().map_err(|e| format!("Lock error: {}", e))?;
+        match scrollback.get(session_id) {
+            Some(buf) => Ok(String::from_utf8_lossy(buf).to_string()),
+            None => Ok(String::new()),
         }
     }
 
@@ -108,6 +123,13 @@ impl PtyManager {
             .map_err(|e| format!("Failed to take writer: {}", e))?;
 
         let sid = session_id.to_string();
+        let scrollback_buf = self.scrollback.clone();
+
+        // Initialize scrollback buffer for this session
+        {
+            let mut sb = scrollback_buf.lock().map_err(|e| format!("Lock error: {}", e))?;
+            sb.entry(sid.clone()).or_insert_with(Vec::new);
+        }
 
         // Spawn a thread to read PTY output and emit events to the frontend
         thread::spawn(move || {
@@ -143,6 +165,17 @@ impl PtyManager {
                                 &format!("pty-output-{}", sid),
                                 data.to_string(),
                             );
+
+                            // Append to scrollback buffer (cap at MAX_SCROLLBACK_BYTES)
+                            if let Ok(mut sb) = scrollback_buf.lock() {
+                                if let Some(buf) = sb.get_mut(&sid) {
+                                    buf.extend_from_slice(&pending[..valid_up_to]);
+                                    if buf.len() > MAX_SCROLLBACK_BYTES {
+                                        let drain_to = buf.len() - MAX_SCROLLBACK_BYTES;
+                                        buf.drain(..drain_to);
+                                    }
+                                }
+                            }
                         }
 
                         // Keep any trailing incomplete bytes for the next read
@@ -230,6 +263,12 @@ impl PtyManager {
             .map_err(|e| format!("Lock error: {}", e))?;
 
         sessions.remove(session_id);
+
+        // Clean up scrollback buffer
+        if let Ok(mut sb) = self.scrollback.lock() {
+            sb.remove(session_id);
+        }
+
         Ok(())
     }
 }

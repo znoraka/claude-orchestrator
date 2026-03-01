@@ -5,6 +5,7 @@ import { useClipboard } from "./hooks/useClipboard";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
 import SessionTranscript from "./components/SessionTranscript";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 export default function App() {
   const {
@@ -51,6 +52,19 @@ export default function App() {
   );
 
   useClipboard(handleImagePath);
+
+  // Cmd+N to open new session dialog
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey && e.key === "n") {
+        e.preventDefault();
+        setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
+        setShowDirDialog(true);
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const handleNewSession = () => {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
@@ -136,20 +150,22 @@ export default function App() {
                 pointerEvents: session.id === activeSessionId ? "auto" : "none",
               }}
             >
-              {session.status === "stopped" ? (
-                <SessionTranscript
-                  session={session}
-                  onResume={() => restartSession(session.id)}
-                />
-              ) : (
-                <Terminal
-                  sessionId={session.id}
-                  isActive={session.id === activeSessionId}
-                  onExit={() => markStopped(session.id)}
-                  onTitleChange={() => {}}
-                  onActivity={() => touchSession(session.id)}
-                />
-              )}
+              <ErrorBoundary key={`eb-${session.id}-${session.status}`}>
+                {session.status === "stopped" ? (
+                  <SessionTranscript
+                    session={session}
+                    onResume={() => restartSession(session.id)}
+                  />
+                ) : (
+                  <Terminal
+                    sessionId={session.id}
+                    isActive={session.id === activeSessionId}
+                    onExit={() => markStopped(session.id)}
+                    onTitleChange={() => {}}
+                    onActivity={() => touchSession(session.id)}
+                  />
+                )}
+              </ErrorBoundary>
             </div>
           ))
         )}
