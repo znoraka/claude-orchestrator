@@ -1,11 +1,14 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { Session } from "../types";
 
 /**
- * Polls Claude's conversation JSONL files to extract the first user message
+ * Watches Claude's conversation JSONL files to extract the first user message
  * and use it as the tab title (phase 1), then generates a smart AI title
  * via `claude -p --model haiku` (phase 2).
+ *
+ * Uses file system events (notify crate) instead of polling timers.
  */
 export function useConversationTitles(
   sessions: Session[],
@@ -15,69 +18,42 @@ export function useConversationTitles(
   const smartResolvedRef = useRef<Set<string>>(new Set());
   const smartPendingRef = useRef<Set<string>>(new Set());
 
-  // Phase 1: extract first user message as title
+  // Register file watchers and listen for changes
   useEffect(() => {
-    // Only poll sessions that are running and still have default names
     const pending = sessions.filter(
       (s) =>
         s.claudeSessionId &&
         s.directory &&
         s.status === "running" &&
-        !resolvedRef.current.has(s.id) &&
-        /^Session \d+$/.test(s.name)
+        !smartResolvedRef.current.has(s.id)
     );
 
     if (pending.length === 0) return;
 
-    const tryResolve = () => {
-      for (const session of pending) {
-        if (resolvedRef.current.has(session.id)) continue;
+    // Start watching JSONL files for these sessions
+    for (const session of pending) {
+      invoke("watch_jsonl", {
+        claudeSessionId: session.claudeSessionId,
+        directory: session.directory,
+      }).catch(() => {});
+    }
 
-        invoke<string | null>("get_conversation_title", {
-          claudeSessionId: session.claudeSessionId,
-          directory: session.directory,
-        })
-          .then((title) => {
-            if (title) {
-              resolvedRef.current.add(session.id);
-              renameSession(session.id, title);
-            }
-          })
-          .catch(() => {});
-      }
-    };
+    // Build a reverse map: claudeSessionId -> session (match by session ID in filename)
+    const pathToSession = new Map<string, Session>();
+    for (const session of pending) {
+      pathToSession.set(session.claudeSessionId!, session);
+    }
 
-    tryResolve();
-    const interval = setInterval(tryResolve, 3000);
-
-    return () => clearInterval(interval);
-  }, [sessions, renameSession]);
-
-  // Phase 2: generate smart AI title
-  useEffect(() => {
-    const pending = sessions.filter(
-      (s) =>
-        s.claudeSessionId &&
-        s.directory &&
-        resolvedRef.current.has(s.id) &&
-        !smartResolvedRef.current.has(s.id) &&
-        !smartPendingRef.current.has(s.id)
-    );
-
-    if (pending.length === 0) return;
-
-    const trySmartResolve = () => {
-      for (const session of pending) {
+    const tryResolveTitle = (session: Session) => {
+      if (resolvedRef.current.has(session.id)) {
+        // Phase 2: smart title
         if (
           smartResolvedRef.current.has(session.id) ||
           smartPendingRef.current.has(session.id)
         )
-          continue;
-        // Must have passed phase 1 (no longer "Session N")
-        if (!resolvedRef.current.has(session.id)) continue;
+          return;
 
         smartPendingRef.current.add(session.id);
-
         invoke<string | null>("generate_smart_title", {
           claudeSessionId: session.claudeSessionId,
           directory: session.directory,
@@ -92,12 +68,58 @@ export function useConversationTitles(
           .catch(() => {
             smartPendingRef.current.delete(session.id);
           });
+        return;
       }
+
+      // Phase 1: extract first user message
+      if (!/^Session \d+$/.test(session.name)) {
+        resolvedRef.current.add(session.id);
+        return;
+      }
+
+      invoke<string | null>("get_conversation_title", {
+        claudeSessionId: session.claudeSessionId,
+        directory: session.directory,
+      })
+        .then((title) => {
+          if (title) {
+            resolvedRef.current.add(session.id);
+            renameSession(session.id, title);
+          }
+        })
+        .catch(() => {});
     };
 
-    trySmartResolve();
-    const interval = setInterval(trySmartResolve, 10000);
+    // Do an initial check for all pending sessions
+    for (const session of pending) {
+      tryResolveTitle(session);
+    }
 
-    return () => clearInterval(interval);
+    // Listen for file change events
+    const unlistenPromise = listen<string>("jsonl-changed", (event) => {
+      const changedPath = event.payload;
+      // Match by session ID in the filename
+      for (const [sessionId, session] of pathToSession) {
+        if (changedPath.includes(sessionId)) {
+          tryResolveTitle(session);
+          break;
+        }
+      }
+    });
+
+    // Also set a fallback interval for cases where the file doesn't exist yet
+    // (watcher can't watch a non-existent file's parent if the project dir doesn't exist)
+    const fallbackInterval = setInterval(() => {
+      for (const session of pending) {
+        if (!resolvedRef.current.has(session.id)) {
+          tryResolveTitle(session);
+        }
+      }
+    }, 5000);
+
+    return () => {
+      unlistenPromise.then((fn) => fn());
+      clearInterval(fallbackInterval);
+    };
   }, [sessions, renameSession]);
 }

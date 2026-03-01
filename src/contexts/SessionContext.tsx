@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { v4 as uuidv4 } from "uuid";
 import { useConversationTitles } from "../hooks/useConversationTitles";
 import { useSessionUsage } from "../hooks/useSessionUsage";
@@ -288,7 +289,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [sessions]
   );
 
-  // Today's cost (was previously in Sidebar)
+  // Today's cost — refreshed on JSONL file changes + a slow fallback interval
   const [todayCost, setTodayCost] = useState(0);
   useEffect(() => {
     const fetchCost = () => {
@@ -297,8 +298,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         .catch(() => {});
     };
     fetchCost();
-    const interval = setInterval(fetchCost, 30_000);
-    return () => clearInterval(interval);
+    // Refresh on any JSONL change event
+    const unlistenPromise = listen<string>("jsonl-changed", () => {
+      fetchCost();
+    });
+    // Slow fallback for sessions managed outside this app
+    const interval = setInterval(fetchCost, 120_000);
+    return () => {
+      unlistenPromise.then((fn) => fn());
+      clearInterval(interval);
+    };
   }, []);
 
   // ── Context value (stable reference via useMemo) ─────────────────

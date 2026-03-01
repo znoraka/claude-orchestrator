@@ -21,4 +21,6 @@ portable-pty = "0.8"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 tempfile = "3"
+notify = { version = "7", features = ["macos_fsevent"] }
+notify-debouncer-mini = "0.5"
 

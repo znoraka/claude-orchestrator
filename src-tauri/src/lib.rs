@@ -1,6 +1,8 @@
 mod clipboard_image;
+mod file_watcher;
 mod pty_manager;
 
+use file_watcher::JsonlWatcher;
 use pty_manager::PtyManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -93,6 +95,7 @@ struct AppState {
     pty_manager: Mutex<PtyManager>,
     jsonl_cache: Mutex<JsonlCache>,
     pricing: PricingConfig,
+    file_watcher: Mutex<JsonlWatcher>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -733,6 +736,28 @@ fn get_session_transcript(claude_session_id: String, directory: String) -> Resul
 }
 
 #[tauri::command]
+fn watch_jsonl(
+    claude_session_id: String,
+    directory: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let path = jsonl_path_for(&claude_session_id, &directory)?;
+    let mut watcher = state.file_watcher.lock().map_err(|e| e.to_string())?;
+    watcher.watch(path)
+}
+
+#[tauri::command]
+fn unwatch_jsonl(
+    claude_session_id: String,
+    directory: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let path = jsonl_path_for(&claude_session_id, &directory)?;
+    let mut watcher = state.file_watcher.lock().map_err(|e| e.to_string())?;
+    watcher.unwatch(&path)
+}
+
+#[tauri::command]
 fn save_clipboard_image(base64_data: String) -> Result<String, String> {
     clipboard_image::save_image_from_base64(&base64_data)
 }
@@ -741,10 +766,16 @@ fn save_clipboard_image(base64_data: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState {
-            pty_manager: Mutex::new(PtyManager::new()),
-            jsonl_cache: Mutex::new(JsonlCache::new()),
-            pricing: PricingConfig::load(),
+        .setup(|app| {
+            let watcher = JsonlWatcher::new(app.handle().clone())
+                .expect("Failed to create file watcher");
+            app.manage(AppState {
+                pty_manager: Mutex::new(PtyManager::new()),
+                jsonl_cache: Mutex::new(JsonlCache::new()),
+                pricing: PricingConfig::load(),
+                file_watcher: Mutex::new(watcher),
+            });
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             create_pty_session,
@@ -761,6 +792,8 @@ pub fn run() {
             get_total_cost_today,
             generate_smart_title,
             get_session_transcript,
+            watch_jsonl,
+            unwatch_jsonl,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
