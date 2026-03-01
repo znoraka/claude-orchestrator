@@ -6,6 +6,7 @@ import { useConversationTitles } from "./hooks/useConversationTitles";
 import { useSessionUsage } from "./hooks/useSessionUsage";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
+import SessionTranscript from "./components/SessionTranscript";
 
 export default function App() {
   const {
@@ -140,30 +141,10 @@ export default function App() {
               }}
             >
               {session.status === "stopped" ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-center">
-                    <p className="text-sm text-[var(--text-secondary)] mb-1.5">
-                      {session.name}
-                    </p>
-                    {session.directory && (
-                      <p className="text-xs py-2 text-[var(--text-secondary)] mb-6 font-mono opacity-60">
-                        {session.directory}
-                      </p>
-                    )}
-                    {session.directory ? (
-                      <button
-                        onClick={() => restartSession(session.id)}
-                        className="px-6 py-2.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-lg text-sm font-medium transition-colors"
-                      >
-                        Resume Session
-                      </button>
-                    ) : (
-                      <p className="text-xs text-[var(--text-secondary)] italic">
-                        Missing directory — please delete and recreate this session.
-                      </p>
-                    )}
-                  </div>
-                </div>
+                <SessionTranscript
+                  session={session}
+                  onResume={() => restartSession(session.id)}
+                />
               ) : (
                 <Terminal
                   sessionId={session.id}

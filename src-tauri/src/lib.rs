@@ -438,6 +438,209 @@ fn get_total_cost_today() -> Result<f64, String> {
 }
 
 #[tauri::command]
+fn generate_smart_title(claude_session_id: String, directory: String) -> Result<Option<String>, String> {
+    let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
+
+    let expanded_dir = if directory.starts_with('~') {
+        directory.replacen('~', &home, 1)
+    } else {
+        directory.clone()
+    };
+
+    let trimmed_dir = expanded_dir.trim_end_matches('/');
+    let encoded_path = trimmed_dir.replace('/', "-");
+    let jsonl_path = std::path::PathBuf::from(&home)
+        .join(".claude")
+        .join("projects")
+        .join(&encoded_path)
+        .join(format!("{}.jsonl", claude_session_id));
+
+    if !jsonl_path.exists() {
+        return Ok(None);
+    }
+
+    let file = std::fs::File::open(&jsonl_path)
+        .map_err(|e| format!("Failed to open conversation file: {}", e))?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut first_user_message: Option<String> = None;
+    let mut first_assistant_text: Option<String> = None;
+
+    use std::io::BufRead;
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("Read error: {}", e))?;
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
+            let msg_type = parsed.get("type").and_then(|t| t.as_str());
+
+            if msg_type == Some("user") && first_user_message.is_none() {
+                if let Some(content) = parsed
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_str())
+                {
+                    if content.starts_with("<command-message>") {
+                        continue;
+                    }
+                    first_user_message = Some(content.chars().take(500).collect());
+                }
+            }
+
+            if msg_type == Some("assistant") && first_user_message.is_some() && first_assistant_text.is_none() {
+                if let Some(content) = parsed.get("message").and_then(|m| m.get("content")) {
+                    // content can be a string or an array of content blocks
+                    let text = if let Some(s) = content.as_str() {
+                        Some(s.to_string())
+                    } else if let Some(arr) = content.as_array() {
+                        // Find the first text block
+                        arr.iter().find_map(|block| {
+                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                block.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(t) = text {
+                        first_assistant_text = Some(t.chars().take(500).collect());
+                    }
+                }
+            }
+
+            if first_user_message.is_some() && first_assistant_text.is_some() {
+                break;
+            }
+        }
+    }
+
+    let (user_msg, assistant_msg) = match (first_user_message, first_assistant_text) {
+        (Some(u), Some(a)) => (u, a),
+        _ => return Ok(None),
+    };
+
+    let prompt = format!(
+        "Summarize this conversation in 3-6 words as a short title. Reply with ONLY the title, nothing else.\n\nUser: {}\nAssistant: {}",
+        user_msg, assistant_msg
+    );
+
+    let output = std::process::Command::new("claude")
+        .args(["-p", "--model", "haiku", &prompt])
+        .output()
+        .map_err(|e| format!("Failed to run claude CLI: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "claude CLI failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if title.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(title))
+}
+
+#[derive(Serialize, Clone)]
+struct TranscriptMessage {
+    role: String,
+    text: String,
+    timestamp: String,
+}
+
+#[tauri::command]
+fn get_session_transcript(claude_session_id: String, directory: String) -> Result<Vec<TranscriptMessage>, String> {
+    let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
+
+    let expanded_dir = if directory.starts_with('~') {
+        directory.replacen('~', &home, 1)
+    } else {
+        directory.clone()
+    };
+
+    let trimmed_dir = expanded_dir.trim_end_matches('/');
+    let encoded_path = trimmed_dir.replace('/', "-");
+    let jsonl_path = std::path::PathBuf::from(&home)
+        .join(".claude")
+        .join("projects")
+        .join(&encoded_path)
+        .join(format!("{}.jsonl", claude_session_id));
+
+    if !jsonl_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let file = std::fs::File::open(&jsonl_path)
+        .map_err(|e| format!("Failed to open transcript file: {}", e))?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut messages = Vec::new();
+
+    use std::io::BufRead;
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("Read error: {}", e))?;
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
+            let msg_type = parsed.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            let timestamp = parsed.get("timestamp").and_then(|t| t.as_str()).unwrap_or("").to_string();
+
+            if msg_type == "user" {
+                if let Some(content) = parsed
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_str())
+                {
+                    if content.starts_with("<command-message>") {
+                        continue;
+                    }
+                    let text: String = content.chars().take(2000).collect();
+                    messages.push(TranscriptMessage {
+                        role: "user".to_string(),
+                        text,
+                        timestamp,
+                    });
+                }
+            } else if msg_type == "assistant" {
+                if let Some(content) = parsed.get("message").and_then(|m| m.get("content")) {
+                    let text = if let Some(s) = content.as_str() {
+                        Some(s.to_string())
+                    } else if let Some(arr) = content.as_array() {
+                        let parts: Vec<String> = arr.iter().filter_map(|block| {
+                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                block.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                            } else {
+                                None
+                            }
+                        }).collect();
+                        if parts.is_empty() { None } else { Some(parts.join("\n")) }
+                    } else {
+                        None
+                    };
+                    if let Some(t) = text {
+                        let truncated: String = t.chars().take(2000).collect();
+                        messages.push(TranscriptMessage {
+                            role: "assistant".to_string(),
+                            text: truncated,
+                            timestamp,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(messages)
+}
+
+#[tauri::command]
 fn save_clipboard_image(base64_data: String) -> Result<String, String> {
     clipboard_image::save_image_from_base64(&base64_data)
 }
@@ -461,6 +664,8 @@ pub fn run() {
             get_conversation_title,
             get_session_usage,
             get_total_cost_today,
+            generate_smart_title,
+            get_session_transcript,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
