@@ -12,9 +12,10 @@ interface TerminalProps {
   onExit: () => void;
   onTitleChange?: (title: string) => void;
   onActivity?: () => void;
+  onRegisterWriteText?: (fn: ((text: string) => void) | null) => void;
 }
 
-export default function Terminal({ sessionId, isActive, onExit, onTitleChange, onActivity }: TerminalProps) {
+export default function Terminal({ sessionId, isActive, onExit, onTitleChange, onActivity, onRegisterWriteText }: TerminalProps) {
   const { showError } = useToast();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
@@ -145,12 +146,11 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
     });
   }, [sessionId, showError]);
 
-  // Attach writeText to the container element for parent access
+  // Register writeText with parent for clipboard image injection
   useEffect(() => {
-    if (containerRef.current) {
-      (containerRef.current as any).__writeText = writeText;
-    }
-  }, [writeText]);
+    onRegisterWriteText?.(writeText);
+    return () => onRegisterWriteText?.(null);
+  }, [writeText, onRegisterWriteText]);
 
   // Cmd+F to toggle search bar
   useEffect(() => {

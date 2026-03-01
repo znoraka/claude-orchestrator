@@ -23,7 +23,8 @@ export default function App() {
     touchSession,
   } = useSessionContext();
 
-  const terminalsRef = useRef<HTMLDivElement>(null);
+  // Registry of writeText callbacks from Terminal components
+  const writeTextCallbacks = useRef<Map<string, (text: string) => void>>(new Map());
 
   // Directory dialog state
   const [showDirDialog, setShowDirDialog] = useState(false);
@@ -36,18 +37,23 @@ export default function App() {
   const [creating, setCreating] = useState(false);
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
+  const registerWriteText = useCallback(
+    (sessionId: string, fn: ((text: string) => void) | null) => {
+      if (fn) {
+        writeTextCallbacks.current.set(sessionId, fn);
+      } else {
+        writeTextCallbacks.current.delete(sessionId);
+      }
+    },
+    []
+  );
+
   // Clipboard image handler: inject path into active session's PTY
   const handleImagePath = useCallback(
     (path: string) => {
-      if (!activeSessionId || !terminalsRef.current) return;
-
-      const activeContainer = terminalsRef.current.querySelector(
-        `[data-session-id="${activeSessionId}"]`
-      ) as HTMLDivElement | null;
-
-      if (activeContainer && (activeContainer as any).__writeText) {
-        (activeContainer as any).__writeText(path + " ");
-      }
+      if (!activeSessionId) return;
+      const writeFn = writeTextCallbacks.current.get(activeSessionId);
+      writeFn?.(path + " ");
     },
     [activeSessionId]
   );
@@ -130,7 +136,7 @@ export default function App() {
       />
 
       {/* Main terminal area */}
-      <div className="flex-1 min-w-0 relative" ref={terminalsRef}>
+      <div className="flex-1 min-w-0 relative">
         {sessions.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
@@ -152,7 +158,6 @@ export default function App() {
           sessions.map((session) => (
             <div
               key={session.id}
-              data-session-id={session.id}
               className="absolute inset-0"
               style={{
                 visibility: session.id === activeSessionId ? "visible" : "hidden",
@@ -172,6 +177,7 @@ export default function App() {
                     onExit={() => markStopped(session.id)}
                     onTitleChange={() => {}}
                     onActivity={() => touchSession(session.id)}
+                    onRegisterWriteText={(fn) => registerWriteText(session.id, fn)}
                   />
                 )}
               </ErrorBoundary>
