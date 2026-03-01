@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { useToast } from "./Toast";
 
 interface TerminalProps {
   sessionId: string;
@@ -14,6 +15,7 @@ interface TerminalProps {
 }
 
 export default function Terminal({ sessionId, isActive, onExit, onTitleChange, onActivity }: TerminalProps) {
+  const { showError } = useToast();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -91,7 +93,9 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
       .then((data) => {
         if (data) term.write(data);
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error("Failed to get scrollback:", err);
+      });
 
     // Listen for PTY output
     const unlistenOutput = listen<string>(`pty-output-${sessionId}`, (event) => {
@@ -136,8 +140,10 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
 
   // Expose a way to write text into the terminal (for image path injection)
   const writeText = useCallback((text: string) => {
-    invoke("write_to_pty", { sessionId, data: text }).catch(console.error);
-  }, [sessionId]);
+    invoke("write_to_pty", { sessionId, data: text }).catch((err) => {
+      showError(`Failed to write to terminal: ${err}`);
+    });
+  }, [sessionId, showError]);
 
   // Attach writeText to the container element for parent access
   useEffect(() => {

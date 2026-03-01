@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useToast } from "./Toast";
 import type { Session } from "../types";
 
 interface TranscriptMessage {
@@ -17,6 +18,7 @@ export default function SessionTranscript({ session, onResume }: Props) {
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const { showError } = useToast();
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [matchIndex, setMatchIndex] = useState(0);
@@ -35,7 +37,10 @@ export default function SessionTranscript({ session, onResume }: Props) {
       directory: session.directory,
     })
       .then(setMessages)
-      .catch(() => setMessages([]))
+      .catch((err) => {
+        showError(`Failed to load transcript: ${err}`);
+        setMessages([]);
+      })
       .finally(() => setLoading(false));
   }, [session.claudeSessionId, session.directory]);
 

@@ -96,7 +96,10 @@ export default function App() {
           setSuggestions(dirs);
           setSelectedIdx(-1);
         })
-        .catch(() => setSuggestions([]));
+        .catch((err) => {
+          console.error("Failed to list directories:", err);
+          setSuggestions([]);
+        });
     }, 100);
     return () => clearTimeout(timer);
   }, [dirInput, showDirDialog]);

@@ -14,6 +14,7 @@ import { listen } from "@tauri-apps/api/event";
 import { v4 as uuidv4 } from "uuid";
 import { useConversationTitles } from "../hooks/useConversationTitles";
 import { useSessionUsage } from "../hooks/useSessionUsage";
+import { useToast } from "../components/Toast";
 import type { Session, SessionUsage } from "../types";
 
 const MAX_RUNNING_SESSIONS = 8;
@@ -84,6 +85,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, dispatch] = useReducer(sessionReducer, []);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const loadedRef = useRef(false);
+  const { showError } = useToast();
 
   // ── Load persisted sessions on mount ─────────────────────────────
   useEffect(() => {
@@ -116,6 +118,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       })
       .catch((err) => {
         console.error("Failed to load sessions:", err);
+        showError(`Failed to load sessions: ${err}`);
         loadedRef.current = true;
       });
   }, []);
@@ -132,9 +135,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       claudeSessionId: s.claudeSessionId,
       dangerouslySkipPermissions: s.dangerouslySkipPermissions,
     }));
-    invoke("save_sessions", { sessions: metas }).catch((err) =>
-      console.error("Failed to save sessions:", err)
-    );
+    invoke("save_sessions", { sessions: metas }).catch((err) => {
+      console.error("Failed to save sessions:", err);
+      showError(`Failed to save sessions: ${err}`);
+    });
   }, [sessions]);
 
   // ── Kill oldest running sessions when over the limit ─────────────
@@ -206,12 +210,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         await enforceMaxSessions(id);
       } catch (err) {
         console.error("Failed to create session:", err);
+        showError(`Failed to create session: ${err}`);
         dispatch({ type: "UPDATE", id, patch: { status: "stopped" } });
       }
 
       return id;
     },
-    [enforceMaxSessions]
+    [enforceMaxSessions, showError]
   );
 
   const deleteSession = useCallback(
@@ -269,10 +274,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         await enforceMaxSessions(id);
       } catch (err) {
         console.error("Failed to restart session:", err);
+        showError(`Failed to restart session: ${err}`);
         dispatch({ type: "UPDATE", id, patch: { status: "stopped" } });
       }
     },
-    [enforceMaxSessions]
+    [enforceMaxSessions, showError]
   );
 
   const touchSession = useCallback((id: string) => {
