@@ -23,4 +23,9 @@ base64 = "0.22"
 tempfile = "3"
 notify = { version = "7", features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.5"
+regex = "1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+grep-matcher = "0.1"
+tauri-plugin-notification = "2"
 

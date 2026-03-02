@@ -7,6 +7,7 @@ export interface Session {
   directory: string;
   claudeSessionId?: string;
   dangerouslySkipPermissions?: boolean;
+  activeTime?: number; // cumulative ms of running time
 }
 
 export interface SessionUsage {

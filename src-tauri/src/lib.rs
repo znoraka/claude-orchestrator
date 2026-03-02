@@ -117,6 +117,8 @@ struct SessionMeta {
     claude_session_id: Option<String>,
     #[serde(default, rename = "dangerouslySkipPermissions")]
     dangerously_skip_permissions: bool,
+    #[serde(default, rename = "activeTime")]
+    active_time: f64,
 }
 
 fn sessions_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -276,10 +278,30 @@ fn file_mtime(path: &std::path::Path) -> Option<SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
 }
 
+/// Extract the text from a user message content field, which can be a string
+/// or an array of content blocks like [{type: "text", text: "..."}].
+fn extract_user_text(content: &serde_json::Value) -> Option<String> {
+    if let Some(s) = content.as_str() {
+        return Some(s.to_string());
+    }
+    if let Some(arr) = content.as_array() {
+        for block in arr {
+            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                    return Some(text.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn parse_conversation_title(jsonl_path: &std::path::Path) -> Result<Option<String>, String> {
     let file = std::fs::File::open(jsonl_path)
         .map_err(|e| format!("Failed to open conversation file: {}", e))?;
     let reader = std::io::BufReader::new(file);
+
+    let mut first_command: Option<String> = None;
 
     use std::io::BufRead;
     for line in reader.lines() {
@@ -292,23 +314,35 @@ fn parse_conversation_title(jsonl_path: &std::path::Path) -> Result<Option<Strin
                 if let Some(content) = parsed
                     .get("message")
                     .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_str())
                 {
-                    if content.starts_with("<command-message>") {
-                        continue;
+                    if let Some(text) = extract_user_text(content) {
+                        if text.starts_with("<command-message>") {
+                            // Save first command name as fallback
+                            if first_command.is_none() {
+                                // Extract from <command-name>/name</command-name>
+                                if let Some(start) = text.find("<command-name>") {
+                                    let after = &text[start + 14..];
+                                    if let Some(end) = after.find("</command-name>") {
+                                        first_command = Some(after[..end].to_string());
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        let title: String = text.chars().take(60).collect();
+                        let title = if text.chars().count() > 60 {
+                            format!("{}…", title.trim_end())
+                        } else {
+                            title
+                        };
+                        return Ok(Some(title));
                     }
-                    let title: String = content.chars().take(60).collect();
-                    let title = if content.chars().count() > 60 {
-                        format!("{}…", title.trim_end())
-                    } else {
-                        title
-                    };
-                    return Ok(Some(title));
                 }
             }
         }
     }
-    Ok(None)
+    // Fall back to command name if only commands were found
+    Ok(first_command)
 }
 
 #[tauri::command]
@@ -514,6 +548,23 @@ fn get_session_usage(
     Ok(usage)
 }
 
+/// Convert seconds since Unix epoch to a civil date string (YYYY-MM-DD).
+/// Algorithm from Howard Hinnant.
+fn civil_date_from_epoch(epoch_secs: u64) -> String {
+    let days = epoch_secs / 86400;
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", year, m, d)
+}
+
 /// Compute cost from a single JSONL file, only counting entries from today.
 fn usage_from_jsonl(path: &std::path::Path, today: &str, pricing: &PricingConfig) -> (f64, u64) {
     let file = match std::fs::File::open(path) {
@@ -584,34 +635,11 @@ fn get_total_usage_today(state: State<'_, AppState>) -> Result<TodayUsageSummary
     }
 
     // Today's date in UTC (matching JSONL timestamp format)
-    let today = {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        // Format as YYYY-MM-DD using chrono-free approach
-        let secs_per_day = 86400u64;
-        // Get local midnight by using local offset
-        // Simple approach: use the current date from timestamp
-        let days = now / secs_per_day;
-        let y;
-        let m;
-        let d;
-        // Civil date from days since epoch (algorithm from Howard Hinnant)
-        {
-            let z = days as i64 + 719468;
-            let era = if z >= 0 { z } else { z - 146096 } / 146097;
-            let doe = (z - era * 146097) as u64;
-            let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-            y = yoe as i64 + era * 400;
-            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-            let mp = (5 * doy + 2) / 153;
-            d = doy - (153 * mp + 2) / 5 + 1;
-            m = if mp < 10 { mp + 3 } else { mp - 9 };
-        }
-        let year = if m <= 2 { y + 1 } else { y };
-        format!("{:04}-{:02}-{:02}", year, m, d)
-    };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let today = civil_date_from_epoch(now_secs);
 
     let mut total_cost = 0.0;
     let mut total_tokens = 0u64;
@@ -653,8 +681,226 @@ fn get_total_usage_today(state: State<'_, AppState>) -> Result<TodayUsageSummary
     Ok(TodayUsageSummary { cost_usd: total_cost, total_tokens })
 }
 
+#[derive(Serialize, Clone)]
+struct DailyUsage {
+    date: String,
+    #[serde(rename = "costUsd")]
+    cost_usd: f64,
+    #[serde(rename = "totalTokens")]
+    total_tokens: u64,
+    #[serde(rename = "inputTokens")]
+    input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    output_tokens: u64,
+}
+
+#[derive(Serialize, Clone)]
+struct ProjectUsage {
+    directory: String,
+    #[serde(rename = "costUsd")]
+    cost_usd: f64,
+    #[serde(rename = "totalTokens")]
+    total_tokens: u64,
+    #[serde(rename = "sessionCount")]
+    session_count: u32,
+}
+
+/// Parse usage from a JSONL file, bucketing by date.
+/// Returns a map of date -> (cost, input_tokens, output_tokens).
+fn usage_by_date_from_jsonl(
+    path: &std::path::Path,
+    pricing: &PricingConfig,
+) -> HashMap<String, (f64, u64, u64)> {
+    let mut buckets: HashMap<String, (f64, u64, u64)> = HashMap::new();
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return buckets,
+    };
+    let reader = std::io::BufReader::new(file);
+    use std::io::BufRead;
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
+            if parsed.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+                continue;
+            }
+            let date = match parsed.get("timestamp").and_then(|t| t.as_str()) {
+                Some(ts) if ts.len() >= 10 => ts[..10].to_string(),
+                _ => continue,
+            };
+            let msg = parsed.get("message");
+            let model = msg
+                .and_then(|m| m.get("model"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
+            if let Some(u) = msg.and_then(|m| m.get("usage")) {
+                let inp = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let out = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cc = u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cr = u.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let (ip, op, cp, rp) = pricing.lookup(model);
+                let cost = (inp as f64 * ip + out as f64 * op + cc as f64 * cp + cr as f64 * rp)
+                    / 1_000_000.0;
+                let entry = buckets.entry(date).or_insert((0.0, 0, 0));
+                entry.0 += cost;
+                entry.1 += inp + cc + cr;
+                entry.2 += out;
+            }
+        }
+    }
+    buckets
+}
+
+#[derive(Serialize, Clone)]
+struct UsageDashboard {
+    history: Vec<DailyUsage>,
+    projects: Vec<ProjectUsage>,
+}
+
 #[tauri::command]
-fn generate_smart_title(claude_session_id: String, directory: String) -> Result<Option<String>, String> {
+async fn get_usage_dashboard(days: u32, state: State<'_, AppState>) -> Result<UsageDashboard, String> {
+    let pricing = state.pricing.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        compute_usage_dashboard(days, &pricing)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn compute_usage_dashboard(days: u32, pricing: &PricingConfig) -> Result<UsageDashboard, String> {
+    let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
+    let projects_dir = PathBuf::from(&home).join(".claude").join("projects");
+    if !projects_dir.exists() {
+        return Ok(UsageDashboard { history: vec![], projects: vec![] });
+    }
+
+    let max_age_secs = days as u64 * 86400;
+    let mut date_map: HashMap<String, (f64, u64, u64)> = HashMap::new();
+    let mut projects: Vec<ProjectUsage> = Vec::new();
+
+    let project_entries = std::fs::read_dir(&projects_dir)
+        .map_err(|e| format!("Read projects dir: {}", e))?;
+
+    for project_entry in project_entries.flatten() {
+        if !project_entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let folder_name = project_entry.file_name().to_string_lossy().to_string();
+        let decoded_dir = if folder_name.starts_with('-') {
+            folder_name.replacen('-', "/", 1).replace('-', "/")
+        } else {
+            folder_name.clone()
+        };
+
+        let mut project_cost = 0.0;
+        let mut project_tokens = 0u64;
+        let mut session_count = 0u32;
+
+        let session_entries = match std::fs::read_dir(project_entry.path()) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in session_entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            session_count += 1;
+
+            // Check if file is recent enough for the history chart
+            let is_recent = entry.metadata().ok().and_then(|m| m.modified().ok()).map_or(false, |modified| {
+                SystemTime::now()
+                    .duration_since(modified)
+                    .unwrap_or_default()
+                    .as_secs() <= max_age_secs
+            });
+
+            let buckets = usage_by_date_from_jsonl(&path, pricing);
+            for (date, (cost, inp, out)) in &buckets {
+                project_cost += cost;
+                project_tokens += inp + out;
+                if is_recent {
+                    let entry = date_map.entry(date.clone()).or_insert((0.0, 0, 0));
+                    entry.0 += cost;
+                    entry.1 += inp;
+                    entry.2 += out;
+                }
+            }
+        }
+
+        if session_count > 0 {
+            projects.push(ProjectUsage {
+                directory: decoded_dir,
+                cost_usd: project_cost,
+                total_tokens: project_tokens,
+                session_count,
+            });
+        }
+    }
+
+    // Build history
+    let now_secs = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let cutoff_date = civil_date_from_epoch(now_secs.saturating_sub(max_age_secs));
+    let mut history: Vec<DailyUsage> = date_map
+        .into_iter()
+        .filter(|(date, _)| *date >= cutoff_date)
+        .map(|(date, (cost, inp, out))| DailyUsage {
+            date,
+            cost_usd: cost,
+            total_tokens: inp + out,
+            input_tokens: inp,
+            output_tokens: out,
+        })
+        .collect();
+    history.sort_by(|a, b| a.date.cmp(&b.date));
+
+    projects.sort_by(|a, b| b.cost_usd.partial_cmp(&a.cost_usd).unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(UsageDashboard { history, projects })
+}
+
+#[tauri::command]
+fn get_message_count(claude_session_id: String, directory: String) -> Result<u32, String> {
+    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+    if !jsonl_path.exists() {
+        return Ok(0);
+    }
+    let file = std::fs::File::open(&jsonl_path)
+        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let reader = std::io::BufReader::new(file);
+    let mut count = 0u32;
+    use std::io::BufRead;
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        if line.is_empty() {
+            continue;
+        }
+        // Quick check before full parse
+        if line.contains("\"type\":\"user\"") || line.contains("\"type\": \"user\"") {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
+                if parsed.get("type").and_then(|t| t.as_str()) == Some("user") {
+                    count += 1;
+                }
+            }
+        }
+    }
+    Ok(count)
+}
+
+#[tauri::command]
+fn generate_smart_title(claude_session_id: String, directory: String, include_recent: Option<bool>) -> Result<Option<String>, String> {
     let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
 
     if !jsonl_path.exists() {
@@ -667,6 +913,8 @@ fn generate_smart_title(claude_session_id: String, directory: String) -> Result<
 
     let mut first_user_message: Option<String> = None;
     let mut first_assistant_text: Option<String> = None;
+    // Collect all exchanges for recent context
+    let mut all_exchanges: Vec<(String, String)> = Vec::new(); // (role, text)
 
     use std::io::BufRead;
     for line in reader.lines() {
@@ -677,26 +925,29 @@ fn generate_smart_title(claude_session_id: String, directory: String) -> Result<
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
             let msg_type = parsed.get("type").and_then(|t| t.as_str());
 
-            if msg_type == Some("user") && first_user_message.is_none() {
+            if msg_type == Some("user") {
                 if let Some(content) = parsed
                     .get("message")
                     .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_str())
                 {
-                    if content.starts_with("<command-message>") {
-                        continue;
+                    if let Some(text) = extract_user_text(content) {
+                        if text.starts_with("<command-message>") {
+                            continue;
+                        }
+                        let truncated: String = text.chars().take(500).collect();
+                        if first_user_message.is_none() {
+                            first_user_message = Some(truncated.clone());
+                        }
+                        all_exchanges.push(("user".to_string(), truncated));
                     }
-                    first_user_message = Some(content.chars().take(500).collect());
                 }
             }
 
-            if msg_type == Some("assistant") && first_user_message.is_some() && first_assistant_text.is_none() {
+            if msg_type == Some("assistant") {
                 if let Some(content) = parsed.get("message").and_then(|m| m.get("content")) {
-                    // content can be a string or an array of content blocks
                     let text = if let Some(s) = content.as_str() {
                         Some(s.to_string())
                     } else if let Some(arr) = content.as_array() {
-                        // Find the first text block
                         arr.iter().find_map(|block| {
                             if block.get("type").and_then(|t| t.as_str()) == Some("text") {
                                 block.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
@@ -708,12 +959,20 @@ fn generate_smart_title(claude_session_id: String, directory: String) -> Result<
                         None
                     };
                     if let Some(t) = text {
-                        first_assistant_text = Some(t.chars().take(500).collect());
+                        let truncated: String = t.chars().take(500).collect();
+                        if first_user_message.is_some() && first_assistant_text.is_none() {
+                            first_assistant_text = Some(truncated.clone());
+                        }
+                        all_exchanges.push(("assistant".to_string(), truncated));
                     }
                 }
             }
 
-            if first_user_message.is_some() && first_assistant_text.is_some() {
+            // If not including recent, break early
+            if !include_recent.unwrap_or(false)
+                && first_user_message.is_some()
+                && first_assistant_text.is_some()
+            {
                 break;
             }
         }
@@ -724,10 +983,24 @@ fn generate_smart_title(claude_session_id: String, directory: String) -> Result<
         _ => return Ok(None),
     };
 
-    let prompt = format!(
-        "Summarize this conversation in 3-6 words as a short title. Reply with ONLY the title, nothing else.\n\nUser: {}\nAssistant: {}",
-        user_msg, assistant_msg
-    );
+    let prompt = if include_recent.unwrap_or(false) && all_exchanges.len() > 2 {
+        // Include first exchange + last 2-3 exchanges
+        let recent_start = all_exchanges.len().saturating_sub(3);
+        let mut recent_text = String::new();
+        for (role, text) in &all_exchanges[recent_start..] {
+            let truncated: String = text.chars().take(200).collect();
+            recent_text.push_str(&format!("\n{}: {}", if role == "user" { "User" } else { "Assistant" }, truncated));
+        }
+        format!(
+            "Summarize this conversation in 3-6 words as a short title. The conversation has evolved, so consider the recent messages too. Reply with ONLY the title, nothing else.\n\nFirst exchange:\nUser: {}\nAssistant: {}\n\nRecent messages:{}",
+            user_msg, assistant_msg, recent_text
+        )
+    } else {
+        format!(
+            "Summarize this conversation in 3-6 words as a short title. Reply with ONLY the title, nothing else.\n\nUser: {}\nAssistant: {}",
+            user_msg, assistant_msg
+        )
+    };
 
     let output = std::process::Command::new("claude")
         .args(["-p", "--model", "haiku", &prompt])
@@ -784,17 +1057,18 @@ fn get_session_transcript(claude_session_id: String, directory: String) -> Resul
                 if let Some(content) = parsed
                     .get("message")
                     .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_str())
                 {
-                    if content.starts_with("<command-message>") {
-                        continue;
+                    if let Some(user_text) = extract_user_text(content) {
+                        if user_text.starts_with("<command-message>") {
+                            continue;
+                        }
+                        let text: String = user_text.chars().take(2000).collect();
+                        messages.push(TranscriptMessage {
+                            role: "user".to_string(),
+                            text,
+                            timestamp,
+                        });
                     }
-                    let text: String = content.chars().take(2000).collect();
-                    messages.push(TranscriptMessage {
-                        role: "user".to_string(),
-                        text,
-                        timestamp,
-                    });
                 }
             } else if msg_type == "assistant" {
                 if let Some(content) = parsed.get("message").and_then(|m| m.get("content")) {
@@ -828,6 +1102,58 @@ fn get_session_transcript(claude_session_id: String, directory: String) -> Resul
     Ok(messages)
 }
 
+#[derive(Deserialize)]
+struct SearchableSession {
+    #[serde(rename = "claudeSessionId")]
+    claude_session_id: String,
+    directory: String,
+}
+
+#[tauri::command]
+fn search_session_content(
+    sessions: Vec<SearchableSession>,
+    query: String,
+) -> Result<Vec<String>, String> {
+    use grep_regex::RegexMatcherBuilder;
+    use grep_searcher::sinks::UTF8;
+    use grep_searcher::SearcherBuilder;
+
+    let pattern = regex::escape(&query);
+    let matcher = RegexMatcherBuilder::new()
+        .case_insensitive(true)
+        .build(&pattern)
+        .map_err(|e| format!("Invalid search pattern: {}", e))?;
+
+    let mut matched_ids = Vec::new();
+
+    for session in &sessions {
+        let jsonl_path = match jsonl_path_for(&session.claude_session_id, &session.directory) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if !jsonl_path.exists() {
+            continue;
+        }
+
+        let mut found = false;
+        let mut searcher = SearcherBuilder::new().build();
+        let _ = searcher.search_path(
+            &matcher,
+            &jsonl_path,
+            UTF8(|_line_num, _line| {
+                found = true;
+                Ok(false) // stop after first match
+            }),
+        );
+
+        if found {
+            matched_ids.push(session.claude_session_id.clone());
+        }
+    }
+
+    Ok(matched_ids)
+}
+
 #[tauri::command]
 fn watch_jsonl(
     claude_session_id: String,
@@ -859,6 +1185,7 @@ fn save_clipboard_image(base64_data: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let watcher = JsonlWatcher::new(app.handle().clone())
                 .expect("Failed to create file watcher");
@@ -883,8 +1210,11 @@ pub fn run() {
             get_conversation_title,
             get_session_usage,
             get_total_usage_today,
+            get_usage_dashboard,
+            get_message_count,
             generate_smart_title,
             get_session_transcript,
+            search_session_content,
             watch_jsonl,
             unwatch_jsonl,
         ])

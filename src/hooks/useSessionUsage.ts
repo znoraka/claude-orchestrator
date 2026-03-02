@@ -66,8 +66,19 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
       }
     });
 
+    // Poll busy sessions every 2s as a fallback in case file events are missed
+    const pollInterval = setInterval(() => {
+      for (const session of eligible) {
+        const usage = usageMapRef.current.get(session.id);
+        if (usage?.isBusy) {
+          fetchUsageForSession(session);
+        }
+      }
+    }, 2000);
+
     return () => {
       unlistenPromise.then((fn) => fn());
+      clearInterval(pollInterval);
     };
   }, [sessions]);
 

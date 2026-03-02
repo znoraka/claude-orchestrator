@@ -14,6 +14,7 @@ import { listen } from "@tauri-apps/api/event";
 import { v4 as uuidv4 } from "uuid";
 import { useConversationTitles } from "../hooks/useConversationTitles";
 import { useSessionUsage } from "../hooks/useSessionUsage";
+import { useBackgroundNotifications } from "../hooks/useBackgroundNotifications";
 import { useToast } from "../components/Toast";
 import type { Session, SessionUsage } from "../types";
 
@@ -99,6 +100,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         directory: string;
         claudeSessionId?: string;
         dangerouslySkipPermissions?: boolean;
+        activeTime?: number;
       }>
     >("load_sessions")
       .then((saved) => {
@@ -112,6 +114,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             directory: s.directory,
             claudeSessionId: s.claudeSessionId,
             dangerouslySkipPermissions: s.dangerouslySkipPermissions,
+            activeTime: s.activeTime || 0,
           }));
           dispatch({ type: "SET_ALL", sessions: restored });
         }
@@ -135,6 +138,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       directory: s.directory,
       claudeSessionId: s.claudeSessionId,
       dangerouslySkipPermissions: s.dangerouslySkipPermissions,
+      activeTime: s.activeTime || 0,
     }));
     invoke("save_sessions", { sessions: metas }).catch((err) => {
       console.error("Failed to save sessions:", err);
@@ -286,10 +290,46 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "UPDATE", id, patch: { lastActiveAt: Date.now() } });
   }, []);
 
+  // ── Duration tracking ──────────────────────────────────────────
+  const runningSinceRef = useRef<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    // Track when sessions start running
+    for (const s of sessions) {
+      if (s.status === "running" && !runningSinceRef.current.has(s.id)) {
+        runningSinceRef.current.set(s.id, Date.now());
+      } else if (s.status !== "running") {
+        runningSinceRef.current.delete(s.id);
+      }
+    }
+  }, [sessions]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const running = sessionsRef.current.filter((s) => s.status === "running");
+      if (running.length === 0) return;
+
+      for (const s of running) {
+        const since = runningSinceRef.current.get(s.id);
+        if (!since) continue;
+        const elapsed = now - since;
+        runningSinceRef.current.set(s.id, now);
+        dispatch({
+          type: "UPDATE",
+          id: s.id,
+          patch: { activeTime: (s.activeTime || 0) + elapsed },
+        });
+      }
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
   // ── Derived state / side-effect hooks ────────────────────────────
 
   useConversationTitles(sessions, renameSession);
   const sessionUsage = useSessionUsage(sessions);
+  useBackgroundNotifications(sessions, sessionUsage, activeSessionId);
 
   const sortedSessions = useMemo(
     () => [...sessions].sort((a, b) => b.lastActiveAt - a.lastActiveAt),

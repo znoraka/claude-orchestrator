@@ -12,10 +12,20 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-interface SessionTabProps {
+function formatDuration(ms: number): string {
+  const totalMinutes = Math.floor(ms / 60_000);
+  if (totalMinutes < 1) return "<1m";
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${minutes}m`;
+  return `${hours}h ${minutes}m`;
+}
+
+export interface SessionTabProps {
   session: Session;
   isActive: boolean;
   usage?: SessionUsage;
+  contentOnly?: boolean;
   onClick: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
@@ -25,6 +35,7 @@ export default memo(function SessionTab({
   session,
   isActive,
   usage,
+  contentOnly,
   onClick,
   onRename,
   onDelete,
@@ -104,9 +115,15 @@ export default memo(function SessionTab({
             {shortenPath(session.directory)}
           </span>
         )}
+        {contentOnly && (
+          <span className="text-[10px] text-[var(--accent)] truncate block mt-0.5">
+            content match
+          </span>
+        )}
         {usage && (usage.inputTokens > 0 || usage.outputTokens > 0) && (
           <span className="text-[10px] text-[var(--text-tertiary)] truncate block mt-0.5">
             {formatTokens(usage.inputTokens + usage.outputTokens)} tokens · ${usage.costUsd.toFixed(2)}
+            {session.activeTime ? ` · ${formatDuration(session.activeTime)}` : ""}
           </span>
         )}
       </div>

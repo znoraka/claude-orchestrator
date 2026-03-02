@@ -3,10 +3,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Session } from "../types";
 
+interface TitleState {
+  lastMessageCount: number;
+  lastTitleAt: number; // epoch ms of last title generation
+}
+
 /**
  * Watches Claude's conversation JSONL files to extract the first user message
  * and use it as the tab title (phase 1), then generates a smart AI title
  * via `claude -p --model haiku` (phase 2).
+ *
+ * Also re-triggers title generation when message count grows by 5+ since
+ * last generation (evolving titles), with a 2-minute cooldown.
  *
  * Uses file system events (notify crate) instead of polling timers.
  */
@@ -15,7 +23,7 @@ export function useConversationTitles(
   renameSession: (id: string, name: string) => void
 ) {
   const resolvedRef = useRef<Set<string>>(new Set());
-  const smartResolvedRef = useRef<Set<string>>(new Set());
+  const smartStateRef = useRef<Map<string, TitleState>>(new Map());
   const smartPendingRef = useRef<Set<string>>(new Set());
 
   // Register file watchers and listen for changes
@@ -24,8 +32,7 @@ export function useConversationTitles(
       (s) =>
         s.claudeSessionId &&
         s.directory &&
-        s.status === "running" &&
-        !smartResolvedRef.current.has(s.id)
+        s.status === "running"
     );
 
     if (pending.length === 0) return;
@@ -38,36 +45,69 @@ export function useConversationTitles(
       }).catch(() => {});
     }
 
-    // Build a reverse map: claudeSessionId -> session (match by session ID in filename)
+    // Build a reverse map: claudeSessionId -> session
     const pathToSession = new Map<string, Session>();
     for (const session of pending) {
       pathToSession.set(session.claudeSessionId!, session);
     }
 
+    const triggerSmartTitle = (session: Session, includeRecent: boolean) => {
+      if (smartPendingRef.current.has(session.id)) return;
+
+      smartPendingRef.current.add(session.id);
+      invoke<string | null>("generate_smart_title", {
+        claudeSessionId: session.claudeSessionId,
+        directory: session.directory,
+        includeRecent,
+      })
+        .then((title) => {
+          smartPendingRef.current.delete(session.id);
+          if (title) {
+            renameSession(session.id, title);
+
+            // Update state with current message count and timestamp
+            invoke<number>("get_message_count", {
+              claudeSessionId: session.claudeSessionId,
+              directory: session.directory,
+            }).then((count) => {
+              smartStateRef.current.set(session.id, {
+                lastMessageCount: count,
+                lastTitleAt: Date.now(),
+              });
+            }).catch(() => {});
+          }
+        })
+        .catch(() => {
+          smartPendingRef.current.delete(session.id);
+        });
+    };
+
     const tryResolveTitle = (session: Session) => {
       if (resolvedRef.current.has(session.id)) {
-        // Phase 2: smart title
-        if (
-          smartResolvedRef.current.has(session.id) ||
-          smartPendingRef.current.has(session.id)
-        )
+        // Already have initial title — check for evolving title
+        const state = smartStateRef.current.get(session.id);
+        if (!state) {
+          // First smart title generation
+          triggerSmartTitle(session, false);
           return;
+        }
 
-        smartPendingRef.current.add(session.id);
-        invoke<string | null>("generate_smart_title", {
+        // Check cooldown (2 minutes)
+        if (Date.now() - state.lastTitleAt < 120_000) return;
+        if (smartPendingRef.current.has(session.id)) return;
+
+        // Check if message count grew by 5+
+        invoke<number>("get_message_count", {
           claudeSessionId: session.claudeSessionId,
           directory: session.directory,
         })
-          .then((title) => {
-            smartPendingRef.current.delete(session.id);
-            if (title) {
-              smartResolvedRef.current.add(session.id);
-              renameSession(session.id, title);
+          .then((count) => {
+            const st = smartStateRef.current.get(session.id);
+            if (st && count - st.lastMessageCount >= 5) {
+              triggerSmartTitle(session, true);
             }
           })
-          .catch(() => {
-            smartPendingRef.current.delete(session.id);
-          });
+          .catch(() => {});
         return;
       }
 
@@ -98,7 +138,6 @@ export function useConversationTitles(
     // Listen for file change events
     const unlistenPromise = listen<string>("jsonl-changed", (event) => {
       const changedPath = event.payload;
-      // Match by session ID in the filename
       for (const [sessionId, session] of pathToSession) {
         if (changedPath.includes(sessionId)) {
           tryResolveTitle(session);
@@ -107,8 +146,7 @@ export function useConversationTitles(
       }
     });
 
-    // Also set a fallback interval for cases where the file doesn't exist yet
-    // (watcher can't watch a non-existent file's parent if the project dir doesn't exist)
+    // Fallback interval for cases where the file doesn't exist yet
     const fallbackInterval = setInterval(() => {
       for (const session of pending) {
         if (!resolvedRef.current.has(session.id)) {

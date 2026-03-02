@@ -12,7 +12,8 @@
     },
     {
       "identifier": "core:event:allow-listen",
-      "allow": [{ "event": "pty-*" }]
-    }
+      "allow": [{ "event": "pty-*" }, { "event": "notification:*" }]
+    },
+    "notification:default"
   ]
 }

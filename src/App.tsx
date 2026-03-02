@@ -6,6 +6,7 @@ import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
 import SessionTranscript from "./components/SessionTranscript";
 import ErrorBoundary from "./components/ErrorBoundary";
+import UsagePanel from "./components/UsagePanel";
 
 export default function App() {
   const {
@@ -44,6 +45,7 @@ export default function App() {
   };
 
   // Directory dialog state
+  const [showUsagePanel, setShowUsagePanel] = useState(false);
   const [showDirDialog, setShowDirDialog] = useState(false);
   const [dirInput, setDirInput] = useState(() =>
     localStorage.getItem("claude-orchestrator-last-dir") || "~"
@@ -155,6 +157,7 @@ export default function App() {
         onCreateSession={handleNewSession}
         onRenameSession={renameSession}
         onDeleteSession={deleteSession}
+        onShowUsage={() => setShowUsagePanel(true)}
       />
 
       {/* Main terminal area */}
@@ -207,6 +210,11 @@ export default function App() {
           ))
         )}
       </div>
+
+      {/* Usage panel modal */}
+      {showUsagePanel && (
+        <UsagePanel onClose={() => setShowUsagePanel(false)} />
+      )}
 
       {/* Directory picker dialog */}
       {showDirDialog && (

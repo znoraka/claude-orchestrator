@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback, type CSSProperties, type ReactElement } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { List } from "react-window";
 import type { Session, SessionUsage } from "../types";
 import SessionTab from "./SessionTab";
@@ -19,6 +20,7 @@ interface SidebarProps {
   onCreateSession: () => void;
   onRenameSession: (id: string, name: string) => void;
   onDeleteSession: (id: string) => void;
+  onShowUsage?: () => void;
 }
 
 interface SessionGroup {
@@ -28,7 +30,7 @@ interface SessionGroup {
 
 type FlatItem =
   | { type: "header"; label: string }
-  | { type: "session"; session: Session };
+  | { type: "session"; session: Session; contentOnly?: boolean };
 
 const HEADER_HEIGHT = 32;
 const SESSION_HEIGHT = 64;
@@ -103,13 +105,14 @@ function VirtualRow({
       </div>
     );
   }
-  const { session } = item;
+  const { session, contentOnly } = item;
   return (
     <div style={style}>
       <SessionTab
         session={session}
         isActive={session.id === activeSessionId}
         usage={sessionUsage.get(session.id)}
+        contentOnly={contentOnly}
         onClick={() => onSelectSession(session.id)}
         onRename={(name) => onRenameSession(session.id, name)}
         onDelete={() => onDeleteSession(session.id)}
@@ -128,6 +131,7 @@ export default function Sidebar({
   onCreateSession,
   onRenameSession,
   onDeleteSession,
+  onShowUsage,
 }: SidebarProps) {
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -167,6 +171,73 @@ export default function Sidebar({
     );
   }, [sessions, filter]);
 
+  // Async content search
+  const [contentMatchIds, setContentMatchIds] = useState<Set<string>>(new Set());
+  const [contentSearching, setContentSearching] = useState(false);
+  const contentSearchVersion = useRef(0);
+
+  useEffect(() => {
+    const q = filter.trim();
+    if (!q) {
+      setContentMatchIds(new Set());
+      setContentSearching(false);
+      return;
+    }
+
+    const version = ++contentSearchVersion.current;
+    setContentSearching(true);
+
+    const timer = setTimeout(async () => {
+      try {
+        const searchable = sessions
+          .filter((s) => s.claudeSessionId && s.directory)
+          .map((s) => ({
+            claudeSessionId: s.claudeSessionId!,
+            directory: s.directory,
+          }));
+
+        const matchedIds = await invoke<string[]>("search_session_content", {
+          sessions: searchable,
+          query: q,
+        });
+
+        if (contentSearchVersion.current === version) {
+          setContentMatchIds(new Set(matchedIds));
+          setContentSearching(false);
+        }
+      } catch (err) {
+        console.error("Content search failed:", err);
+        if (contentSearchVersion.current === version) {
+          setContentMatchIds(new Set());
+          setContentSearching(false);
+        }
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [filter, sessions]);
+
+  // Merge: title-matched sessions + content-only matches
+  const titleMatchedIds = useMemo(
+    () => new Set(filteredSessions.map((s) => s.id)),
+    [filteredSessions]
+  );
+
+  const contentOnlySessions = useMemo(() => {
+    if (!filter.trim()) return [];
+    return sessions.filter(
+      (s) =>
+        !titleMatchedIds.has(s.id) &&
+        s.claudeSessionId &&
+        contentMatchIds.has(s.claudeSessionId)
+    );
+  }, [sessions, titleMatchedIds, contentMatchIds, filter]);
+
+  const contentOnlyIds = useMemo(
+    () => new Set(contentOnlySessions.map((s) => s.id)),
+    [contentOnlySessions]
+  );
+
   const groupedSessions = useMemo(
     () => groupSessionsByTime(filteredSessions),
     [filteredSessions]
@@ -178,11 +249,17 @@ export default function Sidebar({
     for (const group of groupedSessions) {
       items.push({ type: "header", label: group.label });
       for (const session of group.sessions) {
-        items.push({ type: "session", session });
+        items.push({ type: "session", session, contentOnly: contentOnlyIds.has(session.id) });
+      }
+    }
+    if (contentOnlySessions.length > 0) {
+      items.push({ type: "header", label: "Content Matches" });
+      for (const session of contentOnlySessions) {
+        items.push({ type: "session", session, contentOnly: true });
       }
     }
     return items;
-  }, [groupedSessions]);
+  }, [groupedSessions, contentOnlySessions, contentOnlyIds]);
 
   const getItemSize = useCallback(
     (index: number) => {
@@ -248,6 +325,9 @@ export default function Sidebar({
             placeholder="Search sessions..."
             className="sidebar-search w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg pl-8 pr-3 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-colors"
           />
+          {contentSearching && (
+            <div className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
+          )}
         </div>
       </div>
 
@@ -262,9 +342,9 @@ export default function Sidebar({
             rowProps={rowProps}
             overscanCount={5}
           />
-        ) : filteredSessions.length === 0 && sessions.length > 0 ? (
+        ) : filteredSessions.length === 0 && contentOnlySessions.length === 0 && sessions.length > 0 ? (
           <div className="px-3 py-8 text-center text-xs text-[var(--text-secondary)]">
-            No matching sessions.
+            {contentSearching ? "Searching content..." : "No matching sessions."}
           </div>
         ) : sessions.length === 0 ? (
           <div className="px-3 py-12 text-center">
@@ -290,10 +370,13 @@ export default function Sidebar({
           active sessions
         </span>
         {(todayCost > 0 || todayTokens > 0) && (
-          <span className="text-[11px] text-[var(--text-secondary)] ml-auto">
+          <button
+            onClick={onShowUsage}
+            className="text-[11px] text-[var(--text-secondary)] ml-auto hover:text-[var(--accent)] transition-colors cursor-pointer"
+          >
             {todayTokens > 0 && <>{formatTokens(todayTokens)} tokens · </>}
             ${todayCost.toFixed(2)} today
-          </span>
+          </button>
         )}
       </div>
     </div>
