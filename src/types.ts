@@ -15,4 +15,5 @@ export interface SessionUsage {
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
   costUsd: number;
+  isBusy: boolean;
 }

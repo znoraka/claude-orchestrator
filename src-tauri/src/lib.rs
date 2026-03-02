@@ -357,6 +357,52 @@ struct SessionUsage {
     cache_read_input_tokens: u64,
     #[serde(rename = "costUsd")]
     cost_usd: f64,
+    #[serde(rename = "isBusy")]
+    is_busy: bool,
+}
+
+/// Check if the LLM is currently busy by finding the last "user" or "assistant"
+/// entry in the JSONL file. Other types (system, progress, queue-operation, etc.)
+/// are ignored. If the last relevant entry is "user", Claude is thinking.
+fn is_session_busy(jsonl_path: &std::path::Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = match std::fs::File::open(jsonl_path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let len = match file.metadata() {
+        Ok(m) => m.len(),
+        Err(_) => return false,
+    };
+    if len == 0 {
+        return false;
+    }
+
+    // Read last 64KB — more than enough for recent entries
+    let start = if len > 65536 { len - 65536 } else { 0 };
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return false;
+    }
+    let mut buf = String::new();
+    if file.read_to_string(&mut buf).is_err() {
+        return false;
+    }
+
+    // Walk lines in reverse, find the last "user" or "assistant" entry
+    for line in buf.lines().rev() {
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+            match parsed.get("type").and_then(|t| t.as_str()) {
+                Some("user") => return true,
+                Some("assistant") => return false,
+                _ => continue,
+            }
+        }
+    }
+    false
 }
 
 /// Parse usage from a JSONL file starting at `byte_offset`.
@@ -446,12 +492,15 @@ fn get_session_usage(
         }
     };
 
-    let (usage, new_offset) = parse_session_usage_incremental(
+    let (mut usage, new_offset) = parse_session_usage_incremental(
         &jsonl_path,
         byte_offset,
         &base_usage,
         &state.pricing,
     )?;
+
+    // Check if LLM is currently busy (last entry is not "assistant")
+    usage.is_busy = is_session_busy(&jsonl_path);
 
     // Update cache with new offset
     if new_offset != byte_offset {

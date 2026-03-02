@@ -67,8 +67,10 @@ export default memo(function SessionTab({
         }
       `}
     >
-      {/* Status dot */}
-      <span className={`w-2 h-2 rounded-full shrink-0 ${statusColor}`} />
+      {/* Status dot + thinking indicator */}
+      <span className="relative shrink-0 w-2 h-2">
+        <span className={`absolute inset-0 rounded-full ${statusColor} ${usage?.isBusy && session.status === "running" ? "animate-blink" : ""}`} />
+      </span>
 
       {/* Name + directory */}
       <div className="flex-1 min-w-0">

@@ -26,11 +26,28 @@ export default function App() {
   // Registry of writeText callbacks from Terminal components
   const writeTextCallbacks = useRef<Map<string, (text: string) => void>>(new Map());
 
+  // Recent directories helpers
+  const MAX_RECENT_DIRS = 8;
+  const loadRecentDirs = (): string[] => {
+    try {
+      return JSON.parse(localStorage.getItem("claude-orchestrator-recent-dirs") || "[]");
+    } catch { return []; }
+  };
+  const saveRecentDir = (dir: string) => {
+    const recent = loadRecentDirs().filter((d) => d !== dir);
+    recent.unshift(dir);
+    localStorage.setItem(
+      "claude-orchestrator-recent-dirs",
+      JSON.stringify(recent.slice(0, MAX_RECENT_DIRS))
+    );
+  };
+
   // Directory dialog state
   const [showDirDialog, setShowDirDialog] = useState(false);
   const [dirInput, setDirInput] = useState(() =>
     localStorage.getItem("claude-orchestrator-last-dir") || "~"
   );
+  const [recentDirs, setRecentDirs] = useState<string[]>(loadRecentDirs);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [skipPermissions, setSkipPermissions] = useState(true);
@@ -66,6 +83,7 @@ export default function App() {
       if (e.metaKey && e.key === "n") {
         e.preventDefault();
         setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
+        setRecentDirs(loadRecentDirs());
         setShowDirDialog(true);
       }
     };
@@ -75,6 +93,7 @@ export default function App() {
 
   const handleNewSession = () => {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
+    setRecentDirs(loadRecentDirs());
     setShowDirDialog(true);
   };
 
@@ -83,6 +102,7 @@ export default function App() {
     if (!dir || creating) return;
     setCreating(true);
     localStorage.setItem("claude-orchestrator-last-dir", dir);
+    saveRecentDir(dir);
     setShowDirDialog(false);
     try {
       await createSession(undefined, dir, skipPermissions);
@@ -208,6 +228,24 @@ export default function App() {
             <label className="block text-xs text-[var(--text-secondary)] pb-2">
               Working directory
             </label>
+            {recentDirs.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pb-2">
+                {recentDirs.map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => setDirInput(d)}
+                    className={`px-2 py-0.5 text-[11px] font-mono rounded border transition-colors truncate max-w-[10rem] ${
+                      dirInput === d
+                        ? "bg-[var(--accent)] text-white border-[var(--accent)]"
+                        : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border-[var(--border-color)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+                    }`}
+                    title={d}
+                  >
+                    {d.includes("/") ? d.split("/").filter(Boolean).slice(-2).join("/") : d}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="relative">
               <input
                 autoFocus

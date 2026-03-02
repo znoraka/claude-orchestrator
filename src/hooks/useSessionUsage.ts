@@ -21,13 +21,14 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
         directory: session.directory,
       })
         .then((usage) => {
-          if (usage.inputTokens === 0 && usage.outputTokens === 0) return;
+          if (usage.inputTokens === 0 && usage.outputTokens === 0 && !usage.isBusy) return;
           const prev = usageMapRef.current.get(session.id);
           if (
             prev &&
             prev.inputTokens === usage.inputTokens &&
             prev.outputTokens === usage.outputTokens &&
-            prev.costUsd === usage.costUsd
+            prev.costUsd === usage.costUsd &&
+            prev.isBusy === usage.isBusy
           )
             return;
           setUsageMap((m) => {
