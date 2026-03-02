@@ -515,13 +515,14 @@ fn get_session_usage(
 }
 
 /// Compute cost from a single JSONL file, only counting entries from today.
-fn cost_from_jsonl(path: &std::path::Path, today: &str, pricing: &PricingConfig) -> f64 {
+fn usage_from_jsonl(path: &std::path::Path, today: &str, pricing: &PricingConfig) -> (f64, u64) {
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return 0.0,
+        Err(_) => return (0.0, 0),
     };
     let reader = std::io::BufReader::new(file);
     let mut cost = 0.0;
+    let mut tokens = 0u64;
     use std::io::BufRead;
     for line in reader.lines() {
         let line = match line {
@@ -553,24 +554,33 @@ fn cost_from_jsonl(path: &std::path::Path, today: &str, pricing: &PricingConfig)
                 let out = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                 let cc = u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                 let cr = u.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                tokens += inp + out + cc + cr;
                 let (ip, op, cp, rp) = pricing.lookup(model);
                 cost += (inp as f64 * ip + out as f64 * op + cc as f64 * cp + cr as f64 * rp)
                     / 1_000_000.0;
             }
         }
     }
-    cost
+    (cost, tokens)
+}
+
+#[derive(Serialize, Clone)]
+struct TodayUsageSummary {
+    #[serde(rename = "costUsd")]
+    cost_usd: f64,
+    #[serde(rename = "totalTokens")]
+    total_tokens: u64,
 }
 
 #[tauri::command]
-fn get_total_cost_today(state: State<'_, AppState>) -> Result<f64, String> {
+fn get_total_usage_today(state: State<'_, AppState>) -> Result<TodayUsageSummary, String> {
     let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
     let projects_dir = std::path::PathBuf::from(&home)
         .join(".claude")
         .join("projects");
 
     if !projects_dir.exists() {
-        return Ok(0.0);
+        return Ok(TodayUsageSummary { cost_usd: 0.0, total_tokens: 0 });
     }
 
     // Today's date in UTC (matching JSONL timestamp format)
@@ -603,7 +613,8 @@ fn get_total_cost_today(state: State<'_, AppState>) -> Result<f64, String> {
         format!("{:04}-{:02}-{:02}", year, m, d)
     };
 
-    let mut total = 0.0;
+    let mut total_cost = 0.0;
+    let mut total_tokens = 0u64;
 
     // Walk all project subdirectories
     let project_entries = std::fs::read_dir(&projects_dir)
@@ -633,11 +644,13 @@ fn get_total_cost_today(state: State<'_, AppState>) -> Result<f64, String> {
                     }
                 }
             }
-            total += cost_from_jsonl(&path, &today, &state.pricing);
+            let (cost, tokens) = usage_from_jsonl(&path, &today, &state.pricing);
+            total_cost += cost;
+            total_tokens += tokens;
         }
     }
 
-    Ok(total)
+    Ok(TodayUsageSummary { cost_usd: total_cost, total_tokens })
 }
 
 #[tauri::command]
@@ -869,7 +882,7 @@ pub fn run() {
             list_directories,
             get_conversation_title,
             get_session_usage,
-            get_total_cost_today,
+            get_total_usage_today,
             generate_smart_title,
             get_session_transcript,
             watch_jsonl,

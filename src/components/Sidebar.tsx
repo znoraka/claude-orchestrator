@@ -3,11 +3,18 @@ import { List } from "react-window";
 import type { Session, SessionUsage } from "../types";
 import SessionTab from "./SessionTab";
 
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return String(n);
+}
+
 interface SidebarProps {
   sessions: Session[];
   activeSessionId: string | null;
   sessionUsage: Map<string, SessionUsage>;
   todayCost: number;
+  todayTokens: number;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
   onRenameSession: (id: string, name: string) => void;
@@ -116,6 +123,7 @@ export default function Sidebar({
   activeSessionId,
   sessionUsage,
   todayCost,
+  todayTokens,
   onSelectSession,
   onCreateSession,
   onRenameSession,
@@ -281,8 +289,9 @@ export default function Sidebar({
         <span className="text-[11px] text-[var(--text-secondary)]">
           active sessions
         </span>
-        {todayCost > 0 && (
+        {(todayCost > 0 || todayTokens > 0) && (
           <span className="text-[11px] text-[var(--text-secondary)] ml-auto">
+            {todayTokens > 0 && <>{formatTokens(todayTokens)} tokens · </>}
             ${todayCost.toFixed(2)} today
           </span>
         )}

@@ -14,6 +14,7 @@ export default function App() {
     activeSessionId,
     sessionUsage,
     todayCost,
+    todayTokens,
     selectSession,
     createSession,
     deleteSession,
@@ -149,6 +150,7 @@ export default function App() {
         activeSessionId={activeSessionId}
         sessionUsage={sessionUsage}
         todayCost={todayCost}
+        todayTokens={todayTokens}
         onSelectSession={selectSession}
         onCreateSession={handleNewSession}
         onRenameSession={renameSession}

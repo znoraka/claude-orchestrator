@@ -57,6 +57,7 @@ interface SessionContextValue {
   activeSessionId: string | null;
   sessionUsage: Map<string, SessionUsage>;
   todayCost: number;
+  todayTokens: number;
 
   selectSession: (id: string) => void;
   createSession: (
@@ -295,21 +296,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [sessions]
   );
 
-  // Today's cost — refreshed on JSONL file changes + a slow fallback interval
+  // Today's usage — refreshed on JSONL file changes + a slow fallback interval
   const [todayCost, setTodayCost] = useState(0);
+  const [todayTokens, setTodayTokens] = useState(0);
   useEffect(() => {
-    const fetchCost = () => {
-      invoke<number>("get_total_cost_today")
-        .then(setTodayCost)
+    const fetchUsage = () => {
+      invoke<{ costUsd: number; totalTokens: number }>("get_total_usage_today")
+        .then((u) => { setTodayCost(u.costUsd); setTodayTokens(u.totalTokens); })
         .catch(() => {});
     };
-    fetchCost();
+    fetchUsage();
     // Refresh on any JSONL change event
     const unlistenPromise = listen<string>("jsonl-changed", () => {
-      fetchCost();
+      fetchUsage();
     });
     // Slow fallback for sessions managed outside this app
-    const interval = setInterval(fetchCost, 120_000);
+    const interval = setInterval(fetchUsage, 120_000);
     return () => {
       unlistenPromise.then((fn) => fn());
       clearInterval(interval);
@@ -325,6 +327,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       activeSessionId,
       sessionUsage,
       todayCost,
+      todayTokens,
       selectSession,
       createSession,
       deleteSession,
@@ -339,6 +342,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       activeSessionId,
       sessionUsage,
       todayCost,
+      todayTokens,
       selectSession,
       createSession,
       deleteSession,
