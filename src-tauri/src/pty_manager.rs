@@ -44,6 +44,7 @@ impl PtyManager {
         claude_session_id: Option<String>,
         resume: bool,
         dangerously_skip_permissions: bool,
+        mcp_script_path: Option<String>,
     ) -> Result<(), String> {
         if directory.is_empty() {
             return Err("directory is required".to_string());
@@ -74,6 +75,51 @@ impl PtyManager {
                 claude_args.push(sid.clone());
             }
         }
+
+        // Inject MCP server config if script path is available
+        if let Some(ref mcp_path) = mcp_script_path {
+            let mcp_config_dir = format!("/tmp/orchestrator-mcp/{}", session_id);
+            std::fs::create_dir_all(&mcp_config_dir)
+                .map_err(|e| format!("Failed to create MCP config dir: {}", e))?;
+
+            let mcp_config = serde_json::json!({
+                "mcpServers": {
+                    "orchestrator": {
+                        "command": "node",
+                        "args": [mcp_path],
+                        "env": {
+                            "ORCHESTRATOR_SESSION_ID": session_id,
+                            "ORCHESTRATOR_SIGNAL_DIR": "/tmp/orchestrator-signals"
+                        }
+                    }
+                }
+            });
+
+            let config_path = format!("{}/mcp.json", mcp_config_dir);
+            std::fs::write(&config_path, serde_json::to_string_pretty(&mcp_config).unwrap())
+                .map_err(|e| format!("Failed to write MCP config: {}", e))?;
+
+            claude_args.push("--mcp-config".to_string());
+            claude_args.push(config_path);
+
+            // For new sessions (not resume), add system prompt instruction
+            if !resume {
+                claude_args.push("--append-system-prompt".to_string());
+                claude_args.push(
+                    "You have access to the `switch_workspace` MCP tool from the orchestrator server. \
+                     When you create a git worktree or need to work in a different directory, \
+                     call switch_workspace with the absolute path to that directory. \
+                     This will automatically switch the current session's workspace in the orchestrator app to that directory.\n\n\
+                     When creating a git worktree:\n\
+                     1. Do NOT use the built-in EnterWorktree tool — it puts worktrees in .claude/worktrees/ which is not desired.\n\
+                     2. Create worktrees manually: git worktree add .worktrees/<name> -b <branch-name>\n\
+                     3. Worktrees should live in .worktrees/ relative to the repo root.\n\
+                     4. Always call switch_workspace with the absolute path to the new worktree directory after creating it."
+                        .to_string(),
+                );
+            }
+        }
+
         // Expand ~ in directory
         let expanded_dir = if directory.starts_with('~') {
             if let Ok(home) = std::env::var("HOME") {
@@ -289,12 +335,21 @@ impl PtyManager {
             directory.clone()
         };
 
+        // Spawn through shell with explicit cd to guarantee correct working directory
+        // (portable-pty's cmd.cwd() is unreliable on macOS)
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
         let mut cmd = CommandBuilder::new(&shell);
         cmd.env("TERM", "xterm-256color");
-        cmd.arg("-l");
-        cmd.cwd(&expanded_dir);
-        eprintln!("[pty_manager] Spawning shell: {} -l  (cwd={})", shell, expanded_dir);
+
+        fn shell_escape_dir(s: &str) -> String {
+            format!("'{}'", s.replace('\'', "'\\''"))
+        }
+
+        let escaped_dir = shell_escape_dir(&expanded_dir);
+        let shell_cmd = format!("cd {} && exec {} -l", escaped_dir, shell_escape_dir(&shell));
+        cmd.arg("-lc");
+        cmd.arg(&shell_cmd);
+        eprintln!("[pty_manager] Spawning shell: {} -lc \"{}\"", shell, shell_cmd);
 
         pair.slave
             .spawn_command(cmd)
@@ -408,6 +463,10 @@ impl PtyManager {
         if let Ok(mut sb) = self.scrollback.lock() {
             sb.remove(session_id);
         }
+
+        // Clean up MCP config directory
+        let mcp_config_dir = format!("/tmp/orchestrator-mcp/{}", session_id);
+        let _ = std::fs::remove_dir_all(&mcp_config_dir);
 
         Ok(())
     }

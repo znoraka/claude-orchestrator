@@ -172,6 +172,11 @@ export default function App() {
     if (panel === "shell") ensureShellPty(panelDirectory);
   };
 
+  // Auto-create shell PTY when panelDirectory changes while shell is active
+  useEffect(() => {
+    if (activePanel === "shell") ensureShellPty(panelDirectory);
+  }, [panelDirectory]);
+
   // Cmd+N to open new session dialog, Cmd+G/P/T to toggle panels
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
