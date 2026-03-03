@@ -205,7 +205,9 @@ fn destroy_pty_session(session_id: String, state: State<'_, AppState>) -> Result
 #[tauri::command]
 fn get_pty_scrollback(session_id: String, state: State<'_, AppState>) -> Result<String, String> {
     let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
-    manager.get_scrollback(&session_id)
+    let data = manager.get_scrollback(&session_id)?;
+    eprintln!("[get_pty_scrollback] session_id={}, scrollback_len={}", session_id, data.len());
+    Ok(data)
 }
 
 #[tauri::command]
@@ -1260,9 +1262,15 @@ fn gh_command() -> std::process::Command {
     cmd
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct GhPrAuthor {
     login: String,
+}
+
+#[derive(Deserialize)]
+struct GhPrReview {
+    author: GhPrAuthor,
+    state: String,
 }
 
 #[derive(Deserialize)]
@@ -1278,6 +1286,8 @@ struct GhPr {
     #[serde(rename = "headRefName")]
     head_ref_name: String,
     author: GhPrAuthor,
+    #[serde(default)]
+    reviews: Vec<GhPrReview>,
 }
 
 #[derive(Serialize, Clone)]
@@ -1295,6 +1305,10 @@ struct PullRequest {
     author: String,
     #[serde(rename = "authorAvatar")]
     author_avatar: String,
+    #[serde(rename = "hasMyApproval")]
+    has_my_approval: bool,
+    #[serde(rename = "hasMyComment")]
+    has_my_comment: bool,
 }
 
 #[derive(Serialize)]
@@ -1308,8 +1322,15 @@ struct PullRequestsResult {
     error: Option<String>,
 }
 
-impl From<GhPr> for PullRequest {
-    fn from(pr: GhPr) -> Self {
+impl PullRequest {
+    fn from_gh(pr: GhPr, current_user: &str) -> Self {
+        let has_my_approval = pr.reviews.iter().any(|r| {
+            r.author.login.eq_ignore_ascii_case(current_user) && r.state == "APPROVED"
+        });
+        let has_my_comment = pr.reviews.iter().any(|r| {
+            r.author.login.eq_ignore_ascii_case(current_user)
+                && (r.state == "COMMENTED" || r.state == "CHANGES_REQUESTED")
+        });
         Self {
             number: pr.number,
             title: pr.title,
@@ -1320,6 +1341,8 @@ impl From<GhPr> for PullRequest {
             head_ref_name: pr.head_ref_name,
             author_avatar: format!("https://github.com/{}.png?size=40", pr.author.login),
             author: pr.author.login,
+            has_my_approval,
+            has_my_comment,
         }
     }
 }
@@ -1376,10 +1399,19 @@ fn get_pull_requests_sync(directory: &str) -> PullRequestsResult {
         _ => {}
     }
 
-    let json_fields = "number,title,url,state,isDraft,updatedAt,headRefName,author";
+    // Get current GitHub user login
+    let current_user = gh_command()
+        .args(["api", "user", "--jq", ".login"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    let json_fields = "number,title,url,state,isDraft,updatedAt,headRefName,author,reviews";
 
     let review_prs = gh_in_dir(directory)
-        .args(["pr", "list", "--search", "review-requested:@me", "--state=open",
+        .args(["pr", "list", "--search", "involves:@me -author:@me", "--state=open",
                &format!("--json={}", json_fields), "--limit=30"])
         .output()
         .ok()
@@ -1392,7 +1424,7 @@ fn get_pull_requests_sync(directory: &str) -> PullRequestsResult {
         })
         .unwrap_or_default()
         .into_iter()
-        .map(PullRequest::from)
+        .map(|pr| PullRequest::from_gh(pr, &current_user))
         .collect();
 
     let my_prs = gh_in_dir(directory)
@@ -1409,7 +1441,7 @@ fn get_pull_requests_sync(directory: &str) -> PullRequestsResult {
         })
         .unwrap_or_default()
         .into_iter()
-        .map(PullRequest::from)
+        .map(|pr| PullRequest::from_gh(pr, &current_user))
         .collect();
 
     PullRequestsResult {
@@ -1624,6 +1656,373 @@ fn get_git_diff(directory: String, file_path: String, staged: bool) -> Result<St
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+// --- Phase 2: Branch Comparison ---
+
+#[derive(Serialize, Clone)]
+struct BranchDiffFile {
+    path: String,
+    status: String,
+}
+
+#[derive(Serialize, Clone)]
+struct BranchDiffResult {
+    files: Vec<BranchDiffFile>,
+}
+
+#[tauri::command]
+fn list_branches(directory: String) -> Result<Vec<String>, String> {
+    let output = git_command(&directory)
+        .args(["branch", "-a", "--format=%(refname:short)"])
+        .output()
+        .map_err(|e| format!("Failed to run git branch: {}", e))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+}
+
+#[tauri::command]
+fn get_branch_diff(directory: String, base: String, compare: String) -> Result<BranchDiffResult, String> {
+    let output = git_command(&directory)
+        .args(["diff", "--name-status", &format!("{}...{}", base, compare)])
+        .output()
+        .map_err(|e| format!("Failed to run git diff: {}", e))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let files = stdout
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(2, '\t').collect();
+            if parts.len() == 2 {
+                Some(BranchDiffFile {
+                    status: parts[0].to_string(),
+                    path: parts[1].to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    Ok(BranchDiffResult { files })
+}
+
+#[tauri::command]
+fn get_branch_file_diff(directory: String, base: String, compare: String, file_path: String) -> Result<String, String> {
+    let output = git_command(&directory)
+        .args(["diff", &format!("{}...{}", base, compare), "--", &file_path])
+        .output()
+        .map_err(|e| format!("Failed to run git diff: {}", e))?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+// --- Phase 3: PR Review ---
+
+#[derive(Serialize, Clone)]
+struct PrDiffResult {
+    files: Vec<String>,
+    #[serde(rename = "fullDiff")]
+    full_diff: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct GhPrComment {
+    id: u64,
+    path: Option<String>,
+    line: Option<u32>,
+    body: String,
+    body_html: Option<String>,
+    user: GhPrAuthor,
+    created_at: String,
+}
+
+#[derive(Serialize, Clone)]
+struct PrComment {
+    id: u64,
+    path: String,
+    line: u32,
+    body: String,
+    #[serde(rename = "bodyHtml")]
+    body_html: String,
+    user: String,
+    #[serde(rename = "createdAt")]
+    created_at: String,
+}
+
+#[tauri::command]
+async fn get_pr_diff(directory: String, pr_number: u32) -> Result<PrDiffResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Get file list
+        let names_output = gh_in_dir(&directory)
+            .args(["pr", "diff", &pr_number.to_string(), "--name-only"])
+            .output()
+            .map_err(|e| format!("Failed to run gh pr diff: {}", e))?;
+        if !names_output.status.success() {
+            return Err(String::from_utf8_lossy(&names_output.stderr).to_string());
+        }
+        let files: Vec<String> = String::from_utf8_lossy(&names_output.stdout)
+            .lines()
+            .map(|l| l.to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        // Get full diff
+        let diff_output = gh_in_dir(&directory)
+            .args(["pr", "diff", &pr_number.to_string()])
+            .output()
+            .map_err(|e| format!("Failed to run gh pr diff: {}", e))?;
+        let full_diff = String::from_utf8_lossy(&diff_output.stdout).to_string();
+
+        Ok(PrDiffResult { files, full_diff })
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn extract_file_diff(full_diff: &str, file_path: &str) -> String {
+    let marker = format!("diff --git a/{} b/{}", file_path, file_path);
+    let mut result = String::new();
+    let mut in_section = false;
+    for line in full_diff.lines() {
+        if line.starts_with("diff --git ") {
+            if in_section {
+                break;
+            }
+            if line == marker {
+                in_section = true;
+            }
+        }
+        if in_section {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    result
+}
+
+#[tauri::command]
+async fn get_pr_file_diff(directory: String, pr_number: u32, file_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let diff_output = gh_in_dir(&directory)
+            .args(["pr", "diff", &pr_number.to_string()])
+            .output()
+            .map_err(|e| format!("Failed to run gh pr diff: {}", e))?;
+        let full_diff = String::from_utf8_lossy(&diff_output.stdout);
+        Ok(extract_file_diff(&full_diff, &file_path))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn post_pr_comment(
+    directory: String,
+    pr_number: u32,
+    body: String,
+    path: String,
+    line: u32,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Get owner/repo from gh
+        let repo_output = gh_in_dir(&directory)
+            .args(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+            .output()
+            .map_err(|e| format!("Failed to get repo info: {}", e))?;
+        let repo = String::from_utf8_lossy(&repo_output.stdout).trim().to_string();
+        if repo.is_empty() {
+            return Err("Could not determine repository".to_string());
+        }
+
+        // Get the latest commit SHA on the PR for the review comment
+        let pr_output = gh_in_dir(&directory)
+            .args(["pr", "view", &pr_number.to_string(), "--json", "headRefOid", "-q", ".headRefOid"])
+            .output()
+            .map_err(|e| format!("Failed to get PR info: {}", e))?;
+        let commit_id = String::from_utf8_lossy(&pr_output.stdout).trim().to_string();
+
+        let output = gh_in_dir(&directory)
+            .args([
+                "api",
+                &format!("repos/{}/pulls/{}/comments", repo, pr_number),
+                "--method", "POST",
+                "-f", &format!("body={}", body),
+                "-f", &format!("path={}", path),
+                "-F", &format!("line={}", line),
+                "-f", &format!("commit_id={}", commit_id),
+            ])
+            .output()
+            .map_err(|e| format!("Failed to post comment: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn get_pr_comments(directory: String, pr_number: u32) -> Result<Vec<PrComment>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo_output = gh_in_dir(&directory)
+            .args(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+            .output()
+            .map_err(|e| format!("Failed to get repo info: {}", e))?;
+        let repo = String::from_utf8_lossy(&repo_output.stdout).trim().to_string();
+        if repo.is_empty() {
+            return Err("Could not determine repository".to_string());
+        }
+
+        let output = gh_in_dir(&directory)
+            .args([
+                "api",
+                "-H", "Accept: application/vnd.github.full+json",
+                &format!("repos/{}/pulls/{}/comments", repo, pr_number),
+            ])
+            .output()
+            .map_err(|e| format!("Failed to get comments: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+
+        let comments: Vec<GhPrComment> = serde_json::from_slice(&output.stdout)
+            .map_err(|e| format!("Failed to parse comments: {}", e))?;
+
+        Ok(comments
+            .into_iter()
+            .map(|c| PrComment {
+                id: c.id,
+                path: c.path.unwrap_or_default(),
+                line: c.line.unwrap_or(0),
+                body_html: c.body_html.unwrap_or_else(|| c.body.clone()),
+                body: c.body,
+                user: c.user.login,
+                created_at: c.created_at,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+// --- PR file viewed state (GitHub GraphQL) ---
+
+#[tauri::command]
+async fn get_pr_viewed_files(directory: String, pr_number: u32) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo_output = gh_in_dir(&directory)
+            .args(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+            .output()
+            .map_err(|e| format!("Failed to get repo info: {}", e))?;
+        let repo = String::from_utf8_lossy(&repo_output.stdout).trim().to_string();
+        if repo.is_empty() {
+            return Err("Could not determine repository".to_string());
+        }
+        let parts: Vec<&str> = repo.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            return Err("Invalid repository format".to_string());
+        }
+        let (owner, name) = (parts[0], parts[1]);
+
+        let query = format!(
+            r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ files(first: 100) {{ nodes {{ path viewerViewedState }} }} }} }} }}"#,
+            owner, name, pr_number
+        );
+
+        let output = gh_in_dir(&directory)
+            .args(["api", "graphql", "-f", &format!("query={}", query)])
+            .output()
+            .map_err(|e| format!("Failed to query GraphQL: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+        let mut viewed = Vec::new();
+        if let Some(nodes) = json
+            .pointer("/data/repository/pullRequest/files/nodes")
+            .and_then(|n| n.as_array())
+        {
+            for node in nodes {
+                if node.get("viewerViewedState").and_then(|v| v.as_str()) == Some("VIEWED") {
+                    if let Some(path) = node.get("path").and_then(|p| p.as_str()) {
+                        viewed.push(path.to_string());
+                    }
+                }
+            }
+        }
+        Ok(viewed)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn set_pr_file_viewed(directory: String, pr_number: u32, path: String, viewed: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo_output = gh_in_dir(&directory)
+            .args(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+            .output()
+            .map_err(|e| format!("Failed to get repo info: {}", e))?;
+        let repo = String::from_utf8_lossy(&repo_output.stdout).trim().to_string();
+        if repo.is_empty() {
+            return Err("Could not determine repository".to_string());
+        }
+        let parts: Vec<&str> = repo.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            return Err("Invalid repository format".to_string());
+        }
+        let (owner, name) = (parts[0], parts[1]);
+
+        // First get the PR node ID
+        let id_query = format!(
+            r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ id }} }} }}"#,
+            owner, name, pr_number
+        );
+        let id_output = gh_in_dir(&directory)
+            .args(["api", "graphql", "-f", &format!("query={}", id_query)])
+            .output()
+            .map_err(|e| format!("Failed to query GraphQL: {}", e))?;
+        if !id_output.status.success() {
+            return Err(String::from_utf8_lossy(&id_output.stderr).to_string());
+        }
+        let id_json: serde_json::Value = serde_json::from_slice(&id_output.stdout)
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+        let pr_id = id_json
+            .pointer("/data/repository/pullRequest/id")
+            .and_then(|v| v.as_str())
+            .ok_or("Could not get PR node ID")?
+            .to_string();
+
+        let mutation = if viewed {
+            format!(
+                r#"mutation {{ markFileAsViewed(input: {{ pullRequestId: "{}", path: "{}" }}) {{ clientMutationId }} }}"#,
+                pr_id, path
+            )
+        } else {
+            format!(
+                r#"mutation {{ unmarkFileAsViewed(input: {{ pullRequestId: "{}", path: "{}" }}) {{ clientMutationId }} }}"#,
+                pr_id, path
+            )
+        };
+
+        let output = gh_in_dir(&directory)
+            .args(["api", "graphql", "-f", &format!("query={}", mutation)])
+            .output()
+            .map_err(|e| format!("Failed to run mutation: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 #[tauri::command]
 fn read_file_content(directory: String, file_path: String) -> Result<String, String> {
     let expanded = if directory.starts_with('~') {
@@ -1775,6 +2174,15 @@ pub fn run() {
             get_pull_requests,
             checkout_pr,
             checkout_pr_worktree,
+            list_branches,
+            get_branch_diff,
+            get_branch_file_diff,
+            get_pr_diff,
+            get_pr_file_diff,
+            post_pr_comment,
+            get_pr_comments,
+            get_pr_viewed_files,
+            set_pr_file_viewed,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -89,18 +89,22 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
       onTitleChangeRef.current?.(title);
     });
 
-    // Replay any accumulated scrollback (from before this terminal mounted)
-    invoke<string>("get_pty_scrollback", { sessionId })
-      .then((data) => {
-        if (data) term.write(data);
-      })
-      .catch((err) => {
-        console.error("Failed to get scrollback:", err);
-      });
-
-    // Listen for PTY output
+    // Listen for PTY output — set up listener FIRST, then replay scrollback
+    // after the listener is active. This avoids a race where output emitted
+    // between scrollback fetch and listener attachment is lost.
     const unlistenOutput = listen<string>(`pty-output-${sessionId}`, (event) => {
       term.write(event.payload);
+    });
+
+    // Replay scrollback only after listener is active so no output is missed
+    unlistenOutput.then(() => {
+      invoke<string>("get_pty_scrollback", { sessionId })
+        .then((data) => {
+          if (data) term.write(data);
+        })
+        .catch((err) => {
+          console.error("Failed to get scrollback:", err);
+        });
     });
 
     // Listen for PTY exit
@@ -119,8 +123,8 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
 
     return () => {
       resizeObserver.disconnect();
-      unlistenOutput.then((fn) => fn());
-      unlistenExit.then((fn) => fn());
+      unlistenOutput.then((fn) => fn()).catch(() => {});
+      unlistenExit.then((fn) => fn()).catch(() => {});
       term.dispose();
     };
   }, [sessionId]);

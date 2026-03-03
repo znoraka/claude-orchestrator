@@ -289,19 +289,12 @@ impl PtyManager {
             directory.clone()
         };
 
-        fn shell_escape(s: &str) -> String {
-            format!("'{}'", s.replace('\'', "'\\''"))
-        }
-
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
         let mut cmd = CommandBuilder::new(&shell);
         cmd.env("TERM", "xterm-256color");
-
-        let escaped_dir = shell_escape(&expanded_dir);
-        let shell_cmd = format!("cd {} && exec {} -l", escaped_dir, shell_escape(&shell));
-        eprintln!("[pty_manager] Spawning shell: {} -lc \"{}\"", shell, shell_cmd);
-        cmd.arg("-lc");
-        cmd.arg(&shell_cmd);
+        cmd.arg("-l");
+        cmd.cwd(&expanded_dir);
+        eprintln!("[pty_manager] Spawning shell: {} -l  (cwd={})", shell, expanded_dir);
 
         pair.slave
             .spawn_command(cmd)
@@ -328,11 +321,13 @@ impl PtyManager {
         }
 
         thread::spawn(move || {
+            let mut first_output = true;
             let mut buf = [0u8; 4096];
             let mut pending = Vec::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => {
+                        eprintln!("[pty_manager] shell reader EOF for {}", sid);
                         if !pending.is_empty() {
                             let data = String::from_utf8_lossy(&pending).to_string();
                             let _ = app_handle.emit(&format!("pty-output-{}", sid), data);
@@ -341,6 +336,10 @@ impl PtyManager {
                         break;
                     }
                     Ok(n) => {
+                        if first_output {
+                            eprintln!("[pty_manager] shell first output for {} ({} bytes)", sid, n);
+                            first_output = false;
+                        }
                         pending.extend_from_slice(&buf[..n]);
 
                         let valid_up_to = match std::str::from_utf8(&pending) {
@@ -352,10 +351,10 @@ impl PtyManager {
                             let data = unsafe {
                                 std::str::from_utf8_unchecked(&pending[..valid_up_to])
                             };
-                            let _ = app_handle.emit(
-                                &format!("pty-output-{}", sid),
-                                data.to_string(),
-                            );
+                            let event_name = format!("pty-output-{}", sid);
+                            if let Err(e) = app_handle.emit(&event_name, data.to_string()) {
+                                eprintln!("[pty_manager] emit error for {}: {}", event_name, e);
+                            }
 
                             if let Ok(mut sb) = scrollback_buf.lock() {
                                 if let Some(buf) = sb.get_mut(&sid) {

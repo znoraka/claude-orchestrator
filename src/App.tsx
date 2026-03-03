@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, useEffect } from "react";
+import { useCallback, useRef, useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionContext } from "./contexts/SessionContext";
 import { useClipboard } from "./hooks/useClipboard";
@@ -10,6 +10,7 @@ import PRPanel from "./components/PRPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
 import UsagePanel from "./components/UsagePanel";
 import FileEditor from "./components/FileEditor";
+import { directoryColor, shortenPath } from "./components/SessionTab";
 
 export default function App() {
   const {
@@ -60,12 +61,74 @@ export default function App() {
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [skipPermissions, setSkipPermissions] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [activeTab, setActiveTab] = useState<Map<string, "main" | "git" | "prs" | "shell">>(new Map());
-  // Track which sessions have a shell PTY created
-  const [shellSessions, setShellSessions] = useState<Set<string>>(new Set());
-  // LRU cache of mounted tab panels (most recent at end). Max 16 slots (8 sessions × 2 tabs).
-  const MAX_MOUNTED_TABS = 16;
-  const [mountedTabsLru, setMountedTabsLru] = useState<Array<{ sessionId: string; tab: string }>>([]);
+
+  // ── Panel state (replaces per-workspace tab state) ──────────────
+  const [activePanel, setActivePanel] = useState<"git" | "prs" | "shell" | null>(null);
+
+  // panelDirectory: which directory Git/PRs/Shell target
+  // null = auto-follow active session's directory
+  const [panelDirOverride, setPanelDirOverride] = useState<string | null>(null);
+
+  const activeSession = useMemo(
+    () => sessions.find((s) => s.id === activeSessionId) ?? null,
+    [sessions, activeSessionId]
+  );
+
+  const panelDirectory = panelDirOverride ?? activeSession?.directory ?? "~";
+
+  // Reset override when selecting a new session (auto-follow)
+  const prevActiveSessionId = useRef(activeSessionId);
+  useEffect(() => {
+    if (activeSessionId !== prevActiveSessionId.current) {
+      prevActiveSessionId.current = activeSessionId;
+      setPanelDirOverride(null);
+    }
+  }, [activeSessionId]);
+
+  // Worktrees for the directory dropdown
+  const [dropdownWorktrees, setDropdownWorktrees] = useState<string[]>([]);
+  useEffect(() => {
+    invoke<string[]>("list_worktrees", { directory: panelDirectory })
+      .then(setDropdownWorktrees)
+      .catch(() => setDropdownWorktrees([]));
+  }, [panelDirectory]);
+
+  // Unique directories from sessions (for dropdown)
+  const sessionDirectories = useMemo(() => {
+    const dirs = new Set(sessions.map((s) => s.directory).filter(Boolean));
+    return [...dirs].sort();
+  }, [sessions]);
+
+  // All dropdown choices: session dirs + worktrees (deduplicated)
+  const dropdownChoices = useMemo(() => {
+    const all = new Set([...sessionDirectories, ...dropdownWorktrees]);
+    return [...all].sort();
+  }, [sessionDirectories, dropdownWorktrees]);
+
+  // Sanitize directory path into a Tauri-event-safe session ID.
+  // Tauri v2 event names only allow alphanumeric, '-', '/', ':', '_'.
+  const shellSessionId = (dir: string) =>
+    `shell-${dir.replace(/[^a-zA-Z0-9\-_/:]/g, "_")}`;
+
+  // Track which directories have a shell PTY created
+  const [shellDirs, setShellDirs] = useState<Set<string>>(new Set());
+
+  // Dropdown open state
+  const [showDirDropdown, setShowDirDropdown] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!showDirDropdown) return;
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setShowDirDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showDirDropdown]);
+
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
   const registerWriteText = useCallback(
@@ -91,51 +154,23 @@ export default function App() {
 
   useClipboard(handleImagePath);
 
-  const getTab = (sessionId: string): "main" | "git" | "prs" | "shell" =>
-    activeTab.get(sessionId) || "main";
-  const isTabMounted = (sessionId: string, tab: string) =>
-    mountedTabsLru.some((e) => e.sessionId === sessionId && e.tab === tab);
-  const touchMountedTab = (sessionId: string, tab: string) => {
-    setMountedTabsLru((prev) => {
-      // Move to end (most recent), evict oldest if over limit
-      const filtered = prev.filter((e) => !(e.sessionId === sessionId && e.tab === tab));
-      const next = [...filtered, { sessionId, tab }];
-      return next.length > MAX_MOUNTED_TABS ? next.slice(next.length - MAX_MOUNTED_TABS) : next;
-    });
-  };
-  const switchTab = (sessionId: string, tab: "main" | "git" | "prs" | "shell") => {
-    setActiveTab((prev) => {
-      const next = new Map(prev);
-      next.set(sessionId, tab);
-      return next;
-    });
-    if (tab !== "main") touchMountedTab(sessionId, tab);
-  };
-  const ensureShellPty = async (sessionId: string, directory: string) => {
-    if (shellSessions.has(sessionId)) return;
-    const shellSessionId = `shell-${sessionId}`;
+  const ensureShellPty = async (dir: string) => {
+    if (shellDirs.has(dir)) return;
+    const sid = shellSessionId(dir);
     try {
-      await invoke("create_shell_pty_session", { sessionId: shellSessionId, directory });
-      setShellSessions((prev) => new Set(prev).add(sessionId));
+      await invoke("create_shell_pty_session", { sessionId: sid, directory: dir });
+      setShellDirs((prev) => new Set(prev).add(dir));
     } catch (err) {
       console.error("Failed to create shell PTY:", err);
     }
   };
-  const toggleTab = (sessionId: string) => {
-    const next = getTab(sessionId) === "main" ? "git" : "main";
-    switchTab(sessionId, next);
-  };
-  const togglePRsTab = (sessionId: string) => {
-    const next = getTab(sessionId) === "prs" ? "main" : "prs";
-    switchTab(sessionId, next);
-  };
-  const toggleShellTab = (sessionId: string, directory: string) => {
-    const next = getTab(sessionId) === "shell" ? "main" : "shell";
-    if (next === "shell") ensureShellPty(sessionId, directory);
-    switchTab(sessionId, next);
+
+  const togglePanel = (panel: "git" | "prs" | "shell") => {
+    setActivePanel((prev) => (prev === panel ? null : panel));
+    if (panel === "shell") ensureShellPty(panelDirectory);
   };
 
-  // Cmd+N to open new session dialog, Cmd+G to toggle git tab
+  // Cmd+N to open new session dialog, Cmd+G/P/T to toggle panels
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey && e.key === "n") {
@@ -145,36 +180,30 @@ export default function App() {
         setShowDirDialog(true);
       }
       if (e.metaKey && e.key === "e") {
-        // When git tab is active, GitPanel handles Cmd+E with the selected file
-        if (activeSessionId && getTab(activeSessionId) === "git") return;
+        if (activePanel === "git") return;
         e.preventDefault();
         setEditorFilePath(undefined);
         setShowFileEditor((v) => !v);
       }
-      if (e.metaKey && e.key === "g" && activeSessionId) {
+      if (e.metaKey && e.key === "g") {
         e.preventDefault();
-        toggleTab(activeSessionId);
+        togglePanel("git");
       }
-      if (e.metaKey && e.key === "p" && activeSessionId) {
+      if (e.metaKey && e.key === "p") {
         e.preventDefault();
-        togglePRsTab(activeSessionId);
+        togglePanel("prs");
       }
-      if (e.metaKey && e.key === "t" && activeSessionId) {
+      if (e.metaKey && e.key === "t") {
         e.preventDefault();
-        const session = sessions.find((s) => s.id === activeSessionId);
-        if (session) toggleShellTab(activeSessionId, session.directory);
+        togglePanel("shell");
       }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [activeSessionId, activeTab]);
+  }, [activePanel, panelDirectory]);
 
-  // Wrap deleteSession to also clean up shell PTY
+  // Wrap deleteSession to handle shell PTY lifecycle
   const handleDeleteSession = async (id: string) => {
-    if (shellSessions.has(id)) {
-      invoke("destroy_pty_session", { sessionId: `shell-${id}` }).catch(() => {});
-      setShellSessions((prev) => { const next = new Set(prev); next.delete(id); return next; });
-    }
     await deleteSession(id);
   };
 
@@ -184,7 +213,6 @@ export default function App() {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
     setRecentDirs(loadRecentDirs());
     setShowDirDialog(true);
-    // Fetch worktrees from the last-used directory
     const lastDir = localStorage.getItem("claude-orchestrator-last-dir") || "~";
     invoke<string[]>("list_worktrees", { directory: lastDir })
       .then(setWorktrees)
@@ -248,6 +276,11 @@ export default function App() {
     }
   };
 
+  const handleSelectSession = (id: string) => {
+    selectSession(id);
+    setActivePanel(null);
+  };
+
   return (
     <div className="flex h-screen w-screen bg-[var(--bg-primary)]">
       {/* Left sidebar */}
@@ -257,14 +290,14 @@ export default function App() {
         sessionUsage={sessionUsage}
         todayCost={todayCost}
         todayTokens={todayTokens}
-        onSelectSession={selectSession}
+        onSelectSession={handleSelectSession}
         onCreateSession={handleNewSession}
         onRenameSession={renameSession}
         onDeleteSession={handleDeleteSession}
         onShowUsage={() => setShowUsagePanel(true)}
       />
 
-      {/* Main terminal area */}
+      {/* Main area */}
       <div className="flex-1 min-w-0 relative">
         {sessions.length === 0 ? (
           <div className="flex items-center justify-center h-full">
@@ -284,135 +317,192 @@ export default function App() {
             </div>
           </div>
         ) : (
-          sessions.map((session) => {
-            const tab = getTab(session.id);
-            const mainLabel = session.status === "stopped" ? "Conversation" : "Claude";
-            return (
-            <div
-              key={session.id}
-              className="absolute inset-0 flex flex-col"
-              style={{
-                zIndex: session.id === activeSessionId ? 1 : 0,
-                visibility: session.id === activeSessionId ? "visible" : "hidden",
-                pointerEvents: session.id === activeSessionId ? "auto" : "none",
-                overflow: session.id === activeSessionId ? undefined : "hidden",
-              }}
-            >
-              {/* Tab bar */}
-              <div className="flex items-center gap-1 px-3 py-1 border-b border-[var(--border-color)] flex-shrink-0 bg-[var(--bg-secondary)]">
-                <button
-                  onClick={() => switchTab(session.id, "main")}
-                  className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                    tab === "main"
-                      ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
-                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-                  }`}
-                >
-                  {mainLabel}
-                </button>
-                <button
-                  onClick={() => switchTab(session.id, "git")}
-                  className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                    tab === "git"
-                      ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
-                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-                  }`}
-                >
-                  Git
-                </button>
-                <button
-                  onClick={() => switchTab(session.id, "prs")}
-                  className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                    tab === "prs"
-                      ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
-                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-                  }`}
-                >
-                  PRs
-                </button>
-                <button
-                  onClick={() => {
-                    ensureShellPty(session.id, session.directory);
-                    switchTab(session.id, "shell");
-                  }}
-                  className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                    tab === "shell"
-                      ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
-                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-                  }`}
-                >
-                  Shell
-                </button>
+          <div className="absolute inset-0 flex flex-col">
+            {/* Tab bar: [color dot] Claude | Git | PRs | Shell | [~/short/path ▼] */}
+            <div className="flex items-center px-2 py-0.5 border-b border-[var(--border-color)] flex-shrink-0">
+              <button
+                onClick={() => setActivePanel(null)}
+                className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
+                  activePanel === null
+                    ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
+                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                }`}
+              >
+                Claude
+              </button>
+              <div className="px-3">
+                <div className="w-px h-3.5" style={{ backgroundColor: directoryColor(panelDirectory) }} />
               </div>
+              <button
+                onClick={() => togglePanel("git")}
+                className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
+                  activePanel === "git"
+                    ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
+                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                }`}
+              >
+                Git
+              </button>
+              <button
+                onClick={() => togglePanel("prs")}
+                className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
+                  activePanel === "prs"
+                    ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
+                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                }`}
+              >
+                PRs
+              </button>
+              <button
+                onClick={() => togglePanel("shell")}
+                className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
+                  activePanel === "shell"
+                    ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
+                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                }`}
+              >
+                Shell
+              </button>
 
-              {/* Tab content */}
-              <div className="flex-1 min-h-0 relative">
-                <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "main" ? 2 : 0, pointerEvents: tab === "main" ? "auto" : "none" }}>
-                  <ErrorBoundary key={`eb-${session.id}-${session.status}`}>
-                    {session.status === "stopped" ? (
-                      <SessionConversation
-                        session={session}
-                        onResume={() => restartSession(session.id)}
-                      />
-                    ) : (
-                      <Terminal
-                        sessionId={session.id}
-                        isActive={session.id === activeSessionId && tab === "main"}
-                        onExit={() => {
-                          markStopped(session.id);
-                          setMountedTabsLru((prev) => prev.filter((e) => e.sessionId !== session.id));
-                          setActiveTab((prev) => { const next = new Map(prev); next.set(session.id, "main"); return next; });
-                          // Destroy shell PTY if one exists
-                          if (shellSessions.has(session.id)) {
-                            invoke("destroy_pty_session", { sessionId: `shell-${session.id}` }).catch(() => {});
-                            setShellSessions((prev) => { const next = new Set(prev); next.delete(session.id); return next; });
-                          }
+              {/* Directory dropdown */}
+              <div className="ml-auto pl-3 relative" ref={dropdownRef}>
+                <button
+                  onClick={() => setShowDirDropdown((v) => !v)}
+                  className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] rounded border transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] font-mono"
+                  style={{ borderColor: directoryColor(panelDirectory) }}
+                >
+                  {shortenPath(panelDirectory)}
+                  <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {showDirDropdown && (
+                  <div className="absolute right-0 top-full mt-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg max-h-64 overflow-y-auto z-20 min-w-[200px]">
+                    {dropdownChoices.map((dir) => (
+                      <button
+                        key={dir}
+                        onClick={() => {
+                          setPanelDirOverride(dir);
+                          setShowDirDropdown(false);
+                          // If switching to shell, ensure PTY exists
+                          if (activePanel === "shell") ensureShellPty(dir);
                         }}
-                        onTitleChange={() => {}}
-                        onActivity={() => touchSession(session.id)}
-                        onRegisterWriteText={(fn) => registerWriteText(session.id, fn)}
-                      />
-                    )}
-                  </ErrorBoundary>
-                </div>
-                {(tab === "git" || isTabMounted(session.id, "git")) && (
-                  <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "git" ? 2 : 0, pointerEvents: tab === "git" ? "auto" : "none" }}>
-                    <GitPanel
-                      directory={session.directory}
-                      isActive={session.id === activeSessionId && tab === "git"}
-                      onEditFile={(relativePath) => {
-                        const dir = session.directory.endsWith("/") ? session.directory : session.directory + "/";
-                        setEditorFilePath(dir + relativePath);
-                        setShowFileEditor(true);
-                      }}
-                    />
-                  </div>
-                )}
-                {(tab === "prs" || isTabMounted(session.id, "prs")) && (
-                  <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "prs" ? 2 : 0, pointerEvents: tab === "prs" ? "auto" : "none" }}>
-                    <PRPanel
-                      directory={session.directory}
-                      isActive={session.id === activeSessionId && tab === "prs"}
-                    />
-                  </div>
-                )}
-                {(tab === "shell" || isTabMounted(session.id, "shell")) && shellSessions.has(session.id) && (
-                  <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "shell" ? 2 : 0, pointerEvents: tab === "shell" ? "auto" : "none" }}>
-                    <Terminal
-                      sessionId={`shell-${session.id}`}
-                      isActive={session.id === activeSessionId && tab === "shell"}
-                      onExit={() => {
-                        setShellSessions((prev) => { const next = new Set(prev); next.delete(session.id); return next; });
-                        switchTab(session.id, "main");
-                      }}
-                      onTitleChange={() => {}}
-                    />
+                        className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[11px] font-mono transition-colors ${
+                          dir === panelDirectory
+                            ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                            : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                        }`}
+                      >
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ backgroundColor: directoryColor(dir) }}
+                        />
+                        <span className="truncate">{shortenPath(dir)}</span>
+                      </button>
+                    ))}
                   </div>
                 )}
               </div>
             </div>
-            );
-          })
+
+            {/* Content area */}
+            <div className="flex-1 min-h-0 relative">
+              {/* Session panels — one per session, visibility-toggled */}
+              {sessions.map((session) => {
+                const isVisible = session.id === activeSessionId && activePanel === null;
+                return (
+                  <div
+                    key={session.id}
+                    className="absolute inset-0 bg-[var(--bg-primary)]"
+                    style={{
+                      zIndex: isVisible ? 2 : 0,
+                      pointerEvents: isVisible ? "auto" : "none",
+                      visibility: (isVisible || session.id === activeSessionId) ? "visible" : "hidden",
+                    }}
+                  >
+                    <ErrorBoundary key={`eb-${session.id}-${session.status}`}>
+                      {session.status === "stopped" ? (
+                        <SessionConversation
+                          session={session}
+                          onResume={() => restartSession(session.id)}
+                        />
+                      ) : (
+                        <Terminal
+                          sessionId={session.id}
+                          isActive={isVisible}
+                          onExit={() => {
+                            markStopped(session.id);
+                          }}
+                          onTitleChange={() => {}}
+                          onActivity={() => touchSession(session.id)}
+                          onRegisterWriteText={(fn) => registerWriteText(session.id, fn)}
+                        />
+                      )}
+                    </ErrorBoundary>
+                  </div>
+                );
+              })}
+
+              {/* Git panel */}
+              {activePanel === "git" && (
+                <div
+                  className="absolute inset-0 bg-[var(--bg-primary)]"
+                  style={{ zIndex: 2 }}
+                >
+                  <GitPanel
+                    directory={panelDirectory}
+                    isActive={activePanel === "git"}
+                    onEditFile={(relativePath) => {
+                      const dir = panelDirectory.endsWith("/") ? panelDirectory : panelDirectory + "/";
+                      setEditorFilePath(dir + relativePath);
+                      setShowFileEditor(true);
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* PRs panel */}
+              {activePanel === "prs" && (
+                <div
+                  className="absolute inset-0 bg-[var(--bg-primary)]"
+                  style={{ zIndex: 2 }}
+                >
+                  <PRPanel
+                    directory={panelDirectory}
+                    isActive={activePanel === "prs"}
+                    onAskClaude={(prompt) => {
+                      if (!activeSessionId) return;
+                      const writeFn = writeTextCallbacks.current.get(activeSessionId);
+                      writeFn?.(prompt + "\n");
+                      setActivePanel(null);
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* Shell */}
+              {activePanel === "shell" && shellDirs.has(panelDirectory) && (
+                <div
+                  className="absolute inset-0 bg-[var(--bg-primary)]"
+                  style={{ zIndex: 2 }}
+                >
+                  <Terminal
+                    sessionId={shellSessionId(panelDirectory)}
+                    isActive={activePanel === "shell"}
+                    onExit={() => {
+                      setShellDirs((prev) => {
+                        const next = new Set(prev);
+                        next.delete(panelDirectory);
+                        return next;
+                      });
+                      setActivePanel(null);
+                    }}
+                    onTitleChange={() => {}}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
 
