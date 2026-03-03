@@ -113,12 +113,18 @@ struct SessionMeta {
     last_active_at: f64,
     #[serde(default)]
     directory: String,
+    #[serde(default = "default_harness")]
+    harness: String,
     #[serde(default, rename = "claudeSessionId", skip_serializing_if = "Option::is_none")]
     claude_session_id: Option<String>,
     #[serde(default, rename = "dangerouslySkipPermissions")]
     dangerously_skip_permissions: bool,
     #[serde(default, rename = "activeTime")]
     active_time: f64,
+}
+
+fn default_harness() -> String {
+    "claude".to_string()
 }
 
 fn sessions_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -155,16 +161,18 @@ fn load_sessions(app_handle: AppHandle) -> Result<Vec<SessionMeta>, String> {
 fn create_pty_session(
     session_id: String,
     directory: String,
+    harness: Option<String>,
     claude_session_id: Option<String>,
     resume: bool,
     #[allow(non_snake_case)] dangerouslySkipPermissions: Option<bool>,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let harness_str = harness.as_deref().unwrap_or("claude");
     let skip_perms = dangerouslySkipPermissions.unwrap_or(false);
-    eprintln!("[create_pty_session] session_id={}, directory={:?}, claude_session_id={:?}, resume={}, skip_permissions={}", session_id, directory, claude_session_id, resume, skip_perms);
+    eprintln!("[create_pty_session] session_id={}, directory={:?}, harness={}, claude_session_id={:?}, resume={}, skip_permissions={}", session_id, directory, harness_str, claude_session_id, resume, skip_perms);
     let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
-    manager.create_session(&session_id, app_handle, directory, claude_session_id, resume, skip_perms)
+    manager.create_session(&session_id, app_handle, directory, harness_str, claude_session_id, resume, skip_perms)
 }
 
 #[tauri::command]
@@ -443,34 +451,43 @@ struct SessionUsage {
     cost_usd: f64,
     #[serde(rename = "isBusy")]
     is_busy: bool,
+    #[serde(rename = "needsInput")]
+    needs_input: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SessionBusyState {
+    Idle,           // assistant finished (text-only response)
+    Busy,           // user sent message or assistant made tool call
+    WaitingForInput, // assistant responded with text + tool_use for AskUserQuestion, or text-only ending with "?"
 }
 
 /// Check if the LLM is currently busy by finding the last "user" or "assistant"
 /// entry in the JSONL file. Other types (system, progress, queue-operation, etc.)
 /// are ignored. If the last relevant entry is "user", Claude is thinking.
-fn is_session_busy(jsonl_path: &std::path::Path) -> bool {
+fn session_busy_state(jsonl_path: &std::path::Path) -> SessionBusyState {
     use std::io::{Read, Seek, SeekFrom};
 
     let mut file = match std::fs::File::open(jsonl_path) {
         Ok(f) => f,
-        Err(_) => return false,
+        Err(_) => return SessionBusyState::Idle,
     };
     let len = match file.metadata() {
         Ok(m) => m.len(),
-        Err(_) => return false,
+        Err(_) => return SessionBusyState::Idle,
     };
     if len == 0 {
-        return false;
+        return SessionBusyState::Idle;
     }
 
     // Read last 64KB — more than enough for recent entries
     let start = if len > 65536 { len - 65536 } else { 0 };
     if file.seek(SeekFrom::Start(start)).is_err() {
-        return false;
+        return SessionBusyState::Idle;
     }
     let mut buf = String::new();
     if file.read_to_string(&mut buf).is_err() {
-        return false;
+        return SessionBusyState::Idle;
     }
 
     // Walk lines in reverse, find the last "user" or "assistant" entry
@@ -480,13 +497,51 @@ fn is_session_busy(jsonl_path: &std::path::Path) -> bool {
         }
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
             match parsed.get("type").and_then(|t| t.as_str()) {
-                Some("user") => return true,
-                Some("assistant") => return false,
+                Some("user") => return SessionBusyState::Busy,
+                Some("assistant") => {
+                    if let Some(content) = parsed
+                        .pointer("/message/content")
+                        .and_then(|c| c.as_array())
+                    {
+                        // Check for AskUserQuestion tool call — means Claude is
+                        // waiting for user input
+                        let has_ask = content.iter().any(|block| {
+                            block.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                                && block.get("name").and_then(|n| n.as_str()) == Some("AskUserQuestion")
+                        });
+                        if has_ask {
+                            return SessionBusyState::WaitingForInput;
+                        }
+
+                        // If the assistant message contains tool_use blocks, Claude is
+                        // still working (waiting for tool results).
+                        let has_tool_use = content
+                            .iter()
+                            .any(|block| block.get("type").and_then(|t| t.as_str()) == Some("tool_use"));
+                        if has_tool_use {
+                            return SessionBusyState::Busy;
+                        }
+                    }
+                    // Text-only assistant response — Claude is done or asking a
+                    // question inline. Check if it ends with "?" to detect questions.
+                    let last_text = parsed
+                        .pointer("/message/content")
+                        .and_then(|c| c.as_array())
+                        .and_then(|arr| arr.iter().rev().find(|b| {
+                            b.get("type").and_then(|t| t.as_str()) == Some("text")
+                        }))
+                        .and_then(|b| b.get("text").and_then(|t| t.as_str()))
+                        .unwrap_or("");
+                    if last_text.trim().ends_with('?') {
+                        return SessionBusyState::WaitingForInput;
+                    }
+                    return SessionBusyState::Idle;
+                }
                 _ => continue,
             }
         }
     }
-    false
+    SessionBusyState::Idle
 }
 
 /// Parse usage from a JSONL file starting at `byte_offset`.
@@ -584,7 +639,9 @@ fn get_session_usage(
     )?;
 
     // Check if LLM is currently busy (last entry is not "assistant")
-    usage.is_busy = is_session_busy(&jsonl_path);
+    let busy_state = session_busy_state(&jsonl_path);
+    usage.is_busy = busy_state == SessionBusyState::Busy;
+    usage.needs_input = busy_state == SessionBusyState::WaitingForInput;
 
     // Update cache with new offset
     if new_offset != byte_offset {

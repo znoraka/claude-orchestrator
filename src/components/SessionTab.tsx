@@ -68,8 +68,9 @@ export default memo(function SessionTab({
     setIsEditing(false);
   };
 
+  const needsInput = usage?.needsInput && session.status === "running";
   const statusColor = {
-    running: "bg-green-500",
+    running: needsInput ? "bg-orange-400" : "bg-green-500",
     stopped: "bg-red-500",
     starting: "bg-yellow-500 animate-pulse",
   }[session.status];
@@ -131,6 +132,9 @@ export default memo(function SessionTab({
             style={{ color: directoryColor(session.directory) }}
           >
             {shortenPath(session.directory)}
+            {session.harness === "opencode" && (
+              <span className="ml-1 px-1 py-px rounded bg-[var(--bg-hover)] text-[var(--text-tertiary)] text-[9px] font-medium">OC</span>
+            )}
           </span>
         )}
         {contentOnly && (

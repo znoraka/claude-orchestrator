@@ -176,6 +176,22 @@ export default function SessionConversation({ session, onResume }: Props) {
     );
   }
 
+  if (session.harness && session.harness !== "claude") {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-3">
+        <p className="text-xs text-[var(--text-secondary)] italic">
+          Conversation replay not available for {session.harness === "opencode" ? "OpenCode" : session.harness} sessions.
+        </p>
+        <button
+          onClick={onResume}
+          className="px-4 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded transition-colors"
+        >
+          Resume session
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full relative">
       {showSearch && (

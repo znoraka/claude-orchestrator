@@ -16,7 +16,7 @@ import { useConversationTitles } from "../hooks/useConversationTitles";
 import { useSessionUsage } from "../hooks/useSessionUsage";
 import { useBackgroundNotifications } from "../hooks/useBackgroundNotifications";
 import { useToast } from "../components/Toast";
-import type { Session, SessionUsage } from "../types";
+import type { Session, SessionUsage, Harness } from "../types";
 
 const MAX_RUNNING_SESSIONS = 8;
 
@@ -72,7 +72,8 @@ interface SessionContextValue {
   createSession: (
     name: string | undefined,
     directory: string,
-    dangerouslySkipPermissions?: boolean
+    dangerouslySkipPermissions?: boolean,
+    harness?: Harness
   ) => Promise<string>;
   deleteSession: (id: string) => Promise<void>;
   renameSession: (id: string, name: string) => void;
@@ -106,6 +107,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         createdAt: number;
         lastActiveAt: number;
         directory: string;
+        harness?: string;
         claudeSessionId?: string;
         dangerouslySkipPermissions?: boolean;
         activeTime?: number;
@@ -120,6 +122,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             createdAt: s.createdAt,
             lastActiveAt: s.lastActiveAt,
             directory: s.directory,
+            harness: (s.harness as Harness) || "claude",
             claudeSessionId: s.claudeSessionId,
             dangerouslySkipPermissions: s.dangerouslySkipPermissions,
             activeTime: s.activeTime || 0,
@@ -147,6 +150,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         createdAt: s.createdAt,
         lastActiveAt: s.lastActiveAt,
         directory: s.directory,
+        harness: s.harness,
         claudeSessionId: s.claudeSessionId,
         dangerouslySkipPermissions: s.dangerouslySkipPermissions,
         activeTime: s.activeTime || 0,
@@ -198,10 +202,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     async (
       name: string | undefined,
       directory: string,
-      dangerouslySkipPermissions = false
+      dangerouslySkipPermissions = false,
+      harness: Harness = "claude"
     ) => {
       const id = uuidv4();
-      const claudeSessionId = uuidv4();
+      const claudeSessionId = harness === "claude" ? uuidv4() : undefined;
       const now = Date.now();
       const sessionCount = sessionsRef.current.length;
       const session: Session = {
@@ -211,6 +216,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         createdAt: now,
         lastActiveAt: now,
         directory,
+        harness,
         claudeSessionId,
         dangerouslySkipPermissions,
       };
@@ -222,7 +228,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         await invoke("create_pty_session", {
           sessionId: id,
           directory,
-          claudeSessionId,
+          harness,
+          claudeSessionId: claudeSessionId ?? null,
           resume: false,
           dangerouslySkipPermissions,
         });
@@ -285,6 +292,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         await invoke("create_pty_session", {
           sessionId: id,
           directory: session.directory,
+          harness: session.harness || "claude",
           claudeSessionId: session.claudeSessionId ?? null,
           resume: !!session.claudeSessionId,
           dangerouslySkipPermissions:

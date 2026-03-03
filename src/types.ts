@@ -1,3 +1,5 @@
+export type Harness = "claude" | "opencode";
+
 export interface Session {
   id: string;
   name: string;
@@ -5,7 +7,8 @@ export interface Session {
   createdAt: number;
   lastActiveAt: number;
   directory: string;
-  claudeSessionId?: string;
+  harness: Harness;
+  claudeSessionId?: string;        // only used when harness === "claude"
   dangerouslySkipPermissions?: boolean;
   activeTime?: number; // cumulative ms of running time
 }
@@ -17,6 +20,7 @@ export interface SessionUsage {
   cacheReadInputTokens: number;
   costUsd: number;
   isBusy: boolean;
+  needsInput: boolean;
 }
 
 export interface GitFileEntry {

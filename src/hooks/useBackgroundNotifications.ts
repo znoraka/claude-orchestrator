@@ -38,16 +38,18 @@ export function useBackgroundNotifications(
       const usage = sessionUsage.get(session.id);
       const wasBusy = prevBusyRef.current.get(session.id) ?? false;
       const isBusy = usage?.isBusy ?? false;
+      const needsInput = usage?.needsInput ?? false;
 
-      // Detect busy -> idle transition for non-active sessions
+      // Detect busy -> not-busy transition for non-active sessions
       if (
         wasBusy &&
         !isBusy &&
         session.id !== activeSessionId &&
         session.status === "running"
       ) {
+        const tool = session.harness === "opencode" ? "OpenCode" : "Claude";
         sendNotification({
-          title: "Claude finished",
+          title: needsInput ? `${tool} needs input` : `${tool} finished`,
           body: session.name,
         });
       }

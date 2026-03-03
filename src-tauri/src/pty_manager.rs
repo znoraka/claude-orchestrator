@@ -41,6 +41,7 @@ impl PtyManager {
         session_id: &str,
         app_handle: AppHandle,
         directory: String,
+        harness: &str,
         claude_session_id: Option<String>,
         resume: bool,
         dangerously_skip_permissions: bool,
@@ -60,20 +61,27 @@ impl PtyManager {
             })
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-        // Build the claude command with flags
-        let mut claude_args = vec!["claude".to_string()];
-        if dangerously_skip_permissions {
-            claude_args.push("--dangerously-skip-permissions".to_string());
-        }
-        if let Some(ref sid) = claude_session_id {
-            if resume {
-                claude_args.push("--resume".to_string());
-                claude_args.push(sid.clone());
-            } else {
-                claude_args.push("--session-id".to_string());
-                claude_args.push(sid.clone());
+        // Build the command based on the harness type
+        let cmd_args = match harness {
+            "opencode" => vec!["opencode".to_string()],
+            _ => {
+                // Default: claude
+                let mut args = vec!["claude".to_string()];
+                if dangerously_skip_permissions {
+                    args.push("--dangerously-skip-permissions".to_string());
+                }
+                if let Some(ref sid) = claude_session_id {
+                    if resume {
+                        args.push("--resume".to_string());
+                        args.push(sid.clone());
+                    } else {
+                        args.push("--session-id".to_string());
+                        args.push(sid.clone());
+                    }
+                }
+                args
             }
-        }
+        };
         // Expand ~ in directory
         let expanded_dir = if directory.starts_with('~') {
             if let Ok(home) = std::env::var("HOME") {
@@ -99,7 +107,7 @@ impl PtyManager {
         }
 
         let escaped_dir = shell_escape(&expanded_dir);
-        let escaped_args: Vec<String> = claude_args.iter().map(|a| shell_escape(a)).collect();
+        let escaped_args: Vec<String> = cmd_args.iter().map(|a| shell_escape(a)).collect();
         let shell_cmd = format!("cd {} && exec {}", escaped_dir, escaped_args.join(" "));
         eprintln!("[pty_manager] Spawning: {} -lc \"{}\"", shell, shell_cmd);
         cmd.arg("-lc");

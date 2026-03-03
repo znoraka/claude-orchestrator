@@ -36,7 +36,8 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
             prev.inputTokens === usage.inputTokens &&
             prev.outputTokens === usage.outputTokens &&
             prev.costUsd === usage.costUsd &&
-            prev.isBusy === usage.isBusy
+            prev.isBusy === usage.isBusy &&
+            prev.needsInput === usage.needsInput
           )
             return;
           setUsageMap((m) => {

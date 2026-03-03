@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionContext } from "./contexts/SessionContext";
+import type { Harness } from "./types";
 import { useClipboard } from "./hooks/useClipboard";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
@@ -59,6 +60,7 @@ export default function App() {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [skipPermissions, setSkipPermissions] = useState(true);
+  const [selectedHarness, setSelectedHarness] = useState<Harness>("claude");
   const [creating, setCreating] = useState(false);
   const [activeTab, setActiveTab] = useState<Map<string, "main" | "git" | "prs">>(new Map());
   // LRU cache of mounted tab panels (most recent at end). Max 16 slots (8 sessions × 2 tabs).
@@ -168,7 +170,7 @@ export default function App() {
     saveRecentDir(dir);
     setShowDirDialog(false);
     try {
-      await createSession(undefined, dir, skipPermissions);
+      await createSession(undefined, dir, selectedHarness === "claude" && skipPermissions, selectedHarness);
     } finally {
       setCreating(false);
     }
@@ -211,7 +213,7 @@ export default function App() {
     saveRecentDir(dir);
     setShowDirDialog(false);
     try {
-      await createSession(undefined, dir, skipPermissions);
+      await createSession(undefined, dir, selectedHarness === "claude" && skipPermissions, selectedHarness);
     } finally {
       setCreating(false);
     }
@@ -375,6 +377,23 @@ export default function App() {
             <h2 className="text-base font-semibold text-[var(--text-primary)]">
               New Session
             </h2>
+            {/* Harness toggle */}
+            <div className="flex gap-1">
+              {(["claude", "opencode"] as const).map((h) => (
+                <button
+                  key={h}
+                  onClick={() => setSelectedHarness(h)}
+                  className={`px-3 py-1 text-xs rounded transition-colors ${
+                    selectedHarness === h
+                      ? "bg-[var(--accent)] text-white"
+                      : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border border-[var(--border-color)] hover:border-[var(--accent)]"
+                  }`}
+                >
+                  {h === "claude" ? "Claude Code" : "OpenCode"}
+                </button>
+              ))}
+            </div>
+            {selectedHarness === "claude" && (
             <label className="flex items-center gap-2.5 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -386,6 +405,7 @@ export default function App() {
                 Skip permissions
               </span>
             </label>
+            )}
             <div>
             <label className="block text-xs text-[var(--text-secondary)] pb-2">
               Working directory
