@@ -5,6 +5,7 @@ import { useClipboard } from "./hooks/useClipboard";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
 import SessionTranscript from "./components/SessionTranscript";
+import GitPanel from "./components/GitPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
 import UsagePanel from "./components/UsagePanel";
 
@@ -55,6 +56,7 @@ export default function App() {
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [skipPermissions, setSkipPermissions] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [activeTab, setActiveTab] = useState<Map<string, "main" | "git">>(new Map());
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
   const registerWriteText = useCallback(
@@ -80,7 +82,17 @@ export default function App() {
 
   useClipboard(handleImagePath);
 
-  // Cmd+N to open new session dialog
+  const getTab = (sessionId: string): "main" | "git" =>
+    activeTab.get(sessionId) || "main";
+  const toggleTab = (sessionId: string) => {
+    setActiveTab((prev) => {
+      const next = new Map(prev);
+      next.set(sessionId, getTab(sessionId) === "main" ? "git" : "main");
+      return next;
+    });
+  };
+
+  // Cmd+N to open new session dialog, Cmd+G to toggle git tab
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey && e.key === "n") {
@@ -89,10 +101,14 @@ export default function App() {
         setRecentDirs(loadRecentDirs());
         setShowDirDialog(true);
       }
+      if (e.metaKey && e.key === "g" && activeSessionId) {
+        e.preventDefault();
+        toggleTab(activeSessionId);
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [activeSessionId]);
 
   const handleNewSession = () => {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
@@ -180,34 +196,70 @@ export default function App() {
             </div>
           </div>
         ) : (
-          sessions.map((session) => (
+          sessions.map((session) => {
+            const tab = getTab(session.id);
+            const mainLabel = session.status === "stopped" ? "Transcript" : "Terminal";
+            return (
             <div
               key={session.id}
-              className="absolute inset-0"
+              className="absolute inset-0 flex flex-col"
               style={{
                 visibility: session.id === activeSessionId ? "visible" : "hidden",
                 pointerEvents: session.id === activeSessionId ? "auto" : "none",
               }}
             >
-              <ErrorBoundary key={`eb-${session.id}-${session.status}`}>
-                {session.status === "stopped" ? (
-                  <SessionTranscript
-                    session={session}
-                    onResume={() => restartSession(session.id)}
-                  />
-                ) : (
-                  <Terminal
-                    sessionId={session.id}
-                    isActive={session.id === activeSessionId}
-                    onExit={() => markStopped(session.id)}
-                    onTitleChange={() => {}}
-                    onActivity={() => touchSession(session.id)}
-                    onRegisterWriteText={(fn) => registerWriteText(session.id, fn)}
-                  />
-                )}
-              </ErrorBoundary>
+              {/* Tab bar */}
+              <div className="flex items-center gap-1 px-3 py-1 border-b border-[var(--border-color)] flex-shrink-0 bg-[var(--bg-secondary)]">
+                <button
+                  onClick={() => setActiveTab((prev) => { const n = new Map(prev); n.set(session.id, "main"); return n; })}
+                  className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                    tab === "main"
+                      ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
+                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                  }`}
+                >
+                  {mainLabel}
+                </button>
+                <button
+                  onClick={() => setActiveTab((prev) => { const n = new Map(prev); n.set(session.id, "git"); return n; })}
+                  className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                    tab === "git"
+                      ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
+                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                  }`}
+                >
+                  Git
+                </button>
+              </div>
+
+              {/* Tab content */}
+              <div className="flex-1 min-h-0 relative">
+                <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "main" ? 1 : 0 }}>
+                  <ErrorBoundary key={`eb-${session.id}-${session.status}`}>
+                    {session.status === "stopped" ? (
+                      <SessionTranscript
+                        session={session}
+                        onResume={() => restartSession(session.id)}
+                      />
+                    ) : (
+                      <Terminal
+                        sessionId={session.id}
+                        isActive={session.id === activeSessionId}
+                        onExit={() => markStopped(session.id)}
+                        onTitleChange={() => {}}
+                        onActivity={() => touchSession(session.id)}
+                        onRegisterWriteText={(fn) => registerWriteText(session.id, fn)}
+                      />
+                    )}
+                  </ErrorBoundary>
+                </div>
+                <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "git" ? 1 : 0 }}>
+                  <GitPanel directory={session.directory} />
+                </div>
+              </div>
             </div>
-          ))
+            );
+          })
         )}
       </div>
 
