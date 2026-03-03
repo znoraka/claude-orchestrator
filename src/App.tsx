@@ -261,7 +261,10 @@ export default function App() {
               key={session.id}
               className="absolute inset-0 flex flex-col"
               style={{
-                display: session.id === activeSessionId ? "flex" : "none",
+                zIndex: session.id === activeSessionId ? 1 : 0,
+                visibility: session.id === activeSessionId ? "visible" : "hidden",
+                pointerEvents: session.id === activeSessionId ? "auto" : "none",
+                overflow: session.id === activeSessionId ? undefined : "hidden",
               }}
             >
               {/* Tab bar */}
@@ -300,7 +303,7 @@ export default function App() {
 
               {/* Tab content */}
               <div className="flex-1 min-h-0 relative">
-                <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "main" ? 1 : 0, visibility: tab === "main" ? "visible" : "hidden" }}>
+                <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "main" ? 2 : 0, pointerEvents: tab === "main" ? "auto" : "none" }}>
                   <ErrorBoundary key={`eb-${session.id}-${session.status}`}>
                     {session.status === "stopped" ? (
                       <SessionConversation
@@ -324,7 +327,7 @@ export default function App() {
                   </ErrorBoundary>
                 </div>
                 {(tab === "git" || isTabMounted(session.id, "git")) && (
-                  <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "git" ? 1 : 0, visibility: tab === "git" ? "visible" : "hidden" }}>
+                  <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "git" ? 2 : 0, pointerEvents: tab === "git" ? "auto" : "none" }}>
                     <GitPanel
                       directory={session.directory}
                       isActive={session.id === activeSessionId && tab === "git"}
@@ -337,7 +340,7 @@ export default function App() {
                   </div>
                 )}
                 {(tab === "prs" || isTabMounted(session.id, "prs")) && (
-                  <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "prs" ? 1 : 0, visibility: tab === "prs" ? "visible" : "hidden" }}>
+                  <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "prs" ? 2 : 0, pointerEvents: tab === "prs" ? "auto" : "none" }}>
                     <PRPanel
                       directory={session.directory}
                       isActive={session.id === activeSessionId && tab === "prs"}
