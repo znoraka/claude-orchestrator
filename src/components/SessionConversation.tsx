@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useToast } from "./Toast";
 import type { Session } from "../types";
 
-interface TranscriptMessage {
+interface ConversationMessage {
   role: string;
   text: string;
   timestamp: string;
@@ -14,8 +14,8 @@ interface Props {
   onResume: () => void;
 }
 
-export default function SessionTranscript({ session, onResume }: Props) {
-  const [messages, setMessages] = useState<TranscriptMessage[]>([]);
+export default function SessionConversation({ session, onResume }: Props) {
+  const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { showError } = useToast();
@@ -32,13 +32,13 @@ export default function SessionTranscript({ session, onResume }: Props) {
       return;
     }
     setLoading(true);
-    invoke<TranscriptMessage[]>("get_session_transcript", {
+    invoke<ConversationMessage[]>("get_session_conversation", {
       claudeSessionId: session.claudeSessionId,
       directory: session.directory,
     })
       .then(setMessages)
       .catch((err) => {
-        showError(`Failed to load transcript: ${err}`);
+        showError(`Failed to load conversation: ${err}`);
         setMessages([]);
       })
       .finally(() => setLoading(false));
@@ -185,7 +185,7 @@ export default function SessionTranscript({ session, onResume }: Props) {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={handleSearchKeyDown}
-            placeholder="Find in transcript..."
+            placeholder="Find in conversation..."
             className="bg-transparent text-xs text-[var(--text-primary)] outline-none w-48 placeholder:text-[var(--text-tertiary)]"
           />
           {searchQuery && matchCount > 0 && (
@@ -230,7 +230,7 @@ export default function SessionTranscript({ session, onResume }: Props) {
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4">
         {loading ? (
           <div className="flex items-center justify-center h-full">
-            <p className="text-xs text-[var(--text-secondary)]">Loading transcript...</p>
+            <p className="text-xs text-[var(--text-secondary)]">Loading conversation...</p>
           </div>
         ) : messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
@@ -239,7 +239,7 @@ export default function SessionTranscript({ session, onResume }: Props) {
                 {session.name}
               </p>
               <p className="text-xs text-[var(--text-secondary)] opacity-60">
-                No transcript found
+                No conversation found
               </p>
             </div>
           </div>

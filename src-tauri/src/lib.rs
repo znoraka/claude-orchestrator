@@ -1023,14 +1023,14 @@ fn generate_smart_title(claude_session_id: String, directory: String, include_re
 }
 
 #[derive(Serialize, Clone)]
-struct TranscriptMessage {
+struct ConversationMessage {
     role: String,
     text: String,
     timestamp: String,
 }
 
 #[tauri::command]
-fn get_session_transcript(claude_session_id: String, directory: String) -> Result<Vec<TranscriptMessage>, String> {
+fn get_session_conversation(claude_session_id: String, directory: String) -> Result<Vec<ConversationMessage>, String> {
     let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
 
     if !jsonl_path.exists() {
@@ -1038,7 +1038,7 @@ fn get_session_transcript(claude_session_id: String, directory: String) -> Resul
     }
 
     let file = std::fs::File::open(&jsonl_path)
-        .map_err(|e| format!("Failed to open transcript file: {}", e))?;
+        .map_err(|e| format!("Failed to open conversation file: {}", e))?;
     let reader = std::io::BufReader::new(file);
 
     let mut messages = Vec::new();
@@ -1063,7 +1063,7 @@ fn get_session_transcript(claude_session_id: String, directory: String) -> Resul
                             continue;
                         }
                         let text: String = user_text.chars().take(2000).collect();
-                        messages.push(TranscriptMessage {
+                        messages.push(ConversationMessage {
                             role: "user".to_string(),
                             text,
                             timestamp,
@@ -1088,7 +1088,7 @@ fn get_session_transcript(claude_session_id: String, directory: String) -> Resul
                     };
                     if let Some(t) = text {
                         let truncated: String = t.chars().take(2000).collect();
-                        messages.push(TranscriptMessage {
+                        messages.push(ConversationMessage {
                             role: "assistant".to_string(),
                             text: truncated,
                             timestamp,
@@ -1176,6 +1176,243 @@ fn unwatch_jsonl(
     watcher.unwatch(&path)
 }
 
+/// Resolve the full PATH from the user's login shell so that GUI-spawned
+/// processes can find tools like `git` installed via Homebrew, nix, etc.
+fn shell_path() -> &'static str {
+    use std::sync::OnceLock;
+    static PATH: OnceLock<String> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        std::process::Command::new(&shell)
+            .args(["-lc", "echo $PATH"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    })
+}
+
+fn git_command(directory: &str) -> std::process::Command {
+    let expanded = if directory.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            directory.replacen('~', &home, 1)
+        } else {
+            directory.to_string()
+        }
+    } else {
+        directory.to_string()
+    };
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(&expanded);
+    cmd.env("PATH", shell_path());
+    cmd
+}
+
+#[derive(Serialize, Clone)]
+struct GitFileEntry {
+    path: String,
+    status: String,
+    staged: bool,
+}
+
+#[derive(Serialize, Clone)]
+struct GitStatusResult {
+    branch: String,
+    files: Vec<GitFileEntry>,
+    #[serde(rename = "isGitRepo")]
+    is_git_repo: bool,
+}
+
+#[tauri::command]
+fn get_git_status(directory: String) -> Result<GitStatusResult, String> {
+    let output = git_command(&directory)
+        .args(["status", "--porcelain", "-b"])
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("not a git repository") {
+            return Ok(GitStatusResult {
+                branch: String::new(),
+                files: vec![],
+                is_git_repo: false,
+            });
+        }
+        return Err(format!("git status failed: {}", stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines();
+    let branch = lines
+        .next()
+        .unwrap_or("")
+        .strip_prefix("## ")
+        .unwrap_or("")
+        .split("...")
+        .next()
+        .unwrap_or("")
+        .to_string();
+
+    let mut files = Vec::new();
+    for line in lines {
+        if line.len() < 4 {
+            continue;
+        }
+        let index_status = line.chars().nth(0).unwrap_or(' ');
+        let worktree_status = line.chars().nth(1).unwrap_or(' ');
+        let path = line[3..].to_string();
+
+        // Determine display status and staged flag
+        if index_status == '?' && worktree_status == '?' {
+            files.push(GitFileEntry {
+                path,
+                status: "??".to_string(),
+                staged: false,
+            });
+        } else {
+            // Staged change
+            if index_status != ' ' && index_status != '?' {
+                files.push(GitFileEntry {
+                    path: path.clone(),
+                    status: index_status.to_string(),
+                    staged: true,
+                });
+            }
+            // Unstaged change
+            if worktree_status != ' ' && worktree_status != '?' {
+                files.push(GitFileEntry {
+                    path,
+                    status: worktree_status.to_string(),
+                    staged: false,
+                });
+            }
+        }
+    }
+
+    Ok(GitStatusResult {
+        branch,
+        files,
+        is_git_repo: true,
+    })
+}
+
+#[tauri::command]
+fn get_git_diff(directory: String, file_path: String, staged: bool) -> Result<String, String> {
+    let mut cmd = git_command(&directory);
+    cmd.arg("diff");
+    if staged {
+        cmd.arg("--cached");
+    }
+    cmd.arg("--");
+    cmd.arg(&file_path);
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run git diff: {}", e))?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[tauri::command]
+fn read_file_content(directory: String, file_path: String) -> Result<String, String> {
+    let expanded = if directory.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            directory.replacen('~', &home, 1)
+        } else {
+            directory.clone()
+        }
+    } else {
+        directory.clone()
+    };
+    let full_path = std::path::PathBuf::from(&expanded).join(&file_path);
+    std::fs::read_to_string(&full_path)
+        .map_err(|e| format!("Failed to read file: {}", e))
+}
+
+#[tauri::command]
+fn read_file(file_path: String) -> Result<String, String> {
+    let expanded = if file_path.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            file_path.replacen('~', &home, 1)
+        } else {
+            file_path.clone()
+        }
+    } else {
+        file_path.clone()
+    };
+    let meta = std::fs::metadata(&expanded).map_err(|e| format!("Failed to stat file: {}", e))?;
+    if meta.len() > 10 * 1024 * 1024 {
+        return Err("File too large (>10MB)".into());
+    }
+    std::fs::read_to_string(&expanded).map_err(|e| format!("Failed to read file: {}", e))
+}
+
+#[tauri::command]
+fn write_file(file_path: String, content: String) -> Result<(), String> {
+    let expanded = if file_path.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            file_path.replacen('~', &home, 1)
+        } else {
+            file_path.clone()
+        }
+    } else {
+        file_path.clone()
+    };
+    if content.len() > 10 * 1024 * 1024 {
+        return Err("Content too large (>10MB)".into());
+    }
+    std::fs::write(&expanded, &content).map_err(|e| format!("Failed to write file: {}", e))
+}
+
+#[tauri::command]
+fn list_files(partial: String) -> Result<Vec<(String, bool)>, String> {
+    let expanded = if partial.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            partial.replacen('~', &home, 1)
+        } else {
+            partial.clone()
+        }
+    } else {
+        partial.clone()
+    };
+
+    let (dir, prefix) = if expanded.ends_with('/') {
+        (std::path::PathBuf::from(&expanded), String::new())
+    } else {
+        let p = std::path::PathBuf::from(&expanded);
+        let parent = p.parent().unwrap_or(std::path::Path::new("/"));
+        let prefix = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+        (parent.to_path_buf(), prefix)
+    };
+
+    let entries = std::fs::read_dir(&dir).map_err(|e| format!("Failed to read dir: {}", e))?;
+    let mut results: Vec<(String, bool)> = Vec::new();
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        if !prefix.is_empty() && !name.to_lowercase().starts_with(&prefix.to_lowercase()) {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let display = if partial.starts_with('~') {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let full = dir.join(&name).to_string_lossy().to_string();
+            full.replacen(&home, "~", 1)
+        } else {
+            dir.join(&name).to_string_lossy().to_string()
+        };
+        results.push((display, is_dir));
+    }
+
+    results.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    results.truncate(50);
+    Ok(results)
+}
+
 #[tauri::command]
 fn save_clipboard_image(base64_data: String) -> Result<String, String> {
     clipboard_image::save_image_from_base64(&base64_data)
@@ -1213,10 +1450,16 @@ pub fn run() {
             get_usage_dashboard,
             get_message_count,
             generate_smart_title,
-            get_session_transcript,
+            get_session_conversation,
             search_session_content,
             watch_jsonl,
             unwatch_jsonl,
+            get_git_status,
+            get_git_diff,
+            read_file_content,
+            read_file,
+            write_file,
+            list_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

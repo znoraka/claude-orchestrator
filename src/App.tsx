@@ -4,7 +4,7 @@ import { useSessionContext } from "./contexts/SessionContext";
 import { useClipboard } from "./hooks/useClipboard";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
-import SessionTranscript from "./components/SessionTranscript";
+import SessionConversation from "./components/SessionConversation";
 import GitPanel from "./components/GitPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
 import UsagePanel from "./components/UsagePanel";
@@ -198,7 +198,7 @@ export default function App() {
         ) : (
           sessions.map((session) => {
             const tab = getTab(session.id);
-            const mainLabel = session.status === "stopped" ? "Transcript" : "Terminal";
+            const mainLabel = session.status === "stopped" ? "Conversation" : "Terminal";
             return (
             <div
               key={session.id}
@@ -237,7 +237,7 @@ export default function App() {
                 <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "main" ? 1 : 0 }}>
                   <ErrorBoundary key={`eb-${session.id}-${session.status}`}>
                     {session.status === "stopped" ? (
-                      <SessionTranscript
+                      <SessionConversation
                         session={session}
                         onResume={() => restartSession(session.id)}
                       />
