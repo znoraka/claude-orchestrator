@@ -16,7 +16,8 @@ import { useConversationTitles } from "../hooks/useConversationTitles";
 import { useSessionUsage } from "../hooks/useSessionUsage";
 import { useBackgroundNotifications } from "../hooks/useBackgroundNotifications";
 import { useToast } from "../components/Toast";
-import type { Session, SessionUsage } from "../types";
+import type { Session, SessionUsage, Workspace } from "../types";
+import { deriveWorkspaces, workspaceForSession } from "../utils/workspaces";
 
 const MAX_RUNNING_SESSIONS = 8;
 
@@ -63,12 +64,15 @@ function sessionReducer(state: Session[], action: SessionAction): Session[] {
 interface SessionContextValue {
   sessions: Session[];
   sortedSessions: Session[];
+  workspaces: Workspace[];
   activeSessionId: string | null;
+  activeWorkspaceId: string | null;
   sessionUsage: Map<string, SessionUsage>;
   todayCost: number;
   todayTokens: number;
 
   selectSession: (id: string) => void;
+  selectWorkspace: (workspaceId: string) => void;
   createSession: (
     name: string | undefined,
     directory: string,
@@ -94,6 +98,8 @@ export function useSessionContext(): SessionContextValue {
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, dispatch] = useReducer(sessionReducer, []);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  // Remembers last-focused session per workspace (directory)
+  const activeSessionInWorkspace = useRef<Map<string, string>>(new Map());
   const loadedRef = useRef(false);
   const { showError } = useToast();
 
@@ -192,6 +198,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const selectSession = useCallback((id: string) => {
     setActiveSessionId(id);
+    const wsId = workspaceForSession(id, sessionsRef.current);
+    if (wsId) activeSessionInWorkspace.current.set(wsId, id);
+  }, []);
+
+  const selectWorkspace = useCallback((workspaceId: string) => {
+    const lastSession = activeSessionInWorkspace.current.get(workspaceId);
+    const current = sessionsRef.current;
+    // Restore last session in workspace, or pick the most recent one
+    if (lastSession && current.some((s) => s.id === lastSession)) {
+      setActiveSessionId(lastSession);
+    } else {
+      const wsSessions = current
+        .filter((s) => (s.directory || "~") === workspaceId)
+        .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+      if (wsSessions.length > 0) {
+        setActiveSessionId(wsSessions[0].id);
+        activeSessionInWorkspace.current.set(workspaceId, wsSessions[0].id);
+      }
+    }
   }, []);
 
   const createSession = useCallback(
@@ -351,6 +376,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [sessions]
   );
 
+  const workspaces = useMemo(() => deriveWorkspaces(sessions), [sessions]);
+
+  const activeWorkspaceId = useMemo(
+    () => activeSessionId ? workspaceForSession(activeSessionId, sessions) : null,
+    [activeSessionId, sessions]
+  );
+
   // Today's usage — refreshed on JSONL file changes + a slow fallback interval
   const [todayCost, setTodayCost] = useState(0);
   const [todayTokens, setTodayTokens] = useState(0);
@@ -379,11 +411,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     () => ({
       sessions,
       sortedSessions,
+      workspaces,
       activeSessionId,
+      activeWorkspaceId,
       sessionUsage,
       todayCost,
       todayTokens,
       selectSession,
+      selectWorkspace,
       createSession,
       deleteSession,
       renameSession,
@@ -394,11 +429,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [
       sessions,
       sortedSessions,
+      workspaces,
       activeSessionId,
+      activeWorkspaceId,
       sessionUsage,
       todayCost,
       todayTokens,
       selectSession,
+      selectWorkspace,
       createSession,
       deleteSession,
       renameSession,

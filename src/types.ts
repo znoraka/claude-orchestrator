@@ -41,6 +41,8 @@ export interface PullRequest {
   headRefName: string;
   author: string;
   authorAvatar: string;
+  hasMyApproval: boolean;
+  hasMyComment: boolean;
 }
 
 export interface PullRequestsResult {
@@ -48,4 +50,37 @@ export interface PullRequestsResult {
   myPrs: PullRequest[];
   ghAvailable: boolean;
   error: string | null;
+}
+
+// Phase 2: Branch Comparison
+export interface BranchDiffFile {
+  path: string;
+  status: string;
+}
+
+export interface BranchDiffResult {
+  files: BranchDiffFile[];
+}
+
+// Phase 3: PR Review
+export interface PrDiffResult {
+  files: string[];
+  fullDiff: string;
+}
+
+export interface PrComment {
+  id: number;
+  path: string;
+  line: number;
+  body: string;
+  bodyHtml: string;
+  user: string;
+  createdAt: string;
+}
+
+export interface Workspace {
+  id: string;          // === directory (stable key)
+  directory: string;
+  sessions: Session[]; // sorted by lastActiveAt desc
+  lastActiveAt: number;
 }

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useCallback, type CSSProperties, type ReactElement } from "react";
+import { useState, useMemo, useEffect, useRef, type CSSProperties, type ReactElement } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { List } from "react-window";
 import type { Session, SessionUsage } from "../types";
@@ -23,55 +23,13 @@ interface SidebarProps {
   onShowUsage?: () => void;
 }
 
-interface SessionGroup {
-  label: string;
-  sessions: Session[];
-}
-
-type FlatItem =
-  | { type: "header"; label: string }
-  | { type: "session"; session: Session; contentOnly?: boolean };
-
-const HEADER_HEIGHT = 32;
 const SESSION_HEIGHT = 64;
 
-function groupSessionsByTime(sessions: Session[]): SessionGroup[] {
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const yesterdayStart = new Date(todayStart);
-  yesterdayStart.setDate(yesterdayStart.getDate() - 1);
-  const weekStart = new Date(todayStart);
-  weekStart.setDate(weekStart.getDate() - 7);
-
-  const groups: Record<string, Session[]> = {
-    Today: [],
-    Yesterday: [],
-    "Last 7 Days": [],
-    Older: [],
-  };
-
-  for (const s of sessions) {
-    const t = s.lastActiveAt;
-    if (t >= todayStart.getTime()) {
-      groups.Today.push(s);
-    } else if (t >= yesterdayStart.getTime()) {
-      groups.Yesterday.push(s);
-    } else if (t >= weekStart.getTime()) {
-      groups["Last 7 Days"].push(s);
-    } else {
-      groups.Older.push(s);
-    }
-  }
-
-  return Object.entries(groups)
-    .filter(([, arr]) => arr.length > 0)
-    .map(([label, arr]) => ({ label, sessions: arr }));
-}
-
 interface RowExtraProps {
-  flatItems: FlatItem[];
+  sessions: Session[];
   activeSessionId: string | null;
   sessionUsage: Map<string, SessionUsage>;
+  contentOnlyIds: Set<string>;
   onSelectSession: (id: string) => void;
   onRenameSession: (id: string, name: string) => void;
   onDeleteSession: (id: string) => void;
@@ -80,9 +38,10 @@ interface RowExtraProps {
 function VirtualRow({
   index,
   style,
-  flatItems,
+  sessions,
   activeSessionId,
   sessionUsage,
+  contentOnlyIds,
   onSelectSession,
   onRenameSession,
   onDeleteSession,
@@ -95,24 +54,14 @@ function VirtualRow({
     role: "listitem";
   };
 }): ReactElement | null {
-  const item = flatItems[index];
-  if (item.type === "header") {
-    return (
-      <div style={style} className="px-2 pt-3 pb-1 flex items-end">
-        <span className="text-[11px] font-semibold text-[var(--section-label)] uppercase tracking-wider">
-          {item.label}
-        </span>
-      </div>
-    );
-  }
-  const { session, contentOnly } = item;
+  const session = sessions[index];
   return (
     <div style={style}>
       <SessionTab
         session={session}
         isActive={session.id === activeSessionId}
         usage={sessionUsage.get(session.id)}
-        contentOnly={contentOnly}
+        contentOnly={contentOnlyIds.has(session.id)}
         onClick={() => onSelectSession(session.id)}
         onRename={(name) => onRenameSession(session.id, name)}
         onDelete={() => onDeleteSession(session.id)}
@@ -161,13 +110,16 @@ export default function Sidebar({
     return () => observer.disconnect();
   }, []);
 
-  const filteredSessions = useMemo(() => {
+  // Filter sessions by search query (name/directory)
+  const filteredSessionIds = useMemo(() => {
     const q = filter.toLowerCase().trim();
-    if (!q) return sessions;
-    return sessions.filter(
-      (s) =>
-        s.name.toLowerCase().includes(q) ||
-        (s.directory && s.directory.toLowerCase().includes(q))
+    if (!q) return null; // null means no filter active
+    return new Set(
+      sessions.filter(
+        (s) =>
+          s.name.toLowerCase().includes(q) ||
+          (s.directory && s.directory.toLowerCase().includes(q))
+      ).map((s) => s.id)
     );
   }, [sessions, filter]);
 
@@ -217,67 +169,39 @@ export default function Sidebar({
     return () => clearTimeout(timer);
   }, [filter, sessions]);
 
-  // Merge: title-matched sessions + content-only matches
-  const titleMatchedIds = useMemo(
-    () => new Set(filteredSessions.map((s) => s.id)),
-    [filteredSessions]
-  );
-
-  const contentOnlySessions = useMemo(() => {
-    if (!filter.trim()) return [];
-    return sessions.filter(
-      (s) =>
-        !titleMatchedIds.has(s.id) &&
-        s.claudeSessionId &&
-        contentMatchIds.has(s.claudeSessionId)
+  // Build content-only session IDs (matched by content but not title/directory)
+  const contentOnlyIds = useMemo(() => {
+    if (!filter.trim()) return new Set<string>();
+    return new Set(
+      sessions
+        .filter(
+          (s) =>
+            !(filteredSessionIds?.has(s.id)) &&
+            s.claudeSessionId &&
+            contentMatchIds.has(s.claudeSessionId)
+        )
+        .map((s) => s.id)
     );
-  }, [sessions, titleMatchedIds, contentMatchIds, filter]);
+  }, [sessions, filteredSessionIds, contentMatchIds, filter]);
 
-  const contentOnlyIds = useMemo(
-    () => new Set(contentOnlySessions.map((s) => s.id)),
-    [contentOnlySessions]
-  );
-
-  const groupedSessions = useMemo(
-    () => groupSessionsByTime(filteredSessions),
-    [filteredSessions]
-  );
-
-  // Flatten groups into a single list of items for virtualization
-  const flatItems = useMemo<FlatItem[]>(() => {
-    const items: FlatItem[] = [];
-    for (const group of groupedSessions) {
-      items.push({ type: "header", label: group.label });
-      for (const session of group.sessions) {
-        items.push({ type: "session", session, contentOnly: contentOnlyIds.has(session.id) });
-      }
-    }
-    if (contentOnlySessions.length > 0) {
-      items.push({ type: "header", label: "Content Matches" });
-      for (const session of contentOnlySessions) {
-        items.push({ type: "session", session, contentOnly: true });
-      }
-    }
-    return items;
-  }, [groupedSessions, contentOnlySessions, contentOnlyIds]);
-
-  const getItemSize = useCallback(
-    (index: number) => {
-      return flatItems[index].type === "header" ? HEADER_HEIGHT : SESSION_HEIGHT;
-    },
-    [flatItems]
-  );
+  // Flat filtered session list
+  const displayedSessions = useMemo(() => {
+    if (!filter.trim()) return sessions;
+    const allMatchIds = new Set([...(filteredSessionIds ?? []), ...contentOnlyIds]);
+    return sessions.filter((s) => allMatchIds.has(s.id));
+  }, [sessions, filteredSessionIds, contentOnlyIds, filter]);
 
   const rowProps = useMemo<RowExtraProps>(
     () => ({
-      flatItems,
+      sessions: displayedSessions,
       activeSessionId,
       sessionUsage,
+      contentOnlyIds,
       onSelectSession,
       onRenameSession,
       onDeleteSession,
     }),
-    [flatItems, activeSessionId, sessionUsage, onSelectSession, onRenameSession, onDeleteSession]
+    [displayedSessions, activeSessionId, sessionUsage, contentOnlyIds, onSelectSession, onRenameSession, onDeleteSession]
   );
 
   return (
@@ -332,33 +256,35 @@ export default function Sidebar({
       </div>
 
       {/* Session list */}
-      <div className="flex-1 min-h-0" ref={listContainerRef}>
-        {flatItems.length > 0 ? (
-          <List
-            style={{ height: listHeight, width: "100%" }}
-            rowComponent={VirtualRow}
-            rowCount={flatItems.length}
-            rowHeight={getItemSize}
-            rowProps={rowProps}
-            overscanCount={5}
-          />
-        ) : filteredSessions.length === 0 && contentOnlySessions.length === 0 && sessions.length > 0 ? (
-          <div className="px-3 py-8 text-center text-xs text-[var(--text-secondary)]">
-            {contentSearching ? "Searching content..." : "No matching sessions."}
-          </div>
-        ) : sessions.length === 0 ? (
-          <div className="px-3 py-12 text-center">
-            <p className="text-xs text-[var(--text-secondary)] mb-3">
-              No sessions yet
-            </p>
-            <button
-              onClick={onCreateSession}
-              className="text-xs text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors font-medium"
-            >
-              Create your first session
-            </button>
-          </div>
-        ) : null}
+      <div className="flex-1 min-h-0 flex flex-col" ref={listContainerRef}>
+        <div className="flex-1 min-h-0">
+          {displayedSessions.length > 0 ? (
+            <List
+              style={{ height: listHeight, width: "100%" }}
+              rowComponent={VirtualRow}
+              rowCount={displayedSessions.length}
+              rowHeight={SESSION_HEIGHT}
+              rowProps={rowProps}
+              overscanCount={5}
+            />
+          ) : sessions.length > 0 ? (
+            <div className="px-3 py-8 text-center text-xs text-[var(--text-secondary)]">
+              {contentSearching ? "Searching content..." : "No matching sessions."}
+            </div>
+          ) : (
+            <div className="px-3 py-12 text-center">
+              <p className="text-xs text-[var(--text-secondary)] mb-3">
+                No sessions yet
+              </p>
+              <button
+                onClick={onCreateSession}
+                className="text-xs text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors font-medium"
+              >
+                Create your first session
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Footer */}

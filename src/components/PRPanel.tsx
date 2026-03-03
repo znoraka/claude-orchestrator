@@ -3,10 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { PullRequest, PullRequestsResult, GitStatusResult } from "../types";
 import { useSessionContext } from "../contexts/SessionContext";
+import PRReviewView from "./PRReviewView";
 
 interface PRPanelProps {
   directory: string;
   isActive?: boolean;
+  onAskClaude?: (prompt: string) => void;
 }
 
 function relativeTime(dateStr: string): string {
@@ -44,12 +46,14 @@ function PRRow({
   directory,
   onBranchChanged,
   onReviewPR,
+  onClaudeReview,
 }: {
   pr: PullRequest;
   currentBranch: string;
   directory: string;
   onBranchChanged: () => void;
-  onReviewPR: (prNumber: number) => void;
+  onReviewPR: (pr: PullRequest) => void;
+  onClaudeReview: (prNumber: number) => void;
 }) {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [worktreeLoading, setWorktreeLoading] = useState(false);
@@ -117,6 +121,16 @@ function PRRow({
                 current
               </span>
             )}
+            {pr.hasMyApproval && (
+              <span className="px-1.5 py-0.5 text-[10px] rounded bg-green-900/50 text-green-400">
+                approved
+              </span>
+            )}
+            {pr.hasMyComment && (
+              <span className="px-1.5 py-0.5 text-[10px] rounded bg-yellow-900/50 text-yellow-400">
+                commented
+              </span>
+            )}
           </div>
           <div className="text-[var(--text-primary)] truncate">{pr.title}</div>
           <div className="text-[10px] text-[var(--text-tertiary)] mt-0.5 flex items-center gap-1.5">
@@ -127,9 +141,18 @@ function PRRow({
         {/* Action buttons */}
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-1">
           <button
-            onClick={(e) => { e.stopPropagation(); onReviewPR(pr.number); }}
+            onClick={(e) => { e.stopPropagation(); onReviewPR(pr); }}
             className="p-1 rounded hover:bg-[var(--bg-secondary)] text-[var(--text-tertiary)] hover:text-[var(--accent)] disabled:opacity-30"
-            title="Review PR in new session"
+            title="Review PR diff"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path fillRule="evenodd" d="M8.5.75a.75.75 0 00-1.5 0v1.5h-1a.75.75 0 000 1.5h1v1.5a.75.75 0 001.5 0v-1.5h1a.75.75 0 000-1.5h-1V.75zM2 6.854v6.396c0 .414.336.75.75.75h10.5a.75.75 0 00.75-.75V6.854a.353.353 0 00-.354-.354H2.354a.353.353 0 00-.354.354zM.5 6.854c0-.747.606-1.354 1.354-1.354h12.292c.748 0 1.354.607 1.354 1.354v6.396A2.25 2.25 0 0113.25 15.5H2.75A2.25 2.25 0 01.5 13.25V6.854z" />
+            </svg>
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onClaudeReview(pr.number); }}
+            className="p-1 rounded hover:bg-[var(--bg-secondary)] text-[var(--text-tertiary)] hover:text-[var(--accent)] disabled:opacity-30"
+            title="Claude review in new session"
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
               <path d="M1.5 2.75a.25.25 0 01.25-.25h8.5a.25.25 0 01.25.25v5.5a.25.25 0 01-.25.25h-3.5a.75.75 0 00-.53.22L3.5 11.44V9.25a.75.75 0 00-.75-.75h-1a.25.25 0 01-.25-.25v-5.5zM1.75 1A1.75 1.75 0 000 2.75v5.5C0 9.216.784 10 1.75 10H2v1.543a1.457 1.457 0 002.487 1.03L7.061 10h3.189A1.75 1.75 0 0012 8.25v-5.5A1.75 1.75 0 0010.25 1h-8.5zM14.5 4.75a.25.25 0 00-.25-.25h-.5a.75.75 0 110-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0114.25 12H14v1.543a1.457 1.457 0 01-2.487 1.03L9.22 12.28a.75.75 0 111.06-1.06l2.22 2.22v-2.19a.75.75 0 01.75-.75h1a.25.25 0 00.25-.25v-5.5z" />
@@ -174,19 +197,24 @@ function PRRow({
   );
 }
 
-export default function PRPanel({ directory, isActive }: PRPanelProps) {
+export default function PRPanel({ directory, isActive, onAskClaude }: PRPanelProps) {
   const { createSession } = useSessionContext();
   const [result, setResult] = useState<PullRequestsResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [currentBranch, setCurrentBranch] = useState("");
+  const [reviewingPr, setReviewingPr] = useState<PullRequest | null>(null);
 
-  const handleReviewPR = useCallback(async (prNumber: number) => {
+  const handleClaudeReview = useCallback(async (prNumber: number) => {
     const sessionId = await createSession(`Review PR #${prNumber}`, directory);
     await invoke("write_to_pty", {
       sessionId,
       data: `/review ${prNumber}`,
     });
   }, [createSession, directory]);
+
+  const handleReviewPR = useCallback((pr: PullRequest) => {
+    setReviewingPr(pr);
+  }, []);
 
   const fetchBranch = useCallback(async () => {
     try {
@@ -233,6 +261,20 @@ export default function PRPanel({ directory, isActive }: PRPanelProps) {
     }, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, [isActive, refresh, fetchBranch]);
+
+  // PR Review Mode
+  if (reviewingPr) {
+    return (
+      <PRReviewView
+        directory={directory}
+        prNumber={reviewingPr.number}
+        prTitle={reviewingPr.title}
+        prUrl={reviewingPr.url}
+        onBack={() => setReviewingPr(null)}
+        onAskClaude={onAskClaude}
+      />
+    );
+  }
 
   if (loading && !result) {
     return (
@@ -306,6 +348,7 @@ export default function PRPanel({ directory, isActive }: PRPanelProps) {
                   directory={directory}
                   onBranchChanged={fetchBranch}
                   onReviewPR={handleReviewPR}
+                  onClaudeReview={handleClaudeReview}
                 />
               ))}
             </div>
@@ -326,6 +369,7 @@ export default function PRPanel({ directory, isActive }: PRPanelProps) {
                   directory={directory}
                   onBranchChanged={fetchBranch}
                   onReviewPR={handleReviewPR}
+                  onClaudeReview={handleClaudeReview}
                 />
               ))}
             </div>

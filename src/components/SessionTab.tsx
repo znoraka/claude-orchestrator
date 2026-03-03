@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect, memo } from "react";
 import type { Session, SessionUsage } from "../types";
 
-function shortenPath(path: string): string {
+export function shortenPath(path: string): string {
   const parts = path.split("/");
   return parts[parts.length - 1] || path;
 }
 
-function directoryColor(dir: string): string {
+export function directoryColor(dir: string): string {
   let hash = 0;
   for (let i = 0; i < dir.length; i++) {
     hash = dir.charCodeAt(i) + ((hash << 5) - hash);
@@ -35,6 +35,7 @@ export interface SessionTabProps {
   isActive: boolean;
   usage?: SessionUsage;
   contentOnly?: boolean;
+  hideDirectory?: boolean;
   onClick: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
@@ -45,6 +46,7 @@ export default memo(function SessionTab({
   isActive,
   usage,
   contentOnly,
+  hideDirectory,
   onClick,
   onRename,
   onDelete,
@@ -125,7 +127,7 @@ export default memo(function SessionTab({
             {session.name}
           </span>
         )}
-        {session.directory && (
+        {!hideDirectory && session.directory && (
           <span
             className="text-[10px] truncate block mt-0.5"
             style={{ color: directoryColor(session.directory) }}
