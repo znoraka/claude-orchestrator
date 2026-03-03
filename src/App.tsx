@@ -11,6 +11,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import UsagePanel from "./components/UsagePanel";
 import FileEditor from "./components/FileEditor";
 import { directoryColor, shortenPath } from "./components/SessionTab";
+import { repoRootDir } from "./utils/workspaces";
 
 export default function App() {
   const {
@@ -61,6 +62,7 @@ export default function App() {
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [skipPermissions, setSkipPermissions] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [dirInputDirty, setDirInputDirty] = useState(false);
 
   // ── Panel state (replaces per-workspace tab state) ──────────────
   const [activePanel, setActivePanel] = useState<"git" | "prs" | "shell" | null>(null);
@@ -211,6 +213,8 @@ export default function App() {
 
   const handleNewSession = () => {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
+    setDirInputDirty(false);
+    setSuggestions([]);
     setRecentDirs(loadRecentDirs());
     setShowDirDialog(true);
     const lastDir = localStorage.getItem("claude-orchestrator-last-dir") || "~";
@@ -223,8 +227,9 @@ export default function App() {
     const dir = dirInput.trim();
     if (!dir || creating) return;
     setCreating(true);
-    localStorage.setItem("claude-orchestrator-last-dir", dir);
-    saveRecentDir(dir);
+    const rootDir = repoRootDir(dir);
+    localStorage.setItem("claude-orchestrator-last-dir", rootDir);
+    saveRecentDir(rootDir);
     setShowDirDialog(false);
     try {
       await createSession(undefined, dir, skipPermissions);
@@ -238,9 +243,9 @@ export default function App() {
     setSuggestions([]);
   };
 
-  // Fetch directory suggestions as user types
+  // Fetch directory suggestions as user types (only after manual edits)
   useEffect(() => {
-    if (!showDirDialog || !dirInput.trim()) {
+    if (!showDirDialog || !dirInput.trim() || !dirInputDirty) {
       setSuggestions([]);
       return;
     }
@@ -256,7 +261,7 @@ export default function App() {
         });
     }, 100);
     return () => clearTimeout(timer);
-  }, [dirInput, showDirDialog]);
+  }, [dirInput, showDirDialog, dirInputDirty]);
 
   const acceptSuggestion = (path: string) => {
     setDirInput(path + "/");
@@ -266,8 +271,10 @@ export default function App() {
   const quickCreate = async (dir: string) => {
     if (creating) return;
     setCreating(true);
-    localStorage.setItem("claude-orchestrator-last-dir", dir);
-    saveRecentDir(dir);
+    // Save the repo root as last-dir so worktrees are always listed from the main repo
+    const rootDir = repoRootDir(dir);
+    localStorage.setItem("claude-orchestrator-last-dir", rootDir);
+    saveRecentDir(rootDir);
     setShowDirDialog(false);
     try {
       await createSession(undefined, dir, skipPermissions);
@@ -523,98 +530,53 @@ export default function App() {
       {/* Directory picker dialog */}
       {showDirDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 dialog-backdrop" onMouseDown={handleDirCancel}>
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl p-8 w-96 shadow-2xl flex flex-col gap-3" onMouseDown={(e) => e.stopPropagation()}>
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">
-              New Session
-            </h2>
-            <label className="flex items-center gap-2.5 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={skipPermissions}
-                onChange={(e) => setSkipPermissions(e.target.checked)}
-                className="accent-[var(--accent)]"
-              />
-              <span className="text-xs text-[var(--text-secondary)]">
-                Skip permissions
-              </span>
-            </label>
-            <div>
-            <label className="block text-xs text-[var(--text-secondary)] pb-2">
-              Working directory
-            </label>
-            {recentDirs.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 pb-2">
-                {recentDirs.map((d) => (
-                  <button
-                    key={d}
-                    onClick={() => quickCreate(d)}
-                    className={`px-2 py-0.5 text-[11px] font-mono rounded border transition-colors truncate max-w-[10rem] ${
-                      dirInput === d
-                        ? "bg-[var(--accent)] text-white border-[var(--accent)]"
-                        : "bg-[var(--bg-primary)] text-[var(--text-secondary)] border-[var(--border-color)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
-                    }`}
-                    title={d}
-                  >
-                    {d.includes("/") ? d.split("/").filter(Boolean).slice(-2).join("/") : d}
-                  </button>
-                ))}
-              </div>
-            )}
-            {worktrees.length > 0 && (
-              <>
-              <label className="block text-[10px] text-[var(--text-tertiary)] pb-1.5 pt-1">
-                Worktrees
-              </label>
-              <div className="flex flex-wrap gap-1.5 pb-2">
-                {worktrees.map((wt) => (
-                  <button
-                    key={wt}
-                    onClick={() => quickCreate(wt)}
-                    className="px-2 py-0.5 text-[11px] font-mono rounded border transition-colors truncate max-w-[12rem] bg-[var(--bg-primary)] text-[var(--text-secondary)] border-dashed border-[var(--border-color)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
-                    title={wt}
-                  >
-                    {wt.includes("/") ? wt.split("/").filter(Boolean).slice(-2).join("/") : wt}
-                  </button>
-                ))}
-              </div>
-              </>
-            )}
-            <div className="relative">
-              <input
-                autoFocus
-                value={dirInput}
-                onChange={(e) => setDirInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Tab" && suggestions.length > 0) {
-                    e.preventDefault();
-                    acceptSuggestion(suggestions[Math.max(0, selectedIdx)]);
-                  } else if (e.key === "ArrowDown" && suggestions.length > 0) {
-                    e.preventDefault();
-                    setSelectedIdx((i) => Math.min(i + 1, suggestions.length - 1));
-                  } else if (e.key === "ArrowUp" && suggestions.length > 0) {
-                    e.preventDefault();
-                    setSelectedIdx((i) => Math.max(i - 1, 0));
-                  } else if (e.key === "Enter") {
-                    if (selectedIdx >= 0 && suggestions.length > 0) {
-                      acceptSuggestion(suggestions[selectedIdx]);
-                    } else {
-                      handleDirConfirm();
+          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl w-[420px] shadow-2xl flex flex-col overflow-hidden" onMouseDown={(e) => e.stopPropagation()}>
+            {/* Search input */}
+            <div className="px-4 pt-4 pb-3">
+              <div className="relative">
+                <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                <input
+                  autoFocus
+                  value={dirInput}
+                  onChange={(e) => { setDirInput(e.target.value); setDirInputDirty(true); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Tab" && suggestions.length > 0) {
+                      e.preventDefault();
+                      acceptSuggestion(suggestions[Math.max(0, selectedIdx)]);
+                    } else if (e.key === "ArrowDown" && suggestions.length > 0) {
+                      e.preventDefault();
+                      setSelectedIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                    } else if (e.key === "ArrowUp" && suggestions.length > 0) {
+                      e.preventDefault();
+                      setSelectedIdx((i) => Math.max(i - 1, 0));
+                    } else if (e.key === "Enter") {
+                      if (selectedIdx >= 0 && suggestions.length > 0) {
+                        acceptSuggestion(suggestions[selectedIdx]);
+                      } else {
+                        handleDirConfirm();
+                      }
+                    } else if (e.key === "Escape") {
+                      if (suggestions.length > 0) {
+                        setSuggestions([]);
+                      } else {
+                        handleDirCancel();
+                      }
                     }
-                  } else if (e.key === "Escape") {
-                    if (suggestions.length > 0) {
-                      setSuggestions([]);
-                    } else {
-                      handleDirCancel();
-                    }
-                  }
-                }}
-                className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] font-mono transition-colors"
-                placeholder="~/projects/my-app"
-              />
-              {suggestions.length > 0 && (
+                  }}
+                  className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg pl-9 pr-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] font-mono transition-colors"
+                  placeholder="Type a path or pick below…"
+                />
+              </div>
+            </div>
+
+            {/* Autocomplete suggestions (overlay) */}
+            {suggestions.length > 0 && (
+              <div className="px-4 -mt-1 pb-2 relative">
                 <div
                   ref={suggestionsRef}
-                  className="absolute left-0 right-0 top-full mt-1 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded shadow-lg max-h-48 overflow-y-auto z-10"
+                  className="bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg shadow-lg max-h-40 overflow-y-auto"
                 >
                   {suggestions.map((s, i) => (
                     <div
@@ -630,23 +592,95 @@ export default function App() {
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
-            </div>
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={handleDirCancel}
-                className="px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDirConfirm}
-                disabled={creating}
-                className="px-3 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors"
-              >
-                {creating ? "Creating…" : "Create"}
-              </button>
+              </div>
+            )}
+
+            {/* Directory list */}
+            {(recentDirs.length > 0 || worktrees.length > 0) && suggestions.length === 0 && (
+              <div className="max-h-[280px] overflow-y-auto border-t border-[var(--border-color)]">
+                {recentDirs.length > 0 && (
+                  <div>
+                    <div className="px-4 pt-2.5 pb-1 text-[10px] font-medium uppercase tracking-wider text-[var(--text-tertiary)]">
+                      Recent
+                    </div>
+                    {recentDirs.map((d) => (
+                      <button
+                        key={d}
+                        onClick={() => quickCreate(d)}
+                        className="w-full flex items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-[var(--bg-hover)] group"
+                      >
+                        <svg className="w-4 h-4 shrink-0 text-[var(--text-tertiary)] group-hover:text-[var(--text-secondary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.06-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+                        </svg>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-medium text-[var(--text-primary)] truncate">
+                            {d.includes("/") ? d.split("/").filter(Boolean).pop() : d}
+                          </div>
+                          <div className="text-[10px] text-[var(--text-tertiary)] font-mono truncate">
+                            {d.startsWith("~") ? d : "~/" + d.split("/").slice(3).join("/")}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {worktrees.length > 0 && (
+                  <div>
+                    <div className="px-4 pt-2.5 pb-1 text-[10px] font-medium uppercase tracking-wider text-[var(--text-tertiary)]">
+                      Worktrees
+                    </div>
+                    {worktrees.map((wt) => (
+                      <button
+                        key={wt}
+                        onClick={() => quickCreate(wt)}
+                        className="w-full flex items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-[var(--bg-hover)] group"
+                      >
+                        <svg className="w-4 h-4 shrink-0 text-[var(--text-tertiary)] group-hover:text-[var(--text-secondary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m9.86-2.54a4.5 4.5 0 00-6.364-6.364L4.5 8.25" />
+                        </svg>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-medium text-[var(--text-primary)] truncate">
+                            {wt.includes("/") ? wt.split("/").filter(Boolean).pop() : wt}
+                          </div>
+                          <div className="text-[10px] text-[var(--text-tertiary)] font-mono truncate">
+                            {wt.startsWith("~") ? wt : "~/" + wt.split("/").slice(3).join("/")}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Footer */}
+            <div className="flex items-center justify-between px-4 py-3 border-t border-[var(--border-color)]">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={skipPermissions}
+                  onChange={(e) => setSkipPermissions(e.target.checked)}
+                  className="accent-[var(--accent)] w-3.5 h-3.5"
+                />
+                <span className="text-[11px] text-[var(--text-tertiary)]">
+                  Skip permissions
+                </span>
+              </label>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleDirCancel}
+                  className="px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDirConfirm}
+                  disabled={creating}
+                  className="px-4 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md transition-colors font-medium"
+                >
+                  {creating ? "Creating…" : "Create"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
