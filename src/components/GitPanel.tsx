@@ -5,6 +5,8 @@ import type { GitFileEntry, GitStatusResult } from "../types";
 
 interface GitPanelProps {
   directory: string;
+  isActive?: boolean;
+  onEditFile?: (filePath: string) => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -354,7 +356,7 @@ function NewFileViewer({ content, filePath }: { content: string; filePath: strin
 
 // --- Main GitPanel ---
 
-export default function GitPanel({ directory }: GitPanelProps) {
+export default function GitPanel({ directory, isActive, onEditFile }: GitPanelProps) {
   const [status, setStatus] = useState<GitStatusResult | null>(null);
   const [selectedFile, setSelectedFile] = useState<GitFileEntry | null>(null);
   const [diff, setDiff] = useState<string>("");
@@ -363,6 +365,19 @@ export default function GitPanel({ directory }: GitPanelProps) {
   const [diffMode, setDiffMode] = useState<DiffMode>(
     () => (localStorage.getItem("git-diff-mode") as DiffMode) || "unified"
   );
+
+  // Cmd+E opens selected file in editor
+  useEffect(() => {
+    if (!isActive || !onEditFile || !selectedFile) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey && e.key === "e") {
+        e.preventDefault();
+        onEditFile(selectedFile.path);
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isActive, onEditFile, selectedFile]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -457,7 +472,7 @@ export default function GitPanel({ directory }: GitPanelProps) {
             <button
               key={`${file.staged ? "s" : "u"}-${file.path}`}
               onClick={() => setSelectedFile(file)}
-              className={`w-full text-left px-2 py-1 text-xs font-mono truncate flex items-center gap-2 rounded transition-colors ${
+              className={`group w-full text-left px-2 py-1 text-xs font-mono truncate flex items-center gap-2 rounded transition-colors ${
                 isSelected
                   ? "bg-[var(--accent)] text-white"
                   : "text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
@@ -471,7 +486,21 @@ export default function GitPanel({ directory }: GitPanelProps) {
               >
                 {file.status}
               </span>
-              <span className="truncate">{file.path}</span>
+              <span className="truncate flex-1">{file.path}</span>
+              {onEditFile && (
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEditFile(file.path);
+                  }}
+                  className={`flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-1 rounded hover:bg-black/20 ${
+                    isSelected ? "text-white/70 hover:text-white" : "text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                  }`}
+                  title="Edit file"
+                >
+                  Edit
+                </span>
+              )}
             </button>
           );
         })}
@@ -525,7 +554,7 @@ export default function GitPanel({ directory }: GitPanelProps) {
           </div>
 
           {/* Diff viewer */}
-          <div className="flex-1 min-w-0 overflow-auto bg-[var(--bg-primary)]">
+          <div className="flex-1 w-0 overflow-auto bg-[var(--bg-primary)]">
             {selectedFile ? (
               selectedFile.status === "??" ? (
                 <NewFileViewer content={diff} filePath={selectedFile.path} />

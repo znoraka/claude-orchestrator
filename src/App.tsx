@@ -8,6 +8,7 @@ import SessionConversation from "./components/SessionConversation";
 import GitPanel from "./components/GitPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
 import UsagePanel from "./components/UsagePanel";
+import FileEditor from "./components/FileEditor";
 
 export default function App() {
   const {
@@ -47,6 +48,8 @@ export default function App() {
 
   // Directory dialog state
   const [showUsagePanel, setShowUsagePanel] = useState(false);
+  const [showFileEditor, setShowFileEditor] = useState(false);
+  const [editorFilePath, setEditorFilePath] = useState<string | undefined>();
   const [showDirDialog, setShowDirDialog] = useState(false);
   const [dirInput, setDirInput] = useState(() =>
     localStorage.getItem("claude-orchestrator-last-dir") || "~"
@@ -101,6 +104,13 @@ export default function App() {
         setRecentDirs(loadRecentDirs());
         setShowDirDialog(true);
       }
+      if (e.metaKey && e.key === "e") {
+        // When git tab is active, GitPanel handles Cmd+E with the selected file
+        if (activeSessionId && getTab(activeSessionId) === "git") return;
+        e.preventDefault();
+        setEditorFilePath(undefined);
+        setShowFileEditor((v) => !v);
+      }
       if (e.metaKey && e.key === "g" && activeSessionId) {
         e.preventDefault();
         toggleTab(activeSessionId);
@@ -108,7 +118,7 @@ export default function App() {
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [activeSessionId]);
+  }, [activeSessionId, activeTab]);
 
   const handleNewSession = () => {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
@@ -254,7 +264,15 @@ export default function App() {
                   </ErrorBoundary>
                 </div>
                 <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "git" ? 1 : 0 }}>
-                  <GitPanel directory={session.directory} />
+                  <GitPanel
+                    directory={session.directory}
+                    isActive={session.id === activeSessionId && tab === "git"}
+                    onEditFile={(relativePath) => {
+                      const dir = session.directory.endsWith("/") ? session.directory : session.directory + "/";
+                      setEditorFilePath(dir + relativePath);
+                      setShowFileEditor(true);
+                    }}
+                  />
                 </div>
               </div>
             </div>
@@ -266,6 +284,15 @@ export default function App() {
       {/* Usage panel modal */}
       {showUsagePanel && (
         <UsagePanel onClose={() => setShowUsagePanel(false)} />
+      )}
+
+      {/* File editor overlay */}
+      {showFileEditor && (
+        <FileEditor
+          baseDirectory={activeSessionId ? sessions.find((s) => s.id === activeSessionId)?.directory : undefined}
+          initialFilePath={editorFilePath}
+          onClose={() => { setShowFileEditor(false); setEditorFilePath(undefined); }}
+        />
       )}
 
       {/* Directory picker dialog */}

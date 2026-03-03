@@ -18,3 +18,15 @@ export interface SessionUsage {
   costUsd: number;
   isBusy: boolean;
 }
+
+export interface GitFileEntry {
+  path: string;
+  status: string; // "M", "A", "D", "??", "MM", etc.
+  staged: boolean;
+}
+
+export interface GitStatusResult {
+  branch: string;
+  files: GitFileEntry[];
+  isGitRepo: boolean;
+}
