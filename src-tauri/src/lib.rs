@@ -185,6 +185,18 @@ fn resize_pty(
 }
 
 #[tauri::command]
+fn create_shell_pty_session(
+    session_id: String,
+    directory: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    eprintln!("[create_shell_pty_session] session_id={}, directory={:?}", session_id, directory);
+    let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
+    manager.create_shell_session(&session_id, app_handle, directory)
+}
+
+#[tauri::command]
 fn destroy_pty_session(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
     manager.destroy_session(&session_id)
@@ -1734,6 +1746,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             create_pty_session,
+            create_shell_pty_session,
             write_to_pty,
             resize_pty,
             destroy_pty_session,

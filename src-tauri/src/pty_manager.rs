@@ -256,6 +256,147 @@ impl PtyManager {
         }
     }
 
+    /// Spawn a plain login shell (no `claude` command) for the given session.
+    pub fn create_shell_session(
+        &self,
+        session_id: &str,
+        app_handle: AppHandle,
+        directory: String,
+    ) -> Result<(), String> {
+        if directory.is_empty() {
+            return Err("directory is required".to_string());
+        }
+
+        let pty_system = native_pty_system();
+
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("Failed to open PTY: {}", e))?;
+
+        // Expand ~ in directory
+        let expanded_dir = if directory.starts_with('~') {
+            if let Ok(home) = std::env::var("HOME") {
+                directory.replacen('~', &home, 1)
+            } else {
+                directory.clone()
+            }
+        } else {
+            directory.clone()
+        };
+
+        fn shell_escape(s: &str) -> String {
+            format!("'{}'", s.replace('\'', "'\\''"))
+        }
+
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let mut cmd = CommandBuilder::new(&shell);
+        cmd.env("TERM", "xterm-256color");
+
+        let escaped_dir = shell_escape(&expanded_dir);
+        let shell_cmd = format!("cd {} && exec {} -l", escaped_dir, shell_escape(&shell));
+        eprintln!("[pty_manager] Spawning shell: {} -lc \"{}\"", shell, shell_cmd);
+        cmd.arg("-lc");
+        cmd.arg(&shell_cmd);
+
+        pair.slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("Failed to spawn shell: {}", e))?;
+
+        drop(pair.slave);
+
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("Failed to clone reader: {}", e))?;
+
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("Failed to take writer: {}", e))?;
+
+        let sid = session_id.to_string();
+        let scrollback_buf = self.scrollback.clone();
+
+        {
+            let mut sb = scrollback_buf.lock().map_err(|e| format!("Lock error: {}", e))?;
+            sb.entry(sid.clone()).or_insert_with(Vec::new);
+        }
+
+        thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            let mut pending = Vec::new();
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => {
+                        if !pending.is_empty() {
+                            let data = String::from_utf8_lossy(&pending).to_string();
+                            let _ = app_handle.emit(&format!("pty-output-{}", sid), data);
+                        }
+                        let _ = app_handle.emit(&format!("pty-exit-{}", sid), ());
+                        break;
+                    }
+                    Ok(n) => {
+                        pending.extend_from_slice(&buf[..n]);
+
+                        let valid_up_to = match std::str::from_utf8(&pending) {
+                            Ok(_) => pending.len(),
+                            Err(e) => e.valid_up_to(),
+                        };
+
+                        if valid_up_to > 0 {
+                            let data = unsafe {
+                                std::str::from_utf8_unchecked(&pending[..valid_up_to])
+                            };
+                            let _ = app_handle.emit(
+                                &format!("pty-output-{}", sid),
+                                data.to_string(),
+                            );
+
+                            if let Ok(mut sb) = scrollback_buf.lock() {
+                                if let Some(buf) = sb.get_mut(&sid) {
+                                    buf.extend_from_slice(&pending[..valid_up_to]);
+                                    if buf.len() > MAX_SCROLLBACK_BYTES {
+                                        let drain_to = buf.len() - MAX_SCROLLBACK_BYTES;
+                                        buf.drain(..drain_to);
+                                    }
+                                }
+                            }
+                        }
+
+                        if valid_up_to < pending.len() {
+                            let remaining = pending[valid_up_to..].to_vec();
+                            pending.clear();
+                            pending.extend_from_slice(&remaining);
+                        } else {
+                            pending.clear();
+                        }
+                    }
+                    Err(_) => {
+                        let _ = app_handle.emit(&format!("pty-exit-{}", sid), ());
+                        break;
+                    }
+                }
+            }
+        });
+
+        let session = PtySession {
+            writer,
+            master: pair.master,
+        };
+
+        self.sessions
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?
+            .insert(session_id.to_string(), session);
+
+        Ok(())
+    }
+
     pub fn destroy_session(&self, session_id: &str) -> Result<(), String> {
         let mut sessions = self
             .sessions

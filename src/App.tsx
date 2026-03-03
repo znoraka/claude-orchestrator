@@ -60,7 +60,9 @@ export default function App() {
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [skipPermissions, setSkipPermissions] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [activeTab, setActiveTab] = useState<Map<string, "main" | "git" | "prs">>(new Map());
+  const [activeTab, setActiveTab] = useState<Map<string, "main" | "git" | "prs" | "shell">>(new Map());
+  // Track which sessions have a shell PTY created
+  const [shellSessions, setShellSessions] = useState<Set<string>>(new Set());
   // LRU cache of mounted tab panels (most recent at end). Max 16 slots (8 sessions × 2 tabs).
   const MAX_MOUNTED_TABS = 16;
   const [mountedTabsLru, setMountedTabsLru] = useState<Array<{ sessionId: string; tab: string }>>([]);
@@ -89,7 +91,7 @@ export default function App() {
 
   useClipboard(handleImagePath);
 
-  const getTab = (sessionId: string): "main" | "git" | "prs" =>
+  const getTab = (sessionId: string): "main" | "git" | "prs" | "shell" =>
     activeTab.get(sessionId) || "main";
   const isTabMounted = (sessionId: string, tab: string) =>
     mountedTabsLru.some((e) => e.sessionId === sessionId && e.tab === tab);
@@ -101,7 +103,7 @@ export default function App() {
       return next.length > MAX_MOUNTED_TABS ? next.slice(next.length - MAX_MOUNTED_TABS) : next;
     });
   };
-  const switchTab = (sessionId: string, tab: "main" | "git" | "prs") => {
+  const switchTab = (sessionId: string, tab: "main" | "git" | "prs" | "shell") => {
     setActiveTab((prev) => {
       const next = new Map(prev);
       next.set(sessionId, tab);
@@ -109,12 +111,27 @@ export default function App() {
     });
     if (tab !== "main") touchMountedTab(sessionId, tab);
   };
+  const ensureShellPty = async (sessionId: string, directory: string) => {
+    if (shellSessions.has(sessionId)) return;
+    const shellSessionId = `shell-${sessionId}`;
+    try {
+      await invoke("create_shell_pty_session", { sessionId: shellSessionId, directory });
+      setShellSessions((prev) => new Set(prev).add(sessionId));
+    } catch (err) {
+      console.error("Failed to create shell PTY:", err);
+    }
+  };
   const toggleTab = (sessionId: string) => {
     const next = getTab(sessionId) === "main" ? "git" : "main";
     switchTab(sessionId, next);
   };
   const togglePRsTab = (sessionId: string) => {
     const next = getTab(sessionId) === "prs" ? "main" : "prs";
+    switchTab(sessionId, next);
+  };
+  const toggleShellTab = (sessionId: string, directory: string) => {
+    const next = getTab(sessionId) === "shell" ? "main" : "shell";
+    if (next === "shell") ensureShellPty(sessionId, directory);
     switchTab(sessionId, next);
   };
 
@@ -142,10 +159,24 @@ export default function App() {
         e.preventDefault();
         togglePRsTab(activeSessionId);
       }
+      if (e.metaKey && e.key === "t" && activeSessionId) {
+        e.preventDefault();
+        const session = sessions.find((s) => s.id === activeSessionId);
+        if (session) toggleShellTab(activeSessionId, session.directory);
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [activeSessionId, activeTab]);
+
+  // Wrap deleteSession to also clean up shell PTY
+  const handleDeleteSession = async (id: string) => {
+    if (shellSessions.has(id)) {
+      invoke("destroy_pty_session", { sessionId: `shell-${id}` }).catch(() => {});
+      setShellSessions((prev) => { const next = new Set(prev); next.delete(id); return next; });
+    }
+    await deleteSession(id);
+  };
 
   const [worktrees, setWorktrees] = useState<string[]>([]);
 
@@ -229,7 +260,7 @@ export default function App() {
         onSelectSession={selectSession}
         onCreateSession={handleNewSession}
         onRenameSession={renameSession}
-        onDeleteSession={deleteSession}
+        onDeleteSession={handleDeleteSession}
         onShowUsage={() => setShowUsagePanel(true)}
       />
 
@@ -255,7 +286,7 @@ export default function App() {
         ) : (
           sessions.map((session) => {
             const tab = getTab(session.id);
-            const mainLabel = session.status === "stopped" ? "Conversation" : "Terminal";
+            const mainLabel = session.status === "stopped" ? "Conversation" : "Claude";
             return (
             <div
               key={session.id}
@@ -299,6 +330,19 @@ export default function App() {
                 >
                   PRs
                 </button>
+                <button
+                  onClick={() => {
+                    ensureShellPty(session.id, session.directory);
+                    switchTab(session.id, "shell");
+                  }}
+                  className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                    tab === "shell"
+                      ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
+                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                  }`}
+                >
+                  Shell
+                </button>
               </div>
 
               {/* Tab content */}
@@ -318,6 +362,11 @@ export default function App() {
                           markStopped(session.id);
                           setMountedTabsLru((prev) => prev.filter((e) => e.sessionId !== session.id));
                           setActiveTab((prev) => { const next = new Map(prev); next.set(session.id, "main"); return next; });
+                          // Destroy shell PTY if one exists
+                          if (shellSessions.has(session.id)) {
+                            invoke("destroy_pty_session", { sessionId: `shell-${session.id}` }).catch(() => {});
+                            setShellSessions((prev) => { const next = new Set(prev); next.delete(session.id); return next; });
+                          }
                         }}
                         onTitleChange={() => {}}
                         onActivity={() => touchSession(session.id)}
@@ -344,6 +393,19 @@ export default function App() {
                     <PRPanel
                       directory={session.directory}
                       isActive={session.id === activeSessionId && tab === "prs"}
+                    />
+                  </div>
+                )}
+                {(tab === "shell" || isTabMounted(session.id, "shell")) && shellSessions.has(session.id) && (
+                  <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "shell" ? 2 : 0, pointerEvents: tab === "shell" ? "auto" : "none" }}>
+                    <Terminal
+                      sessionId={`shell-${session.id}`}
+                      isActive={session.id === activeSessionId && tab === "shell"}
+                      onExit={() => {
+                        setShellSessions((prev) => { const next = new Set(prev); next.delete(session.id); return next; });
+                        switchTab(session.id, "main");
+                      }}
+                      onTitleChange={() => {}}
                     />
                   </div>
                 )}
