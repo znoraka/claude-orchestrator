@@ -6,6 +6,7 @@ import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
 import SessionConversation from "./components/SessionConversation";
 import GitPanel from "./components/GitPanel";
+import PRPanel from "./components/PRPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
 import UsagePanel from "./components/UsagePanel";
 import FileEditor from "./components/FileEditor";
@@ -59,7 +60,7 @@ export default function App() {
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [skipPermissions, setSkipPermissions] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [activeTab, setActiveTab] = useState<Map<string, "main" | "git">>(new Map());
+  const [activeTab, setActiveTab] = useState<Map<string, "main" | "git" | "prs">>(new Map());
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
   const registerWriteText = useCallback(
@@ -85,12 +86,19 @@ export default function App() {
 
   useClipboard(handleImagePath);
 
-  const getTab = (sessionId: string): "main" | "git" =>
+  const getTab = (sessionId: string): "main" | "git" | "prs" =>
     activeTab.get(sessionId) || "main";
   const toggleTab = (sessionId: string) => {
     setActiveTab((prev) => {
       const next = new Map(prev);
       next.set(sessionId, getTab(sessionId) === "main" ? "git" : "main");
+      return next;
+    });
+  };
+  const togglePRsTab = (sessionId: string) => {
+    setActiveTab((prev) => {
+      const next = new Map(prev);
+      next.set(sessionId, getTab(sessionId) === "prs" ? "main" : "prs");
       return next;
     });
   };
@@ -115,15 +123,26 @@ export default function App() {
         e.preventDefault();
         toggleTab(activeSessionId);
       }
+      if (e.metaKey && e.key === "p" && activeSessionId) {
+        e.preventDefault();
+        togglePRsTab(activeSessionId);
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [activeSessionId, activeTab]);
 
+  const [worktrees, setWorktrees] = useState<string[]>([]);
+
   const handleNewSession = () => {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
     setRecentDirs(loadRecentDirs());
     setShowDirDialog(true);
+    // Fetch worktrees from the last-used directory
+    const lastDir = localStorage.getItem("claude-orchestrator-last-dir") || "~";
+    invoke<string[]>("list_worktrees", { directory: lastDir })
+      .then(setWorktrees)
+      .catch(() => setWorktrees([]));
   };
 
   const handleDirConfirm = async () => {
@@ -168,6 +187,19 @@ export default function App() {
   const acceptSuggestion = (path: string) => {
     setDirInput(path + "/");
     setSuggestions([]);
+  };
+
+  const quickCreate = async (dir: string) => {
+    if (creating) return;
+    setCreating(true);
+    localStorage.setItem("claude-orchestrator-last-dir", dir);
+    saveRecentDir(dir);
+    setShowDirDialog(false);
+    try {
+      await createSession(undefined, dir, skipPermissions);
+    } finally {
+      setCreating(false);
+    }
   };
 
   return (
@@ -240,6 +272,16 @@ export default function App() {
                 >
                   Git
                 </button>
+                <button
+                  onClick={() => setActiveTab((prev) => { const n = new Map(prev); n.set(session.id, "prs"); return n; })}
+                  className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                    tab === "prs"
+                      ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
+                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                  }`}
+                >
+                  PRs
+                </button>
               </div>
 
               {/* Tab content */}
@@ -272,6 +314,12 @@ export default function App() {
                       setEditorFilePath(dir + relativePath);
                       setShowFileEditor(true);
                     }}
+                  />
+                </div>
+                <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "prs" ? 1 : 0 }}>
+                  <PRPanel
+                    directory={session.directory}
+                    isActive={session.id === activeSessionId && tab === "prs"}
                   />
                 </div>
               </div>
@@ -322,7 +370,7 @@ export default function App() {
                 {recentDirs.map((d) => (
                   <button
                     key={d}
-                    onClick={() => setDirInput(d)}
+                    onClick={() => quickCreate(d)}
                     className={`px-2 py-0.5 text-[11px] font-mono rounded border transition-colors truncate max-w-[10rem] ${
                       dirInput === d
                         ? "bg-[var(--accent)] text-white border-[var(--accent)]"
@@ -334,6 +382,25 @@ export default function App() {
                   </button>
                 ))}
               </div>
+            )}
+            {worktrees.length > 0 && (
+              <>
+              <label className="block text-[10px] text-[var(--text-tertiary)] pb-1.5 pt-1">
+                Worktrees
+              </label>
+              <div className="flex flex-wrap gap-1.5 pb-2">
+                {worktrees.map((wt) => (
+                  <button
+                    key={wt}
+                    onClick={() => quickCreate(wt)}
+                    className="px-2 py-0.5 text-[11px] font-mono rounded border transition-colors truncate max-w-[12rem] bg-[var(--bg-primary)] text-[var(--text-secondary)] border-dashed border-[var(--border-color)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+                    title={wt}
+                  >
+                    {wt.includes("/") ? wt.split("/").filter(Boolean).slice(-2).join("/") : wt}
+                  </button>
+                ))}
+              </div>
+              </>
             )}
             <div className="relative">
               <input

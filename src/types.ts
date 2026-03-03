@@ -30,3 +30,22 @@ export interface GitStatusResult {
   files: GitFileEntry[];
   isGitRepo: boolean;
 }
+
+export interface PullRequest {
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  isDraft: boolean;
+  updatedAt: string;
+  headRefName: string;
+  author: string;
+  authorAvatar: string;
+}
+
+export interface PullRequestsResult {
+  reviewRequested: PullRequest[];
+  myPrs: PullRequest[];
+  ghAvailable: boolean;
+  error: string | null;
+}
