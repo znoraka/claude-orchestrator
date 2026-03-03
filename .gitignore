@@ -9,6 +9,9 @@ lerna-debug.log*
 
 node_modules
 dist
+
+# Bundled MCP server (build artifact)
+src-tauri/resources/mcp-server.bundle.mjs
 dist-ssr
 *.local
 

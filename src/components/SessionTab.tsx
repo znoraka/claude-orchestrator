@@ -2,14 +2,24 @@ import { useState, useRef, useEffect, memo } from "react";
 import type { Session, SessionUsage } from "../types";
 
 export function shortenPath(path: string): string {
-  const parts = path.split("/");
+  const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] || path;
 }
 
+/** Strip worktree suffixes so worktrees share the parent repo's color. */
+function repoRoot(dir: string): string {
+  const wtIdx = dir.indexOf("/.worktrees/");
+  if (wtIdx !== -1) return dir.slice(0, wtIdx);
+  const clIdx = dir.indexOf("/.claude/worktrees/");
+  if (clIdx !== -1) return dir.slice(0, clIdx);
+  return dir;
+}
+
 export function directoryColor(dir: string): string {
+  const base = repoRoot(dir);
   let hash = 0;
-  for (let i = 0; i < dir.length; i++) {
-    hash = dir.charCodeAt(i) + ((hash << 5) - hash);
+  for (let i = 0; i < base.length; i++) {
+    hash = base.charCodeAt(i) + ((hash << 5) - hash);
   }
   const hue = ((hash % 360) + 360) % 360;
   return `hsl(${hue}, 55%, 55%)`;

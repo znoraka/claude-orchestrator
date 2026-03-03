@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Session } from "../types";
+import { jsonlDirectory, type Session } from "../types";
 
 interface TitleState {
   lastMessageCount: number;
@@ -46,7 +46,7 @@ export function useConversationTitles(
     for (const session of pending) {
       invoke("watch_jsonl", {
         claudeSessionId: session.claudeSessionId,
-        directory: session.directory,
+        directory: jsonlDirectory(session),
       }).catch(() => {});
     }
 
@@ -62,7 +62,7 @@ export function useConversationTitles(
       smartPendingRef.current.add(session.id);
       invoke<string | null>("generate_smart_title", {
         claudeSessionId: session.claudeSessionId,
-        directory: session.directory,
+        directory: jsonlDirectory(session),
         includeRecent,
       })
         .then((title) => {
@@ -73,7 +73,7 @@ export function useConversationTitles(
             // Update state with current message count and timestamp
             invoke<number>("get_message_count", {
               claudeSessionId: session.claudeSessionId,
-              directory: session.directory,
+              directory: jsonlDirectory(session),
             }).then((count) => {
               smartStateRef.current.set(session.id, {
                 lastMessageCount: count,
@@ -104,7 +104,7 @@ export function useConversationTitles(
         // Check if message count grew by 5+
         invoke<number>("get_message_count", {
           claudeSessionId: session.claudeSessionId,
-          directory: session.directory,
+          directory: jsonlDirectory(session),
         })
           .then((count) => {
             const st = smartStateRef.current.get(session.id);
@@ -124,7 +124,7 @@ export function useConversationTitles(
 
       invoke<string | null>("get_conversation_title", {
         claudeSessionId: session.claudeSessionId,
-        directory: session.directory,
+        directory: jsonlDirectory(session),
       })
         .then((title) => {
           if (title) {

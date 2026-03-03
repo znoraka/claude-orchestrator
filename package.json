@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:mcp": "esbuild src-tauri/resources/mcp-server.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/mcp-server.bundle.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -42,7 +43,9 @@
     "uuid": "^11.1.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
     "@tailwindcss/vite": "^4.1.0",
+    "esbuild": "^0.25.0",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",

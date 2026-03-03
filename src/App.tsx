@@ -41,8 +41,11 @@ export default function App() {
     } catch { return []; }
   };
   const saveRecentDir = (dir: string) => {
-    const recent = loadRecentDirs().filter((d) => d !== dir);
-    recent.unshift(dir);
+    const normalized = dir.replace(/\/+$/, "") || dir;
+    const recent = loadRecentDirs()
+      .map((d) => d.replace(/\/+$/, "") || d)
+      .filter((d) => d !== normalized);
+    recent.unshift(normalized);
     localStorage.setItem(
       "claude-orchestrator-recent-dirs",
       JSON.stringify(recent.slice(0, MAX_RECENT_DIRS))

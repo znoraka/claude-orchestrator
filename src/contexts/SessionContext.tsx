@@ -16,8 +16,8 @@ import { useConversationTitles } from "../hooks/useConversationTitles";
 import { useSessionUsage } from "../hooks/useSessionUsage";
 import { useBackgroundNotifications } from "../hooks/useBackgroundNotifications";
 import { useToast } from "../components/Toast";
-import type { Session, SessionUsage, Workspace } from "../types";
-import { deriveWorkspaces, workspaceForSession } from "../utils/workspaces";
+import { jsonlDirectory, type Session, type SessionUsage, type Workspace } from "../types";
+import { deriveWorkspaces, workspaceForSession, normalizeDir, repoRootDir } from "../utils/workspaces";
 
 const MAX_RUNNING_SESSIONS = 8;
 
@@ -101,7 +101,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // Remembers last-focused session per workspace (directory)
   const activeSessionInWorkspace = useRef<Map<string, string>>(new Map());
   const loadedRef = useRef(false);
-  const { showError } = useToast();
+  const { showError, showInfo } = useToast();
 
   // ── Load persisted sessions on mount ─────────────────────────────
   useEffect(() => {
@@ -112,6 +112,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         createdAt: number;
         lastActiveAt: number;
         directory: string;
+        homeDirectory?: string;
         claudeSessionId?: string;
         dangerouslySkipPermissions?: boolean;
         activeTime?: number;
@@ -125,7 +126,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             status: "stopped" as const,
             createdAt: s.createdAt,
             lastActiveAt: s.lastActiveAt,
-            directory: s.directory,
+            directory: normalizeDir(s.directory),
+            homeDirectory: s.homeDirectory ? normalizeDir(s.homeDirectory) : undefined,
             claudeSessionId: s.claudeSessionId,
             dangerouslySkipPermissions: s.dangerouslySkipPermissions,
             activeTime: s.activeTime || 0,
@@ -153,6 +155,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         createdAt: s.createdAt,
         lastActiveAt: s.lastActiveAt,
         directory: s.directory,
+        homeDirectory: s.homeDirectory,
         claudeSessionId: s.claudeSessionId,
         dangerouslySkipPermissions: s.dangerouslySkipPermissions,
         activeTime: s.activeTime || 0,
@@ -225,6 +228,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       directory: string,
       dangerouslySkipPermissions = false
     ) => {
+      const dir = normalizeDir(directory);
       const id = uuidv4();
       const claudeSessionId = uuidv4();
       const now = Date.now();
@@ -235,7 +239,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         status: "starting",
         createdAt: now,
         lastActiveAt: now,
-        directory,
+        directory: dir,
         claudeSessionId,
         dangerouslySkipPermissions,
       };
@@ -246,7 +250,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       try {
         await invoke("create_pty_session", {
           sessionId: id,
-          directory,
+          directory: dir,
           claudeSessionId,
           resume: false,
           dangerouslySkipPermissions,
@@ -299,19 +303,32 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      // If no claudeSessionId exists (e.g. cleared after worktree deletion),
+      // generate a fresh one so this new session can be resumed later.
+      const claudeSessionId = session.claudeSessionId ?? uuidv4();
+      const isResume = !!session.claudeSessionId;
+
       dispatch({
         type: "UPDATE",
         id,
-        patch: { status: "starting", lastActiveAt: Date.now() },
+        patch: {
+          status: "starting",
+          lastActiveAt: Date.now(),
+          ...(!session.claudeSessionId ? { claudeSessionId } : {}),
+        },
       });
       setActiveSessionId(id);
+
+      // When resuming a worktree session, use the original (home) directory
+      // so Claude CLI can find the JSONL in the correct project folder.
+      const spawnDir = isResume ? jsonlDirectory(session) : session.directory;
 
       try {
         await invoke("create_pty_session", {
           sessionId: id,
-          directory: session.directory,
-          claudeSessionId: session.claudeSessionId ?? null,
-          resume: !!session.claudeSessionId,
+          directory: spawnDir,
+          claudeSessionId,
+          resume: isResume,
           dangerouslySkipPermissions:
             session.dangerouslySkipPermissions ?? false,
         });
@@ -364,6 +381,103 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }, 60_000);
     return () => clearInterval(interval);
   }, []);
+
+  // ── Orchestrator signal handler (MCP → new workspace) ───────────
+
+  useEffect(() => {
+    const unlistenPromise = listen<{
+      action: string;
+      directory: string;
+      sessionName?: string;
+      sessionId: string;
+    }>("orchestrator-signal", async (event) => {
+      const { action, directory: rawDir, sessionName, sessionId: fromSessionId } = event.payload;
+      if (action !== "switch_workspace") return;
+      const directory = normalizeDir(rawDir);
+
+      const allIds = sessionsRef.current.map((s) => s.id);
+      console.log(
+        `[orchestrator-signal] switch_workspace to ${directory} (from session ${fromSessionId})`,
+        `\n  known sessions: [${allIds.join(", ")}]`
+      );
+
+      // Update the existing session's directory (moves it to the new workspace)
+      const session = sessionsRef.current.find((s) => s.id === fromSessionId);
+      if (!session) {
+        console.warn(
+          `[orchestrator-signal] session ${fromSessionId} not found in`,
+          allIds
+        );
+        showError(`switch_workspace: session ${fromSessionId.slice(0, 8)} not found`);
+        return;
+      }
+
+      console.log(
+        `[orchestrator-signal] updating session "${session.name}" directory: ${session.directory} → ${directory}`
+      );
+      showInfo(`Switched "${session.name}" → ${directory.split("/").pop()}`);
+
+      // When switching into a worktree, remember the original directory so we
+      // can restore it if the worktree is later deleted.
+      const isWorktree = directory.includes("/.worktrees/");
+      const homeDirectory = isWorktree
+        ? session.homeDirectory ?? session.directory
+        : undefined;
+
+      dispatch({
+        type: "UPDATE",
+        id: fromSessionId,
+        patch: {
+          directory,
+          homeDirectory,
+          ...(sessionName ? { name: sessionName } : {}),
+        },
+      });
+
+      // Update the workspace→session mapping with the NEW directory
+      activeSessionInWorkspace.current.set(directory, fromSessionId);
+      // Clean up old workspace mapping if this was the last session there
+      const oldWsId = session.directory || "~";
+      if (oldWsId !== directory) {
+        const otherInOldWs = sessionsRef.current.some(
+          (s) => s.id !== fromSessionId && (s.directory || "~") === oldWsId
+        );
+        if (!otherInOldWs) activeSessionInWorkspace.current.delete(oldWsId);
+      }
+
+      setActiveSessionId(fromSessionId);
+    });
+
+    return () => {
+      unlistenPromise.then((fn) => fn());
+    };
+  }, []);
+
+  // ── Auto-revert sessions whose worktree directory was removed ────
+  useEffect(() => {
+    const check = async () => {
+      const current = sessionsRef.current;
+      for (const s of current) {
+        if (!s.directory?.includes("/.worktrees/")) continue;
+        try {
+          const exists = await invoke<boolean>("directory_exists", { path: s.directory });
+          if (!exists) {
+            // Prefer the saved home directory; fall back to stripping .worktrees/
+            const root = s.homeDirectory ?? repoRootDir(s.directory);
+            console.log(
+              `[worktree-cleanup] "${s.name}" worktree removed, reverting directory: ${s.directory} → ${root}`
+            );
+            dispatch({ type: "UPDATE", id: s.id, patch: { directory: root, homeDirectory: undefined, claudeSessionId: undefined } });
+          }
+        } catch (err) {
+          console.error("[worktree-cleanup] Failed to check directory:", err);
+        }
+      }
+    };
+    check();
+    const interval = setInterval(check, 5_000);
+    return () => clearInterval(interval);
+  }, [sessions]);
 
   // ── Derived state / side-effect hooks ────────────────────────────
 

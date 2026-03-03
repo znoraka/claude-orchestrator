@@ -1,9 +1,11 @@
 mod clipboard_image;
 mod file_watcher;
 mod pty_manager;
+mod signal_watcher;
 
 use file_watcher::JsonlWatcher;
 use pty_manager::PtyManager;
+use signal_watcher::SignalWatcher;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -101,6 +103,8 @@ struct AppState {
     jsonl_cache: Mutex<JsonlCache>,
     pricing: PricingConfig,
     file_watcher: Mutex<JsonlWatcher>,
+    _signal_watcher: SignalWatcher,
+    mcp_script_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -113,6 +117,8 @@ struct SessionMeta {
     last_active_at: f64,
     #[serde(default)]
     directory: String,
+    #[serde(default, rename = "homeDirectory", skip_serializing_if = "Option::is_none")]
+    home_directory: Option<String>,
     #[serde(default, rename = "claudeSessionId", skip_serializing_if = "Option::is_none")]
     claude_session_id: Option<String>,
     #[serde(default, rename = "dangerouslySkipPermissions")]
@@ -164,7 +170,7 @@ fn create_pty_session(
     let skip_perms = dangerouslySkipPermissions.unwrap_or(false);
     eprintln!("[create_pty_session] session_id={}, directory={:?}, claude_session_id={:?}, resume={}, skip_permissions={}", session_id, directory, claude_session_id, resume, skip_perms);
     let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
-    manager.create_session(&session_id, app_handle, directory, claude_session_id, resume, skip_perms)
+    manager.create_session(&session_id, app_handle, directory, claude_session_id, resume, skip_perms, state.mcp_script_path.clone())
 }
 
 #[tauri::command]
@@ -194,6 +200,20 @@ fn create_shell_pty_session(
     eprintln!("[create_shell_pty_session] session_id={}, directory={:?}", session_id, directory);
     let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
     manager.create_shell_session(&session_id, app_handle, directory)
+}
+
+#[tauri::command]
+fn directory_exists(path: String) -> bool {
+    let expanded = if path.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            path.replacen('~', &home, 1)
+        } else {
+            path
+        }
+    } else {
+        path
+    };
+    std::path::Path::new(&expanded).is_dir()
 }
 
 #[tauri::command]
@@ -295,17 +315,31 @@ fn list_worktrees(directory: String) -> Result<Vec<String>, String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let home = std::env::var("HOME").unwrap_or_default();
-    let canonical_expanded = std::fs::canonicalize(&expanded)
-        .unwrap_or_else(|_| std::path::PathBuf::from(&expanded));
+
+    // Find the main worktree (always the first entry in `git worktree list`).
+    // We exclude it so only secondary worktrees are returned, regardless of
+    // which directory was passed as input.
+    let main_worktree: Option<std::path::PathBuf> = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("worktree "))
+        .and_then(|path| {
+            std::fs::canonicalize(path)
+                .ok()
+                .or_else(|| Some(std::path::PathBuf::from(path)))
+        });
 
     let worktrees: Vec<String> = stdout
         .lines()
         .filter_map(|line| line.strip_prefix("worktree "))
         .filter_map(|path| {
-            // Exclude the main worktree (the directory itself)
+            // Exclude the main worktree (repo root), not the input directory
             let canonical = std::fs::canonicalize(path)
                 .unwrap_or_else(|_| std::path::PathBuf::from(path));
-            if canonical == canonical_expanded {
+            if main_worktree.as_ref() == Some(&canonical) {
+                return None;
+            }
+            // Skip worktrees whose directory no longer exists on disk
+            if !std::path::Path::new(path).is_dir() {
                 return None;
             }
             let full = path.to_string();
@@ -2135,11 +2169,46 @@ pub fn run() {
         .setup(|app| {
             let watcher = JsonlWatcher::new(app.handle().clone())
                 .expect("Failed to create file watcher");
+
+            // Clean up stale signal files from previous runs
+            SignalWatcher::cleanup_stale();
+
+            let signal_watcher = SignalWatcher::new(app.handle().clone())
+                .expect("Failed to create signal watcher");
+
+            // Resolve MCP server script path.
+            // Try in order: bundled (production), dev bundle next to Cargo.toml
+            let mcp_script_path = {
+                let candidates = [
+                    // Production: Tauri resource bundle
+                    app.handle()
+                        .path()
+                        .resource_dir()
+                        .ok()
+                        .map(|dir| dir.join("resources").join("mcp-server.bundle.mjs")),
+                    // Dev: pre-built bundle in source tree (run `pnpm build:mcp`)
+                    Some(
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("resources")
+                            .join("mcp-server.bundle.mjs"),
+                    ),
+                ];
+                candidates.into_iter().flatten().find(|p| p.exists()).map(|p| {
+                    eprintln!("[setup] MCP script found at {:?}", p);
+                    p.to_string_lossy().to_string()
+                })
+            };
+            if mcp_script_path.is_none() {
+                eprintln!("[setup] MCP script not found, MCP injection disabled. Run `pnpm build:mcp` to build it.");
+            }
+
             app.manage(AppState {
                 pty_manager: Mutex::new(PtyManager::new()),
                 jsonl_cache: Mutex::new(JsonlCache::new()),
                 pricing: PricingConfig::load(),
                 file_watcher: Mutex::new(watcher),
+                _signal_watcher: signal_watcher,
+                mcp_script_path,
             });
             Ok(())
         })
@@ -2148,6 +2217,7 @@ pub fn run() {
             create_shell_pty_session,
             write_to_pty,
             resize_pty,
+            directory_exists,
             destroy_pty_session,
             get_pty_scrollback,
             save_clipboard_image,

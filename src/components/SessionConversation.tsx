@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useToast } from "./Toast";
-import type { Session } from "../types";
+import { jsonlDirectory, type Session } from "../types";
 
 interface ConversationMessage {
   role: string;
@@ -34,7 +34,7 @@ export default function SessionConversation({ session, onResume }: Props) {
     setLoading(true);
     invoke<ConversationMessage[]>("get_session_conversation", {
       claudeSessionId: session.claudeSessionId,
-      directory: session.directory,
+      directory: jsonlDirectory(session),
     })
       .then(setMessages)
       .catch((err) => {

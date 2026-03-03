@@ -5,9 +5,16 @@ export interface Session {
   createdAt: number;
   lastActiveAt: number;
   directory: string;
+  homeDirectory?: string; // original directory before switching to a worktree
   claudeSessionId?: string;
   dangerouslySkipPermissions?: boolean;
   activeTime?: number; // cumulative ms of running time
+}
+
+/** The directory where the session's JSONL was created (homeDirectory if the
+ *  session was moved to a worktree, otherwise the current directory). */
+export function jsonlDirectory(session: Session): string {
+  return session.homeDirectory ?? session.directory;
 }
 
 export interface SessionUsage {

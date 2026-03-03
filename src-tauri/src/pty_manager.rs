@@ -109,12 +109,16 @@ impl PtyManager {
                     "You have access to the `switch_workspace` MCP tool from the orchestrator server. \
                      When you create a git worktree or need to work in a different directory, \
                      call switch_workspace with the absolute path to that directory. \
-                     This will automatically switch the current session's workspace in the orchestrator app to that directory.\n\n\
+                     This will update the orchestrator app's workspace metadata for this session.\n\n\
+                     IMPORTANT: After calling switch_workspace, you MUST also run `cd <directory>` using the Bash tool \
+                     to actually change your working directory. The switch_workspace tool only updates the orchestrator UI — \
+                     it does not change your process's working directory.\n\n\
                      When creating a git worktree:\n\
                      1. Do NOT use the built-in EnterWorktree tool — it puts worktrees in .claude/worktrees/ which is not desired.\n\
                      2. Create worktrees manually: git worktree add .worktrees/<name> -b <branch-name>\n\
                      3. Worktrees should live in .worktrees/ relative to the repo root.\n\
-                     4. Always call switch_workspace with the absolute path to the new worktree directory after creating it."
+                     4. Always call switch_workspace with the absolute path to the new worktree directory after creating it.\n\
+                     5. After switch_workspace returns, run: cd <worktree-path>"
                         .to_string(),
                 );
             }

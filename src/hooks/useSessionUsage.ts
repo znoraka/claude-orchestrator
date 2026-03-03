@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Session, SessionUsage } from "../types";
+import { jsonlDirectory, type Session, type SessionUsage } from "../types";
 
 export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> {
   const [usageMap, setUsageMap] = useState<Map<string, SessionUsage>>(new Map());
@@ -26,7 +26,7 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
     const fetchUsageForSession = (session: Session) => {
       invoke<SessionUsage>("get_session_usage", {
         claudeSessionId: session.claudeSessionId,
-        directory: session.directory,
+        directory: jsonlDirectory(session),
       })
         .then((usage) => {
           if (usage.inputTokens === 0 && usage.outputTokens === 0 && !usage.isBusy) return;
@@ -52,7 +52,7 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
     for (const session of eligible) {
       invoke("watch_jsonl", {
         claudeSessionId: session.claudeSessionId,
-        directory: session.directory,
+        directory: jsonlDirectory(session),
       }).catch(() => {});
       fetchUsageForSession(session);
     }
@@ -108,7 +108,7 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
     for (const session of stoppedWithoutUsage) {
       invoke<SessionUsage>("get_session_usage", {
         claudeSessionId: session.claudeSessionId,
-        directory: session.directory,
+        directory: jsonlDirectory(session),
       })
         .then((usage) => {
           if (usage.inputTokens === 0 && usage.outputTokens === 0) return;
