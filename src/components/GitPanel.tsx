@@ -139,6 +139,138 @@ function TokenSpan({ tokens }: { tokens: HighlightedToken[] }) {
   );
 }
 
+// --- Search highlight helper ---
+
+function highlightSearchInText(
+  text: string,
+  query: string,
+  matchIndices: Set<number>,
+  baseIndex: number
+): React.ReactNode {
+  if (!query) return text;
+  const lower = text.toLowerCase();
+  const qLower = query.toLowerCase();
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  let localIdx = 0;
+  let pos = lower.indexOf(qLower);
+  while (pos !== -1) {
+    if (pos > last) parts.push(text.slice(last, pos));
+    const globalIdx = baseIndex + localIdx;
+    const isCurrent = matchIndices.has(globalIdx);
+    parts.push(
+      <mark
+        key={pos}
+        data-search-match={globalIdx}
+        className={isCurrent ? "bg-yellow-400 text-black" : "bg-yellow-700/60 text-inherit"}
+        style={{ borderRadius: 2 }}
+      >
+        {text.slice(pos, pos + query.length)}
+      </mark>
+    );
+    localIdx++;
+    last = pos + query.length;
+    pos = lower.indexOf(qLower, last);
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts.length > 0 ? <>{parts}</> : text;
+}
+
+function highlightSearchInTokens(
+  tokens: HighlightedToken[],
+  query: string,
+  matchIndices: Set<number>,
+  baseIndex: number
+): { node: React.ReactNode; matchCount: number } {
+  if (!query) return { node: <TokenSpan tokens={tokens} />, matchCount: 0 };
+
+  const fullText = tokens.map((t) => t.content).join("");
+  const lower = fullText.toLowerCase();
+  const qLower = query.toLowerCase();
+
+  // Find match positions in the full line
+  const matches: number[] = [];
+  let pos = lower.indexOf(qLower);
+  while (pos !== -1) {
+    matches.push(pos);
+    pos = lower.indexOf(qLower, pos + qLower.length);
+  }
+  if (matches.length === 0) return { node: <TokenSpan tokens={tokens} />, matchCount: 0 };
+
+  // Build a set of character ranges that are highlighted
+  const hlRanges = matches.map((m) => [m, m + query.length] as const);
+
+  const parts: React.ReactNode[] = [];
+  let charOffset = 0;
+  let matchIdx = 0;
+
+  for (let ti = 0; ti < tokens.length; ti++) {
+    const token = tokens[ti];
+    const tokenStart = charOffset;
+    const tokenEnd = charOffset + token.content.length;
+    let cursor = tokenStart;
+
+    for (const [hlStart, hlEnd] of hlRanges) {
+      if (hlStart >= tokenEnd || hlEnd <= tokenStart) continue;
+      const clampStart = Math.max(hlStart, tokenStart);
+      const clampEnd = Math.min(hlEnd, tokenEnd);
+
+      if (clampStart > cursor) {
+        parts.push(
+          <span key={`${ti}-${cursor}`} style={token.color ? { color: token.color } : undefined}>
+            {token.content.slice(cursor - tokenStart, clampStart - tokenStart)}
+          </span>
+        );
+      }
+
+      const globalIdx = baseIndex + (matches.indexOf(hlStart) >= 0 ? matches.indexOf(hlStart) : matchIdx);
+      const isCurrent = matchIndices.has(globalIdx);
+      // Only render mark at the start of a match
+      if (clampStart === hlStart) {
+        matchIdx++;
+      }
+      parts.push(
+        <mark
+          key={`${ti}-hl-${clampStart}`}
+          data-search-match={globalIdx}
+          className={isCurrent ? "bg-yellow-400 text-black" : "bg-yellow-700/60"}
+          style={{ borderRadius: 2 }}
+        >
+          <span style={token.color && !isCurrent ? { color: token.color } : undefined}>
+            {token.content.slice(clampStart - tokenStart, clampEnd - tokenStart)}
+          </span>
+        </mark>
+      );
+      cursor = clampEnd;
+    }
+
+    if (cursor < tokenEnd) {
+      parts.push(
+        <span key={`${ti}-tail`} style={token.color ? { color: token.color } : undefined}>
+          {token.content.slice(cursor - tokenStart)}
+        </span>
+      );
+    }
+    charOffset = tokenEnd;
+  }
+
+  return { node: <>{parts}</>, matchCount: matches.length };
+}
+
+// Count search matches in a text string
+function countMatches(text: string, query: string): number {
+  if (!query) return 0;
+  const lower = text.toLowerCase();
+  const qLower = query.toLowerCase();
+  let count = 0;
+  let pos = lower.indexOf(qLower);
+  while (pos !== -1) {
+    count++;
+    pos = lower.indexOf(qLower, pos + qLower.length);
+  }
+  return count;
+}
+
 // --- Diff backgrounds (no text color — syntax tokens provide color) ---
 
 const BG: Record<DiffLine["type"], string> = {
@@ -168,10 +300,23 @@ const FALLBACK_COLOR: Record<DiffLine["type"], string> = {
 
 // --- Unified diff ---
 
-function UnifiedDiff({ diff, filePath }: { diff: string; filePath: string }) {
+function UnifiedDiff({ diff, filePath, searchQuery, currentMatch }: { diff: string; filePath: string; searchQuery: string; currentMatch: number }) {
   const classified = useMemo(() => diff.split("\n").map(classifyLine), [diff]);
   const contentLines = useMemo(() => classified.map((l) => l.content), [classified]);
   const highlighted = useHighlightedLines(contentLines, filePath);
+
+  // Compute cumulative match index per line
+  const cumulativeMatchCounts = useMemo(() => {
+    const counts: number[] = [];
+    let total = 0;
+    for (const line of classified) {
+      counts.push(total);
+      total += countMatches(line.content, searchQuery);
+    }
+    return counts;
+  }, [classified, searchQuery]);
+
+  const currentMatchSet = useMemo(() => new Set([currentMatch]), [currentMatch]);
 
   return (
     <div className="font-mono text-xs leading-5 overflow-auto h-full py-2">
@@ -181,22 +326,31 @@ function UnifiedDiff({ diff, filePath }: { diff: string; filePath: string }) {
             const tokens = highlighted?.[i];
             const isCode = line.type === "context" || line.type === "add" || line.type === "remove";
             const prefix = line.type === "add" ? "+" : line.type === "remove" ? "-" : " ";
+            const baseIdx = cumulativeMatchCounts[i];
 
             if (!isCode) {
               return (
                 <tr key={i} className={BG[line.type]}>
                   <td colSpan={2} className={`${FALLBACK_COLOR[line.type]} px-2 whitespace-pre`}>
-                    {line.content}
+                    {highlightSearchInText(line.content, searchQuery, currentMatchSet, baseIdx)}
                   </td>
                 </tr>
               );
             }
 
+            const renderContent = () => {
+              if (tokens) {
+                const { node } = highlightSearchInTokens(tokens, searchQuery, currentMatchSet, baseIdx);
+                return node;
+              }
+              return highlightSearchInText(line.content, searchQuery, currentMatchSet, baseIdx);
+            };
+
             return (
               <tr key={i} className={BG[line.type]}>
                 <td className={`${GUTTER_COLOR[line.type]} w-6 text-center select-none whitespace-pre`}>{prefix}</td>
                 <td className={`${tokens ? "" : FALLBACK_COLOR[line.type]} whitespace-pre`}>
-                  {tokens ? <TokenSpan tokens={tokens} /> : line.content}
+                  {renderContent()}
                 </td>
               </tr>
             );
@@ -252,10 +406,9 @@ function buildSplitPairs(diff: string): SplitPair[] {
   return pairs;
 }
 
-function SplitDiff({ diff, filePath }: { diff: string; filePath: string }) {
+function SplitDiff({ diff, filePath, searchQuery, currentMatch }: { diff: string; filePath: string; searchQuery: string; currentMatch: number }) {
   const pairs = useMemo(() => buildSplitPairs(diff), [diff]);
 
-  // Collect all content lines for highlighting (left then right)
   const { leftLines, rightLines } = useMemo(() => {
     const left: string[] = [];
     const right: string[] = [];
@@ -269,6 +422,21 @@ function SplitDiff({ diff, filePath }: { diff: string; filePath: string }) {
   const leftTokens = useHighlightedLines(leftLines, filePath);
   const rightTokens = useHighlightedLines(rightLines, filePath);
 
+  // Cumulative match counts across both sides (left then right per row)
+  const cumulativeMatchCounts = useMemo(() => {
+    const counts: { left: number; right: number }[] = [];
+    let total = 0;
+    for (let i = 0; i < pairs.length; i++) {
+      const lCount = countMatches(pairs[i].left?.content ?? "", searchQuery);
+      const rCount = countMatches(pairs[i].right?.content ?? "", searchQuery);
+      counts.push({ left: total, right: total + lCount });
+      total += lCount + rCount;
+    }
+    return counts;
+  }, [pairs, searchQuery]);
+
+  const currentMatchSet = useMemo(() => new Set([currentMatch]), [currentMatch]);
+
   return (
     <div className="font-mono text-xs leading-5 overflow-auto h-full py-2">
       <table style={{ minWidth: '100%', borderCollapse: 'collapse' }}>
@@ -278,7 +446,7 @@ function SplitDiff({ diff, filePath }: { diff: string; filePath: string }) {
               return (
                 <tr key={i} className={BG[pair.type]}>
                   <td colSpan={4} className={`${FALLBACK_COLOR[pair.type]} px-2 whitespace-pre`}>
-                    {pair.left?.content}
+                    {highlightSearchInText(pair.left?.content ?? "", searchQuery, currentMatchSet, cumulativeMatchCounts[i].left)}
                   </td>
                 </tr>
               );
@@ -290,16 +458,29 @@ function SplitDiff({ diff, filePath }: { diff: string; filePath: string }) {
             const rTok = rightTokens?.[i];
             const lPrefix = lType === "remove" ? "-" : " ";
             const rPrefix = rType === "add" ? "+" : " ";
+            const lBase = cumulativeMatchCounts[i].left;
+            const rBase = cumulativeMatchCounts[i].right;
+
+            const renderLeft = () => {
+              if (!pair.left) return "";
+              if (lTok) return highlightSearchInTokens(lTok, searchQuery, currentMatchSet, lBase).node;
+              return highlightSearchInText(pair.left.content, searchQuery, currentMatchSet, lBase);
+            };
+            const renderRight = () => {
+              if (!pair.right) return "";
+              if (rTok) return highlightSearchInTokens(rTok, searchQuery, currentMatchSet, rBase).node;
+              return highlightSearchInText(pair.right.content, searchQuery, currentMatchSet, rBase);
+            };
 
             return (
               <tr key={i}>
                 <td className={`${BG[lType]} ${GUTTER_COLOR[lType]} w-5 text-center select-none whitespace-pre`}>{pair.left ? lPrefix : ""}</td>
                 <td className={`${BG[lType]} whitespace-pre border-r border-[var(--border-color)] ${lTok ? "" : FALLBACK_COLOR[lType]}`} style={{ width: '50%' }}>
-                  {lTok && pair.left ? <TokenSpan tokens={lTok} /> : (pair.left?.content ?? "")}
+                  {renderLeft()}
                 </td>
                 <td className={`${BG[rType]} ${GUTTER_COLOR[rType]} w-5 text-center select-none whitespace-pre`}>{pair.right ? rPrefix : ""}</td>
                 <td className={`${BG[rType]} whitespace-pre ${rTok ? "" : FALLBACK_COLOR[rType]}`} style={{ width: '50%' }}>
-                  {rTok && pair.right ? <TokenSpan tokens={rTok} /> : (pair.right?.content ?? "")}
+                  {renderRight()}
                 </td>
               </tr>
             );
@@ -312,7 +493,7 @@ function SplitDiff({ diff, filePath }: { diff: string; filePath: string }) {
 
 // --- DiffViewer ---
 
-function DiffViewer({ diff, mode, filePath }: { diff: string; mode: DiffMode; filePath: string }) {
+function DiffViewer({ diff, mode, filePath, searchQuery, currentMatch }: { diff: string; mode: DiffMode; filePath: string; searchQuery: string; currentMatch: number }) {
   if (!diff) {
     return (
       <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-sm">
@@ -322,15 +503,27 @@ function DiffViewer({ diff, mode, filePath }: { diff: string; mode: DiffMode; fi
   }
 
   return mode === "split"
-    ? <SplitDiff diff={diff} filePath={filePath} />
-    : <UnifiedDiff diff={diff} filePath={filePath} />;
+    ? <SplitDiff diff={diff} filePath={filePath} searchQuery={searchQuery} currentMatch={currentMatch} />
+    : <UnifiedDiff diff={diff} filePath={filePath} searchQuery={searchQuery} currentMatch={currentMatch} />;
 }
 
 // --- New file viewer with syntax highlighting ---
 
-function NewFileViewer({ content, filePath }: { content: string; filePath: string }) {
+function NewFileViewer({ content, filePath, searchQuery, currentMatch }: { content: string; filePath: string; searchQuery: string; currentMatch: number }) {
   const lines = useMemo(() => content.split("\n"), [content]);
   const highlighted = useHighlightedLines(lines, filePath);
+
+  const cumulativeMatchCounts = useMemo(() => {
+    const counts: number[] = [];
+    let total = 0;
+    for (const line of lines) {
+      counts.push(total);
+      total += countMatches(line, searchQuery);
+    }
+    return counts;
+  }, [lines, searchQuery]);
+
+  const currentMatchSet = useMemo(() => new Set([currentMatch]), [currentMatch]);
 
   return (
     <div className="font-mono text-xs leading-5 overflow-auto h-full py-2">
@@ -341,10 +534,15 @@ function NewFileViewer({ content, filePath }: { content: string; filePath: strin
           </tr>
           {lines.map((line, i) => {
             const tokens = highlighted?.[i];
+            const baseIdx = cumulativeMatchCounts[i];
+            const renderContent = () => {
+              if (tokens) return highlightSearchInTokens(tokens, searchQuery, currentMatchSet, baseIdx).node;
+              return <span className="text-green-400">{highlightSearchInText(line, searchQuery, currentMatchSet, baseIdx)}</span>;
+            };
             return (
               <tr key={i} className="bg-green-900/30">
                 <td className="text-green-400 w-6 text-center select-none whitespace-pre">+</td>
-                <td className="whitespace-pre">{tokens ? <TokenSpan tokens={tokens} /> : <span className="text-green-400">{line}</span>}</td>
+                <td className="whitespace-pre">{renderContent()}</td>
               </tr>
             );
           })}
@@ -365,6 +563,11 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
   const [diffMode, setDiffMode] = useState<DiffMode>(
     () => (localStorage.getItem("git-diff-mode") as DiffMode) || "unified"
   );
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [currentMatch, setCurrentMatch] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const diffContainerRef = useRef<HTMLDivElement>(null);
 
   // Cmd+E opens selected file in editor
   useEffect(() => {
@@ -378,6 +581,48 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [isActive, onEditFile, selectedFile]);
+
+  // Total match count for current diff
+  const totalMatches = useMemo(() => {
+    if (!searchQuery || !diff) return 0;
+    return countMatches(diff, searchQuery);
+  }, [diff, searchQuery]);
+
+  // Cmd+F to open search, Escape to close
+  useEffect(() => {
+    if (!isActive) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey && e.key === "f") {
+        e.preventDefault();
+        setSearchOpen(true);
+        setTimeout(() => searchInputRef.current?.focus(), 0);
+      }
+      if (e.key === "Escape" && searchOpen) {
+        e.preventDefault();
+        setSearchOpen(false);
+        setSearchQuery("");
+        setCurrentMatch(0);
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isActive, searchOpen]);
+
+  // Scroll current match into view
+  useEffect(() => {
+    if (!searchQuery || totalMatches === 0) return;
+    const container = diffContainerRef.current;
+    if (!container) return;
+    const el = container.querySelector(`[data-search-match="${currentMatch}"]`);
+    if (el) {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [currentMatch, searchQuery, totalMatches]);
+
+  const navigateMatch = useCallback((direction: 1 | -1) => {
+    if (totalMatches === 0) return;
+    setCurrentMatch((prev) => (prev + direction + totalMatches) % totalMatches);
+  }, [totalMatches]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -403,9 +648,12 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
     }
   }, [directory]);
 
+  // Only fetch when the panel is active (lazy load)
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    if (isActive) {
+      refresh();
+    }
+  }, [isActive, refresh]);
 
   useEffect(() => {
     if (!selectedFile || !status?.isGitRepo) {
@@ -429,6 +677,11 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
       .then(setDiff)
       .catch((e) => setDiff(`Error loading diff: ${e}`));
   }, [selectedFile, directory, status?.isGitRepo]);
+
+  // Reset match index when file changes
+  useEffect(() => {
+    setCurrentMatch(0);
+  }, [selectedFile]);
 
   if (loading && !status) {
     return (
@@ -554,18 +807,78 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
           </div>
 
           {/* Diff viewer */}
-          <div className="flex-1 w-0 overflow-auto bg-[var(--bg-primary)]">
-            {selectedFile ? (
-              selectedFile.status === "??" ? (
-                <NewFileViewer content={diff} filePath={selectedFile.path} />
-              ) : (
-                <DiffViewer diff={diff} mode={diffMode} filePath={selectedFile.path} />
-              )
-            ) : (
-              <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-sm">
-                Select a file to view changes
+          <div className="flex-1 w-0 flex flex-col bg-[var(--bg-primary)]">
+            {searchOpen && (
+              <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--border-color)] bg-[var(--bg-secondary)] flex-shrink-0">
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setCurrentMatch(0);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      navigateMatch(e.shiftKey ? -1 : 1);
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setSearchOpen(false);
+                      setSearchQuery("");
+                      setCurrentMatch(0);
+                    }
+                  }}
+                  placeholder="Search in diff..."
+                  className="bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-2 py-0.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] w-48"
+                  autoFocus
+                />
+                <span className="text-[10px] text-[var(--text-tertiary)] min-w-[4rem]">
+                  {searchQuery ? `${totalMatches > 0 ? currentMatch + 1 : 0}/${totalMatches}` : ""}
+                </span>
+                <button
+                  onClick={() => navigateMatch(-1)}
+                  disabled={totalMatches === 0}
+                  className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 text-xs px-1"
+                  title="Previous match (Shift+Enter)"
+                >
+                  ↑
+                </button>
+                <button
+                  onClick={() => navigateMatch(1)}
+                  disabled={totalMatches === 0}
+                  className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 text-xs px-1"
+                  title="Next match (Enter)"
+                >
+                  ↓
+                </button>
+                <button
+                  onClick={() => {
+                    setSearchOpen(false);
+                    setSearchQuery("");
+                    setCurrentMatch(0);
+                  }}
+                  className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] text-xs px-1 ml-auto"
+                  title="Close (Escape)"
+                >
+                  ✕
+                </button>
               </div>
             )}
+            <div ref={diffContainerRef} className="flex-1 overflow-auto">
+              {selectedFile ? (
+                selectedFile.status === "??" ? (
+                  <NewFileViewer content={diff} filePath={selectedFile.path} searchQuery={searchQuery} currentMatch={currentMatch} />
+                ) : (
+                  <DiffViewer diff={diff} mode={diffMode} filePath={selectedFile.path} searchQuery={searchQuery} currentMatch={currentMatch} />
+                )
+              ) : (
+                <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-sm">
+                  Select a file to view changes
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

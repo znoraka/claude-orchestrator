@@ -256,6 +256,56 @@ fn list_directories(partial: String) -> Result<Vec<String>, String> {
     Ok(results)
 }
 
+#[tauri::command]
+fn list_worktrees(directory: String) -> Result<Vec<String>, String> {
+    let expanded = if directory.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            directory.replacen('~', &home, 1)
+        } else {
+            directory.clone()
+        }
+    } else {
+        directory.clone()
+    };
+
+    let output = std::process::Command::new("git")
+        .current_dir(&expanded)
+        .env("PATH", shell_path())
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if !output.status.success() {
+        return Ok(vec![]);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let home = std::env::var("HOME").unwrap_or_default();
+    let canonical_expanded = std::fs::canonicalize(&expanded)
+        .unwrap_or_else(|_| std::path::PathBuf::from(&expanded));
+
+    let worktrees: Vec<String> = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .filter_map(|path| {
+            // Exclude the main worktree (the directory itself)
+            let canonical = std::fs::canonicalize(path)
+                .unwrap_or_else(|_| std::path::PathBuf::from(path));
+            if canonical == canonical_expanded {
+                return None;
+            }
+            let full = path.to_string();
+            if !home.is_empty() && full.starts_with(&home) {
+                Some(format!("~{}", &full[home.len()..]))
+            } else {
+                Some(full)
+            }
+        })
+        .collect();
+
+    Ok(worktrees)
+}
+
 /// Resolve a JSONL path from session ID and directory.
 fn jsonl_path_for(claude_session_id: &str, directory: &str) -> Result<PathBuf, String> {
     let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
@@ -1192,6 +1242,254 @@ fn shell_path() -> &'static str {
     })
 }
 
+fn gh_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new("gh");
+    cmd.env("PATH", shell_path());
+    cmd
+}
+
+#[derive(Deserialize)]
+struct GhPrAuthor {
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct GhPr {
+    number: u32,
+    title: String,
+    url: String,
+    state: String,
+    #[serde(rename = "isDraft")]
+    is_draft: bool,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    #[serde(rename = "headRefName")]
+    head_ref_name: String,
+    author: GhPrAuthor,
+}
+
+#[derive(Serialize, Clone)]
+struct PullRequest {
+    number: u32,
+    title: String,
+    url: String,
+    state: String,
+    #[serde(rename = "isDraft")]
+    is_draft: bool,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    #[serde(rename = "headRefName")]
+    head_ref_name: String,
+    author: String,
+    #[serde(rename = "authorAvatar")]
+    author_avatar: String,
+}
+
+#[derive(Serialize)]
+struct PullRequestsResult {
+    #[serde(rename = "reviewRequested")]
+    review_requested: Vec<PullRequest>,
+    #[serde(rename = "myPrs")]
+    my_prs: Vec<PullRequest>,
+    #[serde(rename = "ghAvailable")]
+    gh_available: bool,
+    error: Option<String>,
+}
+
+impl From<GhPr> for PullRequest {
+    fn from(pr: GhPr) -> Self {
+        Self {
+            number: pr.number,
+            title: pr.title,
+            url: pr.url,
+            state: pr.state,
+            is_draft: pr.is_draft,
+            updated_at: pr.updated_at,
+            head_ref_name: pr.head_ref_name,
+            author_avatar: format!("https://github.com/{}.png?size=40", pr.author.login),
+            author: pr.author.login,
+        }
+    }
+}
+
+fn gh_in_dir(directory: &str) -> std::process::Command {
+    let expanded = if directory.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            directory.replacen('~', &home, 1)
+        } else {
+            directory.to_string()
+        }
+    } else {
+        directory.to_string()
+    };
+    let mut cmd = std::process::Command::new("gh");
+    cmd.current_dir(&expanded);
+    cmd.env("PATH", shell_path());
+    cmd
+}
+
+#[tauri::command]
+async fn get_pull_requests(directory: String) -> PullRequestsResult {
+    tauri::async_runtime::spawn_blocking(move || get_pull_requests_sync(&directory)).await.unwrap_or_else(|_| PullRequestsResult {
+        review_requested: vec![],
+        my_prs: vec![],
+        gh_available: false,
+        error: Some("Internal error".to_string()),
+    })
+}
+
+fn get_pull_requests_sync(directory: &str) -> PullRequestsResult {
+    // Check if gh is installed and authenticated
+    let auth_check = gh_command()
+        .args(["auth", "status"])
+        .output();
+
+    match auth_check {
+        Err(_) => {
+            return PullRequestsResult {
+                review_requested: vec![],
+                my_prs: vec![],
+                gh_available: false,
+                error: Some("GitHub CLI (gh) is not installed. Install it from https://cli.github.com".to_string()),
+            };
+        }
+        Ok(output) if !output.status.success() => {
+            return PullRequestsResult {
+                review_requested: vec![],
+                my_prs: vec![],
+                gh_available: false,
+                error: Some("Not authenticated with GitHub CLI. Run `gh auth login` to authenticate.".to_string()),
+            };
+        }
+        _ => {}
+    }
+
+    let json_fields = "number,title,url,state,isDraft,updatedAt,headRefName,author";
+
+    let review_prs = gh_in_dir(directory)
+        .args(["pr", "list", "--search", "review-requested:@me", "--state=open",
+               &format!("--json={}", json_fields), "--limit=30"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                serde_json::from_slice::<Vec<GhPr>>(&o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(PullRequest::from)
+        .collect();
+
+    let my_prs = gh_in_dir(directory)
+        .args(["pr", "list", "--author=@me", "--state=open",
+               &format!("--json={}", json_fields), "--limit=30"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                serde_json::from_slice::<Vec<GhPr>>(&o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(PullRequest::from)
+        .collect();
+
+    PullRequestsResult {
+        review_requested: review_prs,
+        my_prs,
+        gh_available: true,
+        error: None,
+    }
+}
+
+#[tauri::command]
+async fn checkout_pr(directory: String, pr_number: u32) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = gh_in_dir(&directory)
+            .args(["pr", "checkout", &pr_number.to_string()])
+            .output()
+            .map_err(|e| format!("Failed to run gh: {}", e))?;
+        if output.status.success() {
+            let msg = String::from_utf8_lossy(&output.stderr);
+            // gh pr checkout prints the branch name to stderr
+            Ok(msg.trim().to_string())
+        } else {
+            let err = String::from_utf8_lossy(&output.stderr);
+            Err(err.trim().to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn checkout_pr_worktree(
+    directory: String,
+    pr_number: u32,
+    head_ref_name: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let expanded = if directory.starts_with('~') {
+            if let Ok(home) = std::env::var("HOME") {
+                directory.replacen('~', &home, 1)
+            } else {
+                directory.to_string()
+            }
+        } else {
+            directory.to_string()
+        };
+        let dir_path = std::path::Path::new(&expanded);
+        let repo_name = dir_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "repo".to_string());
+        let worktree_name = format!("{}-pr-{}", repo_name, pr_number);
+        let worktree_path = dir_path
+            .parent()
+            .unwrap_or(dir_path)
+            .join(&worktree_name);
+
+        // Fetch the branch
+        let fetch = std::process::Command::new("git")
+            .current_dir(&expanded)
+            .env("PATH", shell_path())
+            .args(["fetch", "origin", &head_ref_name])
+            .output()
+            .map_err(|e| format!("Failed to run git fetch: {}", e))?;
+        if !fetch.status.success() {
+            let err = String::from_utf8_lossy(&fetch.stderr);
+            return Err(format!("git fetch failed: {}", err.trim()));
+        }
+
+        // Create worktree
+        let wt = std::process::Command::new("git")
+            .current_dir(&expanded)
+            .env("PATH", shell_path())
+            .args([
+                "worktree",
+                "add",
+                &worktree_path.to_string_lossy(),
+                &format!("origin/{}", head_ref_name),
+            ])
+            .output()
+            .map_err(|e| format!("Failed to run git worktree add: {}", e))?;
+        if !wt.status.success() {
+            let err = String::from_utf8_lossy(&wt.stderr);
+            return Err(format!("git worktree add failed: {}", err.trim()));
+        }
+
+        Ok(worktree_path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 fn git_command(directory: &str) -> std::process::Command {
     let expanded = if directory.starts_with('~') {
         if let Ok(home) = std::env::var("HOME") {
@@ -1444,6 +1742,7 @@ pub fn run() {
             save_sessions,
             load_sessions,
             list_directories,
+            list_worktrees,
             get_conversation_title,
             get_session_usage,
             get_total_usage_today,
@@ -1460,6 +1759,9 @@ pub fn run() {
             read_file,
             write_file,
             list_files,
+            get_pull_requests,
+            checkout_pr,
+            checkout_pr_worktree,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
