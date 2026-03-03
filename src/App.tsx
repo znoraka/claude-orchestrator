@@ -61,6 +61,9 @@ export default function App() {
   const [skipPermissions, setSkipPermissions] = useState(true);
   const [creating, setCreating] = useState(false);
   const [activeTab, setActiveTab] = useState<Map<string, "main" | "git" | "prs">>(new Map());
+  // LRU cache of mounted tab panels (most recent at end). Max 16 slots (8 sessions × 2 tabs).
+  const MAX_MOUNTED_TABS = 16;
+  const [mountedTabsLru, setMountedTabsLru] = useState<Array<{ sessionId: string; tab: string }>>([]);
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
   const registerWriteText = useCallback(
@@ -88,19 +91,31 @@ export default function App() {
 
   const getTab = (sessionId: string): "main" | "git" | "prs" =>
     activeTab.get(sessionId) || "main";
-  const toggleTab = (sessionId: string) => {
-    setActiveTab((prev) => {
-      const next = new Map(prev);
-      next.set(sessionId, getTab(sessionId) === "main" ? "git" : "main");
-      return next;
+  const isTabMounted = (sessionId: string, tab: string) =>
+    mountedTabsLru.some((e) => e.sessionId === sessionId && e.tab === tab);
+  const touchMountedTab = (sessionId: string, tab: string) => {
+    setMountedTabsLru((prev) => {
+      // Move to end (most recent), evict oldest if over limit
+      const filtered = prev.filter((e) => !(e.sessionId === sessionId && e.tab === tab));
+      const next = [...filtered, { sessionId, tab }];
+      return next.length > MAX_MOUNTED_TABS ? next.slice(next.length - MAX_MOUNTED_TABS) : next;
     });
   };
-  const togglePRsTab = (sessionId: string) => {
+  const switchTab = (sessionId: string, tab: "main" | "git" | "prs") => {
     setActiveTab((prev) => {
       const next = new Map(prev);
-      next.set(sessionId, getTab(sessionId) === "prs" ? "main" : "prs");
+      next.set(sessionId, tab);
       return next;
     });
+    if (tab !== "main") touchMountedTab(sessionId, tab);
+  };
+  const toggleTab = (sessionId: string) => {
+    const next = getTab(sessionId) === "main" ? "git" : "main";
+    switchTab(sessionId, next);
+  };
+  const togglePRsTab = (sessionId: string) => {
+    const next = getTab(sessionId) === "prs" ? "main" : "prs";
+    switchTab(sessionId, next);
   };
 
   // Cmd+N to open new session dialog, Cmd+G to toggle git tab
@@ -246,14 +261,13 @@ export default function App() {
               key={session.id}
               className="absolute inset-0 flex flex-col"
               style={{
-                visibility: session.id === activeSessionId ? "visible" : "hidden",
-                pointerEvents: session.id === activeSessionId ? "auto" : "none",
+                display: session.id === activeSessionId ? "flex" : "none",
               }}
             >
               {/* Tab bar */}
               <div className="flex items-center gap-1 px-3 py-1 border-b border-[var(--border-color)] flex-shrink-0 bg-[var(--bg-secondary)]">
                 <button
-                  onClick={() => setActiveTab((prev) => { const n = new Map(prev); n.set(session.id, "main"); return n; })}
+                  onClick={() => switchTab(session.id, "main")}
                   className={`px-2 py-0.5 text-xs rounded transition-colors ${
                     tab === "main"
                       ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
@@ -263,7 +277,7 @@ export default function App() {
                   {mainLabel}
                 </button>
                 <button
-                  onClick={() => setActiveTab((prev) => { const n = new Map(prev); n.set(session.id, "git"); return n; })}
+                  onClick={() => switchTab(session.id, "git")}
                   className={`px-2 py-0.5 text-xs rounded transition-colors ${
                     tab === "git"
                       ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
@@ -273,7 +287,7 @@ export default function App() {
                   Git
                 </button>
                 <button
-                  onClick={() => setActiveTab((prev) => { const n = new Map(prev); n.set(session.id, "prs"); return n; })}
+                  onClick={() => switchTab(session.id, "prs")}
                   className={`px-2 py-0.5 text-xs rounded transition-colors ${
                     tab === "prs"
                       ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
@@ -286,7 +300,7 @@ export default function App() {
 
               {/* Tab content */}
               <div className="flex-1 min-h-0 relative">
-                <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "main" ? 1 : 0 }}>
+                <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "main" ? 1 : 0, visibility: tab === "main" ? "visible" : "hidden" }}>
                   <ErrorBoundary key={`eb-${session.id}-${session.status}`}>
                     {session.status === "stopped" ? (
                       <SessionConversation
@@ -296,8 +310,12 @@ export default function App() {
                     ) : (
                       <Terminal
                         sessionId={session.id}
-                        isActive={session.id === activeSessionId}
-                        onExit={() => markStopped(session.id)}
+                        isActive={session.id === activeSessionId && tab === "main"}
+                        onExit={() => {
+                          markStopped(session.id);
+                          setMountedTabsLru((prev) => prev.filter((e) => e.sessionId !== session.id));
+                          setActiveTab((prev) => { const next = new Map(prev); next.set(session.id, "main"); return next; });
+                        }}
                         onTitleChange={() => {}}
                         onActivity={() => touchSession(session.id)}
                         onRegisterWriteText={(fn) => registerWriteText(session.id, fn)}
@@ -305,23 +323,27 @@ export default function App() {
                     )}
                   </ErrorBoundary>
                 </div>
-                <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "git" ? 1 : 0 }}>
-                  <GitPanel
-                    directory={session.directory}
-                    isActive={session.id === activeSessionId && tab === "git"}
-                    onEditFile={(relativePath) => {
-                      const dir = session.directory.endsWith("/") ? session.directory : session.directory + "/";
-                      setEditorFilePath(dir + relativePath);
-                      setShowFileEditor(true);
-                    }}
-                  />
-                </div>
-                <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "prs" ? 1 : 0 }}>
-                  <PRPanel
-                    directory={session.directory}
-                    isActive={session.id === activeSessionId && tab === "prs"}
-                  />
-                </div>
+                {(tab === "git" || isTabMounted(session.id, "git")) && (
+                  <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "git" ? 1 : 0, visibility: tab === "git" ? "visible" : "hidden" }}>
+                    <GitPanel
+                      directory={session.directory}
+                      isActive={session.id === activeSessionId && tab === "git"}
+                      onEditFile={(relativePath) => {
+                        const dir = session.directory.endsWith("/") ? session.directory : session.directory + "/";
+                        setEditorFilePath(dir + relativePath);
+                        setShowFileEditor(true);
+                      }}
+                    />
+                  </div>
+                )}
+                {(tab === "prs" || isTabMounted(session.id, "prs")) && (
+                  <div className="absolute inset-0 bg-[var(--bg-primary)]" style={{ zIndex: tab === "prs" ? 1 : 0, visibility: tab === "prs" ? "visible" : "hidden" }}>
+                    <PRPanel
+                      directory={session.directory}
+                      isActive={session.id === activeSessionId && tab === "prs"}
+                    />
+                  </div>
+                )}
               </div>
             </div>
             );

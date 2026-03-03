@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Session } from "../types";
@@ -25,15 +25,20 @@ export function useConversationTitles(
   const resolvedRef = useRef<Set<string>>(new Set());
   const smartStateRef = useRef<Map<string, TitleState>>(new Map());
   const smartPendingRef = useRef<Set<string>>(new Set());
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+
+  // Stable key: only changes when the set of running sessions changes (not on activeTime/name updates)
+  const runningKey = sessions.filter((s) => s.status === "running").map((s) => s.id).join(",");
+  const runningSessions = useMemo(
+    () => sessions.filter((s) => s.claudeSessionId && s.directory && s.status === "running"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runningKey]
+  );
 
   // Register file watchers and listen for changes
   useEffect(() => {
-    const pending = sessions.filter(
-      (s) =>
-        s.claudeSessionId &&
-        s.directory &&
-        s.status === "running"
-    );
+    const pending = runningSessions;
 
     if (pending.length === 0) return;
 
@@ -159,5 +164,5 @@ export function useConversationTitles(
       unlistenPromise.then((fn) => fn());
       clearInterval(fallbackInterval);
     };
-  }, [sessions, renameSession]);
+  }, [runningSessions, renameSession]);
 }

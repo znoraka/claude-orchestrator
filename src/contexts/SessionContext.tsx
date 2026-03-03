@@ -27,7 +27,8 @@ type SessionAction =
   | { type: "ADD"; session: Session }
   | { type: "REMOVE"; id: string }
   | { type: "UPDATE"; id: string; patch: Partial<Session> }
-  | { type: "MARK_STOPPED"; ids: string[] };
+  | { type: "MARK_STOPPED"; ids: string[] }
+  | { type: "TICK_ACTIVE_TIMES"; updates: Array<{ id: string; activeTime: number }> };
 
 function sessionReducer(state: Session[], action: SessionAction): Session[] {
   switch (action.type) {
@@ -45,6 +46,13 @@ function sessionReducer(state: Session[], action: SessionAction): Session[] {
       return state.map((s) =>
         action.ids.includes(s.id) ? { ...s, status: "stopped" as const } : s
       );
+    case "TICK_ACTIVE_TIMES": {
+      const map = new Map(action.updates.map((u) => [u.id, u.activeTime]));
+      return state.map((s) => {
+        const at = map.get(s.id);
+        return at !== undefined ? { ...s, activeTime: at } : s;
+      });
+    }
     default:
       return state;
   }
@@ -127,23 +135,30 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
-  // ── Persist sessions on every change (after initial load) ────────
+  // ── Persist sessions on every change (debounced, after initial load) ─
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!loadedRef.current) return;
-    const metas = sessions.map((s) => ({
-      id: s.id,
-      name: s.name,
-      createdAt: s.createdAt,
-      lastActiveAt: s.lastActiveAt,
-      directory: s.directory,
-      claudeSessionId: s.claudeSessionId,
-      dangerouslySkipPermissions: s.dangerouslySkipPermissions,
-      activeTime: s.activeTime || 0,
-    }));
-    invoke("save_sessions", { sessions: metas }).catch((err) => {
-      console.error("Failed to save sessions:", err);
-      showError(`Failed to save sessions: ${err}`);
-    });
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      const metas = sessionsRef.current.map((s) => ({
+        id: s.id,
+        name: s.name,
+        createdAt: s.createdAt,
+        lastActiveAt: s.lastActiveAt,
+        directory: s.directory,
+        claudeSessionId: s.claudeSessionId,
+        dangerouslySkipPermissions: s.dangerouslySkipPermissions,
+        activeTime: s.activeTime || 0,
+      }));
+      invoke("save_sessions", { sessions: metas }).catch((err) => {
+        console.error("Failed to save sessions:", err);
+        showError(`Failed to save sessions: ${err}`);
+      });
+    }, 2000);
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
   }, [sessions]);
 
   // ── Kill oldest running sessions when over the limit ─────────────
@@ -310,16 +325,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const running = sessionsRef.current.filter((s) => s.status === "running");
       if (running.length === 0) return;
 
+      const updates: Array<{ id: string; activeTime: number }> = [];
       for (const s of running) {
         const since = runningSinceRef.current.get(s.id);
         if (!since) continue;
         const elapsed = now - since;
         runningSinceRef.current.set(s.id, now);
-        dispatch({
-          type: "UPDATE",
-          id: s.id,
-          patch: { activeTime: (s.activeTime || 0) + elapsed },
-        });
+        updates.push({ id: s.id, activeTime: (s.activeTime || 0) + elapsed });
+      }
+      if (updates.length > 0) {
+        dispatch({ type: "TICK_ACTIVE_TIMES", updates });
       }
     }, 60_000);
     return () => clearInterval(interval);

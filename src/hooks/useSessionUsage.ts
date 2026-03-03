@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Session, SessionUsage } from "../types";
@@ -8,11 +8,19 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
   const usageMapRef = useRef(usageMap);
   usageMapRef.current = usageMap;
 
+  // Stable key: only changes when running session set changes (not on activeTime/name updates)
+  const runningKey = sessions.filter((s) => s.status === "running").map((s) => s.id).join(",");
+  const runningSessions = useMemo(
+    () => sessions.filter((s) => s.claudeSessionId && s.directory && s.status === "running"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runningKey]
+  );
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+
   // Watch running sessions and update usage on JSONL file changes
   useEffect(() => {
-    const eligible = sessions.filter(
-      (s) => s.claudeSessionId && s.directory && s.status === "running"
-    );
+    const eligible = runningSessions;
     if (eligible.length === 0) return;
 
     const fetchUsageForSession = (session: Session) => {
@@ -80,11 +88,17 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
       unlistenPromise.then((fn) => fn());
       clearInterval(pollInterval);
     };
-  }, [sessions]);
+  }, [runningSessions]);
+
+  // Stable key for stopped sessions: only re-run when session list actually changes
+  const stoppedSessionKey = useMemo(
+    () => sessions.filter((s) => s.status === "stopped").map((s) => s.id).join(","),
+    [sessions]
+  );
 
   // Fetch once for stopped sessions that have no cached usage yet
   useEffect(() => {
-    const stoppedWithoutUsage = sessions.filter(
+    const stoppedWithoutUsage = sessionsRef.current.filter(
       (s) =>
         s.claudeSessionId &&
         s.directory &&
@@ -106,7 +120,8 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
         })
         .catch(() => {});
     }
-  }, [sessions]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stoppedSessionKey]);
 
   return usageMap;
 }
