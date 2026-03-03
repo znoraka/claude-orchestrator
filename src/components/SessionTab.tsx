@@ -6,6 +6,15 @@ function shortenPath(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+function directoryColor(dir: string): string {
+  let hash = 0;
+  for (let i = 0; i < dir.length; i++) {
+    hash = dir.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const hue = ((hash % 360) + 360) % 360;
+  return `hsl(${hue}, 55%, 55%)`;
+}
+
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
@@ -78,7 +87,13 @@ export default memo(function SessionTab({
         }
       `}
     >
-      {/* Status dot + thinking indicator */}
+      {/* Directory color bar + status dot */}
+      <span className="relative shrink-0 flex flex-col items-center gap-1">
+        <span
+          className="w-[3px] rounded-full self-stretch"
+          style={{ backgroundColor: session.directory ? directoryColor(session.directory) : 'transparent' }}
+        />
+      </span>
       <span className="relative shrink-0 w-2 h-2">
         <span className={`absolute inset-0 rounded-full ${statusColor} ${usage?.isBusy && session.status === "running" ? "animate-blink" : ""}`} />
       </span>
@@ -111,7 +126,10 @@ export default memo(function SessionTab({
           </span>
         )}
         {session.directory && (
-          <span className="text-[10px] text-[var(--text-tertiary)] truncate block mt-0.5">
+          <span
+            className="text-[10px] truncate block mt-0.5"
+            style={{ color: directoryColor(session.directory) }}
+          >
             {shortenPath(session.directory)}
           </span>
         )}
