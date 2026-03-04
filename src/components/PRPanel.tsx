@@ -270,6 +270,10 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
       const match = worktrees.find((wt) => wt.branch === headRefName);
       if (match) {
         sessionDir = match.path;
+      } else {
+        // Default to the main worktree directory, not the current workspace
+        const main = worktrees.find((wt) => wt.isMain);
+        if (main) sessionDir = main.path;
       }
     } catch {
       // Fall back to base directory
@@ -284,7 +288,11 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
     await new Promise((r) => setTimeout(r, 1500));
     await invoke("write_to_pty", {
       sessionId,
-      data: `/review ${prNumber}\n`,
+      data: `You are reviewing PR #${prNumber} (branch: ${headRefName}). ` +
+        `If I ask you to make changes or implement something, you MUST first ask me if I want to continue in a new worktree for this PR branch. ` +
+        `Do NOT skip this question even if you have dangerous permissions. ` +
+        `If I say yes, use the checkout_pr_worktree MCP tool with directory="${sessionDir}", pr_number=${prNumber}, branch="${headRefName}", then cd into the resulting path. ` +
+        `Now, please start by running: /review ${prNumber}\n`,
     });
     onSwitchToClaude?.();
   }, [createSession, directory, sessions, onSwitchToClaude]);

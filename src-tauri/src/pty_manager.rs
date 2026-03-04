@@ -120,7 +120,10 @@ impl PtyManager {
                      3. Worktrees should live in .worktrees/ relative to the repo root.\n\
                      4. Always call switch_workspace with the absolute path to the new worktree directory after creating it.\n\
                      5. After switch_workspace returns, run: cd <worktree-path>\n\
-                     6. Dependency directories (node_modules, .venv, venv, vendor) are automatically cloned into new worktrees via APFS clonefile, so npm install / pip install is usually not needed."
+                     6. Dependency directories (node_modules, .venv, venv, vendor) are automatically cloned into new worktrees via APFS clonefile, so npm install / pip install is usually not needed.\n\n\
+                     When working on a PR branch, use the `checkout_pr_worktree` MCP tool instead of manually creating worktrees. \
+                     It fetches the PR branch, creates a worktree at .worktrees/pr-<number>, clones dependencies, and signals the orchestrator — all in one step. \
+                     After it returns, you MUST run `cd <path>` to change your working directory."
                         .to_string(),
                 );
             }
