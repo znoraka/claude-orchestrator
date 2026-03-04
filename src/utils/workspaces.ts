@@ -1,4 +1,4 @@
-import type { Session, Workspace } from "../types";
+import type { Session, Worktree, Workspace } from "../types";
 
 /** Strip trailing slashes so the same directory always hashes to the same color. */
 export function normalizeDir(dir: string): string {
@@ -19,28 +19,61 @@ export function repoRootDir(dir: string): string {
   return dir;
 }
 
+/** Extract worktree name from path, or "main" for the repo root. */
+export function worktreeName(path: string): string {
+  const wtIdx = path.indexOf("/.worktrees/");
+  if (wtIdx !== -1) return path.slice(wtIdx + "/.worktrees/".length);
+  const clIdx = path.indexOf("/.claude/worktrees/");
+  if (clIdx !== -1) return path.slice(clIdx + "/.claude/worktrees/".length);
+  return "main";
+}
+
 export function deriveWorkspaces(sessions: Session[]): Workspace[] {
-  const byDir = new Map<string, Session[]>();
+  // Step 1: Group sessions by repo root
+  const byRepo = new Map<string, Map<string, Session[]>>();
 
   for (const s of sessions) {
-    // Group worktrees under the parent repo directory
-    const dir = repoRootDir(s.directory || "~");
-    let arr = byDir.get(dir);
+    const dir = s.directory || "~";
+    const repo = repoRootDir(dir);
+    let repoMap = byRepo.get(repo);
+    if (!repoMap) {
+      repoMap = new Map();
+      byRepo.set(repo, repoMap);
+    }
+    let arr = repoMap.get(dir);
     if (!arr) {
       arr = [];
-      byDir.set(dir, arr);
+      repoMap.set(dir, arr);
     }
     arr.push(s);
   }
 
+  // Step 2: Build workspaces with worktrees
   const workspaces: Workspace[] = [];
-  for (const [dir, dirSessions] of byDir) {
-    const sorted = [...dirSessions].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+  for (const [repo, worktreeMap] of byRepo) {
+    const worktrees: Worktree[] = [];
+    for (const [dir, dirSessions] of worktreeMap) {
+      const sorted = [...dirSessions].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+      const isMain = dir === repo;
+      worktrees.push({
+        path: dir,
+        branch: "", // filled in later by the sidebar via list_worktrees
+        isMain,
+        sessions: sorted,
+        lastActiveAt: sorted[0].lastActiveAt,
+      });
+    }
+    // Sort: main first, then by lastActiveAt desc
+    worktrees.sort((a, b) => {
+      if (a.isMain !== b.isMain) return a.isMain ? -1 : 1;
+      return b.lastActiveAt - a.lastActiveAt;
+    });
+
     workspaces.push({
-      id: dir,
-      directory: dir,
-      sessions: sorted,
-      lastActiveAt: sorted[0].lastActiveAt,
+      id: repo,
+      directory: repo,
+      worktrees,
+      lastActiveAt: Math.max(...worktrees.map((w) => w.lastActiveAt)),
     });
   }
 

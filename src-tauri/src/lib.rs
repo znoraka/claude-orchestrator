@@ -290,8 +290,16 @@ fn list_directories(partial: String) -> Result<Vec<String>, String> {
     Ok(results)
 }
 
+#[derive(Serialize, Clone)]
+struct WorktreeInfo {
+    path: String,
+    branch: String,
+    #[serde(rename = "isMain")]
+    is_main: bool,
+}
+
 #[tauri::command]
-fn list_worktrees(directory: String) -> Result<Vec<String>, String> {
+fn list_worktrees(directory: String) -> Result<Vec<WorktreeInfo>, String> {
     let expanded = if directory.starts_with('~') {
         if let Ok(home) = std::env::var("HOME") {
             directory.replacen('~', &home, 1)
@@ -316,42 +324,165 @@ fn list_worktrees(directory: String) -> Result<Vec<String>, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let home = std::env::var("HOME").unwrap_or_default();
 
-    // Find the main worktree (always the first entry in `git worktree list`).
-    // We exclude it so only secondary worktrees are returned, regardless of
-    // which directory was passed as input.
-    let main_worktree: Option<std::path::PathBuf> = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("worktree "))
-        .and_then(|path| {
-            std::fs::canonicalize(path)
-                .ok()
-                .or_else(|| Some(std::path::PathBuf::from(path)))
-        });
+    // Parse porcelain output: blocks separated by blank lines
+    // Each block has: worktree <path>\nHEAD <sha>\nbranch <ref>\n
+    let mut worktrees: Vec<WorktreeInfo> = Vec::new();
+    let mut is_first = true;
 
-    let worktrees: Vec<String> = stdout
-        .lines()
-        .filter_map(|line| line.strip_prefix("worktree "))
-        .filter_map(|path| {
-            // Exclude the main worktree (repo root), not the input directory
-            let canonical = std::fs::canonicalize(path)
-                .unwrap_or_else(|_| std::path::PathBuf::from(path));
-            if main_worktree.as_ref() == Some(&canonical) {
-                return None;
+    let mut current_path: Option<String> = None;
+    let mut current_branch: Option<String> = None;
+
+    for line in stdout.lines() {
+        if line.is_empty() {
+            // End of block
+            if let Some(path) = current_path.take() {
+                if !std::path::Path::new(&path).is_dir() {
+                    current_branch = None;
+                    is_first = false;
+                    continue;
+                }
+                let branch = current_branch.take().unwrap_or_default();
+                let display_path = if !home.is_empty() && path.starts_with(&home) {
+                    format!("~{}", &path[home.len()..])
+                } else {
+                    path
+                };
+                worktrees.push(WorktreeInfo {
+                    path: display_path,
+                    branch,
+                    is_main: is_first,
+                });
+                is_first = false;
             }
-            // Skip worktrees whose directory no longer exists on disk
-            if !std::path::Path::new(path).is_dir() {
-                return None;
-            }
-            let full = path.to_string();
-            if !home.is_empty() && full.starts_with(&home) {
-                Some(format!("~{}", &full[home.len()..]))
+            current_branch = None;
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("worktree ") {
+            current_path = Some(path.to_string());
+        } else if let Some(branch_ref) = line.strip_prefix("branch ") {
+            // refs/heads/main -> main
+            current_branch = Some(
+                branch_ref
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(branch_ref)
+                    .to_string(),
+            );
+        }
+    }
+    // Handle last block (porcelain output may not end with blank line)
+    if let Some(path) = current_path.take() {
+        if std::path::Path::new(&path).is_dir() {
+            let branch = current_branch.take().unwrap_or_default();
+            let display_path = if !home.is_empty() && path.starts_with(&home) {
+                format!("~{}", &path[home.len()..])
             } else {
-                Some(full)
-            }
-        })
-        .collect();
+                path
+            };
+            worktrees.push(WorktreeInfo {
+                path: display_path,
+                branch,
+                is_main: is_first,
+            });
+        }
+    }
 
     Ok(worktrees)
+}
+
+#[tauri::command]
+fn create_worktree(
+    directory: String,
+    branch_name: String,
+    worktree_name: Option<String>,
+) -> Result<String, String> {
+    let expanded = if directory.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            directory.replacen('~', &home, 1)
+        } else {
+            directory.clone()
+        }
+    } else {
+        directory.clone()
+    };
+
+    let name = worktree_name.unwrap_or_else(|| branch_name.replace('/', "-"));
+    let worktree_path = std::path::Path::new(&expanded)
+        .join(".worktrees")
+        .join(&name);
+
+    // Create .worktrees directory if needed
+    let worktrees_dir = std::path::Path::new(&expanded).join(".worktrees");
+    std::fs::create_dir_all(&worktrees_dir)
+        .map_err(|e| format!("Failed to create .worktrees dir: {}", e))?;
+
+    // Try creating with a new branch first
+    let output = std::process::Command::new("git")
+        .current_dir(&expanded)
+        .env("PATH", shell_path())
+        .args([
+            "worktree",
+            "add",
+            &worktree_path.to_string_lossy(),
+            "-b",
+            &branch_name,
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if !output.status.success() {
+        // Branch might already exist, try without -b
+        let output2 = std::process::Command::new("git")
+            .current_dir(&expanded)
+            .env("PATH", shell_path())
+            .args([
+                "worktree",
+                "add",
+                &worktree_path.to_string_lossy(),
+                &branch_name,
+            ])
+            .output()
+            .map_err(|e| format!("Failed to run git: {}", e))?;
+
+        if !output2.status.success() {
+            let err = String::from_utf8_lossy(&output2.stderr);
+            return Err(format!("git worktree add failed: {}", err.trim()));
+        }
+    }
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let result = worktree_path.to_string_lossy().to_string();
+    if !home.is_empty() && result.starts_with(&home) {
+        Ok(format!("~{}", &result[home.len()..]))
+    } else {
+        Ok(result)
+    }
+}
+
+#[tauri::command]
+fn remove_worktree(path: String) -> Result<(), String> {
+    let expanded = if path.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            path.replacen('~', &home, 1)
+        } else {
+            path.clone()
+        }
+    } else {
+        path.clone()
+    };
+
+    let output = std::process::Command::new("git")
+        .current_dir(&expanded)
+        .env("PATH", shell_path())
+        .args(["worktree", "remove", &expanded, "--force"])
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git worktree remove failed: {}", err.trim()));
+    }
+
+    Ok(())
 }
 
 /// Resolve a JSONL path from session ID and directory.
@@ -1523,15 +1654,15 @@ async fn checkout_pr_worktree(
             directory.to_string()
         };
         let dir_path = std::path::Path::new(&expanded);
-        let repo_name = dir_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "repo".to_string());
-        let worktree_name = format!("{}-pr-{}", repo_name, pr_number);
+        let worktree_name = format!("pr-{}", pr_number);
         let worktree_path = dir_path
-            .parent()
-            .unwrap_or(dir_path)
+            .join(".worktrees")
             .join(&worktree_name);
+
+        // Ensure .worktrees directory exists
+        let worktrees_dir = dir_path.join(".worktrees");
+        std::fs::create_dir_all(&worktrees_dir)
+            .map_err(|e| format!("Failed to create .worktrees dir: {}", e))?;
 
         // Fetch the branch
         let fetch = std::process::Command::new("git")
@@ -1704,9 +1835,29 @@ struct BranchDiffResult {
 }
 
 #[tauri::command]
-fn list_branches(directory: String) -> Result<Vec<String>, String> {
+fn switch_branch(directory: String, branch: String) -> Result<(), String> {
+    // Try `git switch` first, fall back to `git checkout` for detached/remote branches
     let output = git_command(&directory)
-        .args(["branch", "-a", "--format=%(refname:short)"])
+        .args(["switch", &branch])
+        .output()
+        .map_err(|e| format!("Failed to run git switch: {}", e))?;
+    if !output.status.success() {
+        let output = git_command(&directory)
+            .args(["checkout", &branch])
+            .output()
+            .map_err(|e| format!("Failed to run git checkout: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_branches(directory: String) -> Result<Vec<String>, String> {
+    // Sort branches by most recent commit date (descending) so recently-used branches come first
+    let output = git_command(&directory)
+        .args(["branch", "--sort=-committerdate", "--format=%(refname:short)"])
         .output()
         .map_err(|e| format!("Failed to run git branch: {}", e))?;
     if !output.status.success() {
@@ -2157,6 +2308,22 @@ fn list_files(partial: String) -> Result<Vec<(String, bool)>, String> {
 }
 
 #[tauri::command]
+fn resolve_path(file_path: String) -> Result<String, String> {
+    let expanded = if file_path.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            file_path.replacen('~', &home, 1)
+        } else {
+            file_path
+        }
+    } else {
+        file_path
+    };
+    std::fs::canonicalize(&expanded)
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| format!("Failed to resolve path: {}", e))
+}
+
+#[tauri::command]
 fn save_clipboard_image(base64_data: String) -> Result<String, String> {
     clipboard_image::save_image_from_base64(&base64_data)
 }
@@ -2225,6 +2392,8 @@ pub fn run() {
             load_sessions,
             list_directories,
             list_worktrees,
+            create_worktree,
+            remove_worktree,
             get_conversation_title,
             get_session_usage,
             get_total_usage_today,
@@ -2240,11 +2409,13 @@ pub fn run() {
             read_file_content,
             read_file,
             write_file,
+            resolve_path,
             list_files,
             get_pull_requests,
             checkout_pr,
             checkout_pr_worktree,
             list_branches,
+            switch_branch,
             get_branch_diff,
             get_branch_file_diff,
             get_pr_diff,

@@ -67,17 +67,21 @@ interface SessionContextValue {
   workspaces: Workspace[];
   activeSessionId: string | null;
   activeWorkspaceId: string | null;
+  activeWorktreePath: string | null;
   sessionUsage: Map<string, SessionUsage>;
   todayCost: number;
   todayTokens: number;
 
   selectSession: (id: string) => void;
   selectWorkspace: (workspaceId: string) => void;
+  selectWorktree: (worktreePath: string) => void;
   createSession: (
     name: string | undefined,
     directory: string,
     dangerouslySkipPermissions?: boolean
   ) => Promise<string>;
+  createWorktree: (repoDir: string, branchName: string, worktreeName?: string) => Promise<string>;
+  removeWorktree: (path: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   renameSession: (id: string, name: string) => void;
   markStopped: (id: string) => void;
@@ -201,8 +205,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const selectSession = useCallback((id: string) => {
     setActiveSessionId(id);
-    const wsId = workspaceForSession(id, sessionsRef.current);
-    if (wsId) activeSessionInWorkspace.current.set(wsId, id);
+    const session = sessionsRef.current.find((s) => s.id === id);
+    if (session) {
+      // Key by worktree path (session directory) for finer-grained recall
+      activeSessionInWorkspace.current.set(session.directory || "~", id);
+      // Also key by workspace (repo root) so selectWorkspace can fall back
+      const wsId = repoRootDir(session.directory || "~");
+      activeSessionInWorkspace.current.set(wsId, id);
+    }
   }, []);
 
   const selectWorkspace = useCallback((workspaceId: string) => {
@@ -213,11 +223,27 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setActiveSessionId(lastSession);
     } else {
       const wsSessions = current
-        .filter((s) => (s.directory || "~") === workspaceId)
+        .filter((s) => repoRootDir(s.directory || "~") === workspaceId)
         .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
       if (wsSessions.length > 0) {
         setActiveSessionId(wsSessions[0].id);
         activeSessionInWorkspace.current.set(workspaceId, wsSessions[0].id);
+      }
+    }
+  }, []);
+
+  const selectWorktree = useCallback((worktreePath: string) => {
+    const lastSession = activeSessionInWorkspace.current.get(worktreePath);
+    const current = sessionsRef.current;
+    if (lastSession && current.some((s) => s.id === lastSession)) {
+      setActiveSessionId(lastSession);
+    } else {
+      const wtSessions = current
+        .filter((s) => (s.directory || "~") === worktreePath)
+        .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+      if (wtSessions.length > 0) {
+        setActiveSessionId(wtSessions[0].id);
+        activeSessionInWorkspace.current.set(worktreePath, wtSessions[0].id);
       }
     }
   }, []);
@@ -346,6 +372,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const touchSession = useCallback((id: string) => {
     dispatch({ type: "UPDATE", id, patch: { lastActiveAt: Date.now() } });
   }, []);
+
+  const createWorktree = useCallback(
+    async (repoDir: string, branchName: string, wtName?: string) => {
+      const path = await invoke<string>("create_worktree", {
+        directory: repoDir,
+        branchName,
+        worktreeName: wtName,
+      });
+      return path;
+    },
+    []
+  );
+
+  const removeWorktree = useCallback(
+    async (path: string) => {
+      await invoke("remove_worktree", { path });
+    },
+    []
+  );
 
   // ── Duration tracking ──────────────────────────────────────────
   const runningSinceRef = useRef<Map<string, number>>(new Map());
@@ -497,6 +542,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [activeSessionId, sessions]
   );
 
+  const activeWorktreePath = useMemo(() => {
+    if (!activeSessionId) return null;
+    const session = sessions.find((s) => s.id === activeSessionId);
+    return session?.directory ?? null;
+  }, [activeSessionId, sessions]);
+
   // Today's usage — refreshed on JSONL file changes + a slow fallback interval
   const [todayCost, setTodayCost] = useState(0);
   const [todayTokens, setTodayTokens] = useState(0);
@@ -528,12 +579,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       workspaces,
       activeSessionId,
       activeWorkspaceId,
+      activeWorktreePath,
       sessionUsage,
       todayCost,
       todayTokens,
       selectSession,
       selectWorkspace,
+      selectWorktree,
       createSession,
+      createWorktree,
+      removeWorktree,
       deleteSession,
       renameSession,
       markStopped,
@@ -546,12 +601,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       workspaces,
       activeSessionId,
       activeWorkspaceId,
+      activeWorktreePath,
       sessionUsage,
       todayCost,
       todayTokens,
       selectSession,
       selectWorkspace,
+      selectWorktree,
       createSession,
+      createWorktree,
+      removeWorktree,
       deleteSession,
       renameSession,
       markStopped,

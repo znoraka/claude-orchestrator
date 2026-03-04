@@ -85,9 +85,17 @@ export interface PrComment {
   createdAt: string;
 }
 
+export interface Worktree {
+  path: string;        // absolute path (e.g. /repo/.worktrees/feat-x, or /repo for main)
+  branch: string;      // current branch name
+  isMain: boolean;     // is this the main working tree?
+  sessions: Session[]; // sessions in this worktree, sorted by lastActiveAt desc
+  lastActiveAt: number;
+}
+
 export interface Workspace {
-  id: string;          // === directory (stable key)
-  directory: string;
-  sessions: Session[]; // sorted by lastActiveAt desc
+  id: string;           // repo root path
+  directory: string;    // repo root path
+  worktrees: Worktree[];// including main worktree
   lastActiveAt: number;
 }

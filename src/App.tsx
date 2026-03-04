@@ -10,19 +10,23 @@ import PRPanel from "./components/PRPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
 import UsagePanel from "./components/UsagePanel";
 import FileEditor from "./components/FileEditor";
-import { directoryColor, shortenPath } from "./components/SessionTab";
+import { directoryColor } from "./components/SessionTab";
 import { repoRootDir } from "./utils/workspaces";
+import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 
 export default function App() {
   const {
     sessions,
-    sortedSessions,
+    workspaces,
     activeSessionId,
+    activeWorktreePath,
     sessionUsage,
     todayCost,
     todayTokens,
     selectSession,
+    selectWorktree,
     createSession,
+    createWorktree,
     deleteSession,
     renameSession,
     markStopped,
@@ -70,25 +74,12 @@ export default function App() {
   // ── Panel state (replaces per-workspace tab state) ──────────────
   const [activePanel, setActivePanel] = useState<"git" | "prs" | "shell" | null>(null);
 
-  // panelDirectory: which directory Git/PRs/Shell target
-  // null = auto-follow active session's directory
-  const [panelDirOverride, setPanelDirOverride] = useState<string | null>(null);
-
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
     [sessions, activeSessionId]
   );
 
-  const panelDirectory = panelDirOverride ?? activeSession?.directory ?? "~";
-
-  // Reset override when selecting a new session (auto-follow)
-  const prevActiveSessionId = useRef(activeSessionId);
-  useEffect(() => {
-    if (activeSessionId !== prevActiveSessionId.current) {
-      prevActiveSessionId.current = activeSessionId;
-      setPanelDirOverride(null);
-    }
-  }, [activeSessionId]);
+  const panelDirectory = activeSession?.directory ?? "~";
 
   // Current git branch for panelDirectory
   const [currentBranch, setCurrentBranch] = useState<string>("");
@@ -105,25 +96,6 @@ export default function App() {
     return () => clearInterval(interval);
   }, [panelDirectory]);
 
-  // Worktrees for the directory dropdown
-  const [dropdownWorktrees, setDropdownWorktrees] = useState<string[]>([]);
-  useEffect(() => {
-    invoke<string[]>("list_worktrees", { directory: panelDirectory })
-      .then(setDropdownWorktrees)
-      .catch(() => setDropdownWorktrees([]));
-  }, [panelDirectory]);
-
-  // Unique directories from sessions (for dropdown)
-  const sessionDirectories = useMemo(() => {
-    const dirs = new Set(sessions.map((s) => s.directory).filter(Boolean));
-    return [...dirs].sort();
-  }, [sessions]);
-
-  // All dropdown choices: session dirs + worktrees (deduplicated)
-  const dropdownChoices = useMemo(() => {
-    const all = new Set([...sessionDirectories, ...dropdownWorktrees]);
-    return [...all].sort();
-  }, [sessionDirectories, dropdownWorktrees]);
 
   // Sanitize directory path into a Tauri-event-safe session ID.
   // Tauri v2 event names only allow alphanumeric, '-', '/', ':', '_'.
@@ -133,31 +105,6 @@ export default function App() {
   // Track which directories have a shell PTY created
   const [shellDirs, setShellDirs] = useState<Set<string>>(new Set());
 
-  // Dropdown open state
-  const [showDirDropdown, setShowDirDropdown] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  // Branch dropdown state
-  const [showBranchDropdown, setShowBranchDropdown] = useState(false);
-  const [branches, setBranches] = useState<string[]>([]);
-  const [branchSearch, setBranchSearch] = useState("");
-  const branchDropdownRef = useRef<HTMLDivElement>(null);
-  const branchSearchRef = useRef<HTMLInputElement>(null);
-
-  // Close dropdowns on outside click
-  useEffect(() => {
-    if (!showDirDropdown && !showBranchDropdown) return;
-    const handler = (e: MouseEvent) => {
-      if (showDirDropdown && dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setShowDirDropdown(false);
-      }
-      if (showBranchDropdown && branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node)) {
-        setShowBranchDropdown(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [showDirDropdown, showBranchDropdown]);
 
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
@@ -250,7 +197,35 @@ export default function App() {
     await deleteSession(id);
   };
 
-  const [worktrees, setWorktrees] = useState<string[]>([]);
+  // Worktree creation dialog
+  const [showWorktreeDialog, setShowWorktreeDialog] = useState(false);
+  const [worktreeRepoDir, setWorktreeRepoDir] = useState("");
+  const [worktreeBranch, setWorktreeBranch] = useState("");
+  const [creatingWorktree, setCreatingWorktree] = useState(false);
+
+  const handleCreateWorktree = (repoDir: string) => {
+    setWorktreeRepoDir(repoDir);
+    setWorktreeBranch("");
+    setShowWorktreeDialog(true);
+  };
+
+  const handleWorktreeConfirm = async () => {
+    if (!worktreeBranch.trim() || creatingWorktree) return;
+    setCreatingWorktree(true);
+    try {
+      const path = await createWorktree(worktreeRepoDir, worktreeBranch.trim());
+      setShowWorktreeDialog(false);
+      // Create a session in the new worktree
+      await createSession(undefined, path, skipPermissions);
+    } catch (err) {
+      console.error("Failed to create worktree:", err);
+    } finally {
+      setCreatingWorktree(false);
+    }
+  };
+
+  // Branch info for all worktrees across all workspaces (shared hook, polls every 10s)
+  const dialogBranches = useWorktreeBranches(workspaces);
 
   const handleNewSession = () => {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
@@ -259,16 +234,15 @@ export default function App() {
     const allRecent = loadRecentDirs();
     Promise.all(allRecent.map((d) => invoke<boolean>("directory_exists", { path: d }).catch(() => false)))
       .then((exists) => setRecentDirs(allRecent.filter((_, i) => exists[i])));
-    setRecentDirs(allRecent); // show immediately, then filter
+    setRecentDirs(allRecent);
     setShowDirDialog(true);
-    const lastDir = localStorage.getItem("claude-orchestrator-last-dir") || "~";
-    invoke<string[]>("list_worktrees", { directory: lastDir })
-      .then((wts) =>
-        Promise.all(wts.map((w) => invoke<boolean>("directory_exists", { path: w }).catch(() => false)))
-          .then((exists) => setWorktrees(wts.filter((_, i) => exists[i])))
-      )
-      .catch(() => setWorktrees([]));
   };
+
+  // Recent dirs that aren't already a known workspace
+  const extraRecentDirs = useMemo(() => {
+    const knownRoots = new Set(workspaces.map((w) => w.directory));
+    return recentDirs.filter((d) => !knownRoots.has(d));
+  }, [recentDirs, workspaces]);
 
   const handleDirConfirm = async () => {
     const dir = dirInput.trim();
@@ -291,7 +265,9 @@ export default function App() {
   };
 
   // Fetch directory suggestions as user types (only after manual edits)
+  const suggestionsVersion = useRef(0);
   useEffect(() => {
+    const version = ++suggestionsVersion.current;
     if (!showDirDialog || !dirInput.trim() || !dirInputDirty) {
       setSuggestions([]);
       return;
@@ -299,12 +275,16 @@ export default function App() {
     const timer = setTimeout(() => {
       invoke<string[]>("list_directories", { partial: dirInput })
         .then((dirs) => {
-          setSuggestions(dirs);
-          setSelectedIdx(-1);
+          if (suggestionsVersion.current === version) {
+            setSuggestions(dirs);
+            setSelectedIdx(-1);
+          }
         })
         .catch((err) => {
           console.error("Failed to list directories:", err);
-          setSuggestions([]);
+          if (suggestionsVersion.current === version) {
+            setSuggestions([]);
+          }
         });
     }, 100);
     return () => clearTimeout(timer);
@@ -339,13 +319,16 @@ export default function App() {
     <div className="flex h-screen w-screen bg-[var(--bg-primary)]">
       {/* Left sidebar */}
       <Sidebar
-        sessions={sortedSessions}
+        workspaces={workspaces}
         activeSessionId={activeSessionId}
+        activeWorktreePath={activeWorktreePath}
         sessionUsage={sessionUsage}
         todayCost={todayCost}
         todayTokens={todayTokens}
         onSelectSession={handleSelectSession}
+        onSelectWorktree={(path) => selectWorktree(path)}
         onCreateSession={handleNewSession}
+        onCreateWorktree={handleCreateWorktree}
         onRenameSession={renameSession}
         onDeleteSession={handleDeleteSession}
         onShowUsage={() => setShowUsagePanel(true)}
@@ -384,9 +367,22 @@ export default function App() {
               >
                 Claude
               </button>
-              <div className="px-3">
-                <div className="w-px h-3.5" style={{ backgroundColor: directoryColor(panelDirectory) }} />
-              </div>
+
+              {currentBranch && (
+                <>
+                  <div className="px-1">
+                    <div className="w-px h-3.5" style={{ backgroundColor: directoryColor(panelDirectory) }} />
+                  </div>
+                  <span className="flex items-center gap-1 px-1 py-0.5 text-[11px] text-[var(--text-tertiary)] font-mono shrink-0">
+                    <svg className="w-3 h-3 shrink-0" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
+                    </svg>
+                    {currentBranch}
+                  </span>
+                </>
+              )}
+
+              <div className="flex flex-1"/>
               <button
                 onClick={() => togglePanel("git")}
                 className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
@@ -417,118 +413,6 @@ export default function App() {
               >
                 Shell
               </button>
-
-              {/* Directory dropdown */}
-              <div className="pl-3 relative shrink-0" ref={dropdownRef}>
-                <button
-                  onClick={() => setShowDirDropdown((v) => !v)}
-                  className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] rounded border transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] font-mono"
-                  style={{ borderColor: directoryColor(panelDirectory) }}
-                >
-                  {shortenPath(panelDirectory)}
-                  <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-                {showDirDropdown && (
-                  <div className="absolute right-0 top-full mt-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg max-h-64 overflow-y-auto z-20 min-w-[200px]">
-                    {dropdownChoices.map((dir) => (
-                      <button
-                        key={dir}
-                        onClick={() => {
-                          setPanelDirOverride(dir);
-                          setShowDirDropdown(false);
-                          // If switching to shell, ensure PTY exists
-                          if (activePanel === "shell") ensureShellPty(dir);
-                        }}
-                        className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[11px] font-mono transition-colors ${
-                          dir === panelDirectory
-                            ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
-                            : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                        }`}
-                      >
-                        <span
-                          className="w-2 h-2 rounded-full shrink-0"
-                          style={{ backgroundColor: directoryColor(dir) }}
-                        />
-                        <span className="truncate">{shortenPath(dir)}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              {currentBranch && (
-                <div className="ml-auto relative shrink-0 pr-1" ref={branchDropdownRef}>
-                  <button
-                    onClick={() => {
-                      if (!showBranchDropdown) {
-                        setBranchSearch("");
-                        invoke<string[]>("list_branches", { directory: panelDirectory })
-                          .then((b) => {
-                            setBranches(b);
-                            setTimeout(() => branchSearchRef.current?.focus(), 0);
-                          })
-                          .catch(() => setBranches([]));
-                      }
-                      setShowBranchDropdown((v) => !v);
-                    }}
-                    className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] font-mono shrink-0 transition-colors"
-                  >
-                    <svg className="w-3 h-3 shrink-0" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
-                    </svg>
-                    {currentBranch}
-                    <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </button>
-                  {showBranchDropdown && (
-                    <div className="absolute right-0 top-full mt-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-20 min-w-[240px] flex flex-col" style={{ maxHeight: "320px" }}>
-                      <div className="p-1.5 border-b border-[var(--border-color)]">
-                        <input
-                          ref={branchSearchRef}
-                          type="text"
-                          value={branchSearch}
-                          onChange={(e) => setBranchSearch(e.target.value)}
-                          placeholder="Search branches…"
-                          className="w-full px-2 py-1 text-[11px] font-mono bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] placeholder-[var(--text-tertiary)] outline-none focus:border-[var(--accent)]"
-                        />
-                      </div>
-                      <div className="overflow-y-auto flex-1">
-                        {branches
-                          .filter((b) => b.toLowerCase().includes(branchSearch.toLowerCase()))
-                          .map((branch) => (
-                          <button
-                            key={branch}
-                            onClick={() => {
-                              if (branch !== currentBranch) {
-                                invoke("switch_branch", { directory: panelDirectory, branch })
-                                  .then(() => {
-                                    setCurrentBranch(branch);
-                                    setShowBranchDropdown(false);
-                                  })
-                                  .catch((err: unknown) => {
-                                    console.error("Failed to switch branch:", err);
-                                    setShowBranchDropdown(false);
-                                  });
-                              } else {
-                                setShowBranchDropdown(false);
-                              }
-                            }}
-                            className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[11px] font-mono transition-colors ${
-                              branch === currentBranch
-                                ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
-                                : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                            }`}
-                          >
-                            <span className="truncate">{branch}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
 
             {/* Content area */}
@@ -693,8 +577,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* Autocomplete suggestions (overlay) */}
-            {suggestions.length > 0 && (
+            {/* Autocomplete suggestions (overlay — only when user has typed) */}
+            {suggestions.length > 0 && dirInputDirty && (
               <div className="px-4 -mt-1 pb-2 relative">
                 <div
                   ref={suggestionsRef}
@@ -717,15 +601,83 @@ export default function App() {
               </div>
             )}
 
-            {/* Directory list */}
-            {(recentDirs.length > 0 || worktrees.length > 0) && suggestions.length === 0 && (
-              <div className="max-h-[280px] overflow-y-auto border-t border-[var(--border-color)]">
-                {recentDirs.length > 0 && (
+            {/* Workspace tree + recent dirs */}
+            {(workspaces.length > 0 || extraRecentDirs.length > 0) && (
+              <div className="max-h-[340px] overflow-y-auto border-t border-[var(--border-color)]">
+                {/* Workspace tree */}
+                {workspaces.map((ws) => {
+                  const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
+                  const color = directoryColor(ws.directory);
+
+                  return (
+                    <div key={ws.id} className="py-1">
+                      {/* Repo header */}
+                      <div className="flex items-center gap-2 px-4 pt-1.5 pb-1">
+                        <svg className="w-3.5 h-3.5 shrink-0" style={{ color }} viewBox="0 0 16 16" fill="currentColor">
+                          <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
+                        </svg>
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-secondary)]">
+                          {repoName}
+                        </span>
+                      </div>
+                      {/* Worktree rows */}
+                      {ws.worktrees.map((wt) => {
+                        const isMain = wt.isMain;
+                        const wtLabel = isMain ? "main" : wt.path.split("/").filter(Boolean).pop() || wt.path;
+                        const branch = dialogBranches.get(wt.path) || "";
+                        const sessionCount = wt.sessions.length;
+
+                        return (
+                          <button
+                            key={wt.path}
+                            onClick={() => quickCreate(wt.path)}
+                            className="w-full flex items-center gap-3 pl-8 pr-4 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)] group"
+                          >
+                            <svg className="w-3.5 h-3.5 shrink-0 text-[var(--text-tertiary)] group-hover:text-[var(--text-secondary)]" viewBox="0 0 16 16" fill="currentColor">
+                              <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
+                            </svg>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs text-[var(--text-primary)] truncate">
+                                <span className="font-medium">{wtLabel}</span>
+                                {branch && (
+                                  <span className="text-[var(--text-tertiary)] font-normal ml-1">
+                                    ({branch})
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            {sessionCount > 0 && (
+                              <span className="text-[10px] text-[var(--text-tertiary)] shrink-0">
+                                {sessionCount}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                      {/* New worktree action */}
+                      <button
+                        onClick={() => {
+                          setShowDirDialog(false);
+                          handleCreateWorktree(ws.directory);
+                        }}
+                        className="w-full flex items-center gap-3 pl-8 pr-4 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                      >
+                        <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                        </svg>
+                        <span className="text-[11px]">New worktree</span>
+                      </button>
+                    </div>
+                  );
+                })}
+
+                {/* Extra recent dirs (not already a workspace) */}
+                {extraRecentDirs.length > 0 && (
                   <div>
                     <div className="px-4 pt-2.5 pb-1 text-[10px] font-medium uppercase tracking-wider text-[var(--text-tertiary)]">
                       Recent
                     </div>
-                    {recentDirs.map((d) => (
+                    {extraRecentDirs.map((d) => (
                       <button
                         key={d}
                         onClick={() => quickCreate(d)}
@@ -740,32 +692,6 @@ export default function App() {
                           </div>
                           <div className="text-[10px] text-[var(--text-tertiary)] font-mono truncate">
                             {d.startsWith("~") ? d : "~/" + d.split("/").slice(3).join("/")}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {worktrees.length > 0 && (
-                  <div>
-                    <div className="px-4 pt-2.5 pb-1 text-[10px] font-medium uppercase tracking-wider text-[var(--text-tertiary)]">
-                      Worktrees
-                    </div>
-                    {worktrees.map((wt) => (
-                      <button
-                        key={wt}
-                        onClick={() => quickCreate(wt)}
-                        className="w-full flex items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-[var(--bg-hover)] group"
-                      >
-                        <svg className="w-4 h-4 shrink-0 text-[var(--text-tertiary)] group-hover:text-[var(--text-secondary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m9.86-2.54a4.5 4.5 0 00-6.364-6.364L4.5 8.25" />
-                        </svg>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs font-medium text-[var(--text-primary)] truncate">
-                            {wt.includes("/") ? wt.split("/").filter(Boolean).pop() : wt}
-                          </div>
-                          <div className="text-[10px] text-[var(--text-tertiary)] font-mono truncate">
-                            {wt.startsWith("~") ? wt : "~/" + wt.split("/").slice(3).join("/")}
                           </div>
                         </div>
                       </button>
@@ -803,6 +729,46 @@ export default function App() {
                   {creating ? "Creating…" : "Create"}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Worktree creation dialog */}
+      {showWorktreeDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 dialog-backdrop" onMouseDown={() => setShowWorktreeDialog(false)}>
+          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl w-[380px] shadow-2xl flex flex-col overflow-hidden" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="px-4 pt-4 pb-2">
+              <div className="text-sm font-medium text-[var(--text-primary)] mb-1">New Worktree</div>
+              <div className="text-[11px] text-[var(--text-tertiary)] font-mono truncate mb-3">
+                {worktreeRepoDir}
+              </div>
+              <input
+                autoFocus
+                value={worktreeBranch}
+                onChange={(e) => setWorktreeBranch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleWorktreeConfirm();
+                  if (e.key === "Escape") setShowWorktreeDialog(false);
+                }}
+                placeholder="Branch name…"
+                className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] font-mono transition-colors"
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-[var(--border-color)]">
+              <button
+                onClick={() => setShowWorktreeDialog(false)}
+                className="px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleWorktreeConfirm}
+                disabled={creatingWorktree || !worktreeBranch.trim()}
+                className="px-4 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md transition-colors font-medium"
+              >
+                {creatingWorktree ? "Creating…" : "Create Worktree"}
+              </button>
             </div>
           </div>
         </div>
