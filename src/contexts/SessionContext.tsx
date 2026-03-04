@@ -515,7 +515,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             console.log(
               `[worktree-cleanup] "${s.name}" worktree removed, reverting directory: ${s.directory} → ${root}`
             );
-            dispatch({ type: "UPDATE", id: s.id, patch: { directory: root, homeDirectory: undefined, claudeSessionId: undefined } });
+            dispatch({ type: "UPDATE", id: s.id, patch: { directory: root, homeDirectory: undefined } });
           }
         } catch (err) {
           console.error("[worktree-cleanup] Failed to check directory:", err);
