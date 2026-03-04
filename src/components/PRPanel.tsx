@@ -286,14 +286,17 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
     const sessionId = await createSession(`Review PR #${prNumber}`, sessionDir, skipPerms);
     // Wait for the PTY/CLI to initialize before sending the command
     await new Promise((r) => setTimeout(r, 1500));
-    await invoke("write_to_pty", {
-      sessionId,
-      data: `You are reviewing PR #${prNumber} (branch: ${headRefName}). ` +
-        `If I ask you to make changes or implement something, you MUST first ask me if I want to continue in a new worktree for this PR branch. ` +
-        `Do NOT skip this question even if you have dangerous permissions. ` +
-        `If I say yes, use the checkout_pr_worktree MCP tool with directory="${sessionDir}", pr_number=${prNumber}, branch="${headRefName}", then cd into the resulting path. ` +
-        `Now, please start by running: /review ${prNumber}\n`,
-    });
+    // Send the context + /review as the initial prompt, then Enter to submit
+    const prompt =
+      `You are reviewing PR #${prNumber} (branch: ${headRefName}). ` +
+      `If I ask you to make changes or implement something, you MUST first ask me if I want to continue in a new worktree for this PR branch. ` +
+      `Do NOT skip this question even if you have dangerous permissions. ` +
+      `If I say yes, use the checkout_pr_worktree MCP tool with directory="${sessionDir}", pr_number=${prNumber}, branch="${headRefName}", then cd into the resulting path. ` +
+      `Now, please start by running: /review ${prNumber}`;
+    await invoke("write_to_pty", { sessionId, data: prompt });
+    // Small delay then send Enter (carriage return) to submit
+    await new Promise((r) => setTimeout(r, 100));
+    await invoke("write_to_pty", { sessionId, data: "\r" });
     onSwitchToClaude?.();
   }, [createSession, directory, sessions, onSwitchToClaude]);
 
