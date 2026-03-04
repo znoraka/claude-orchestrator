@@ -90,6 +90,21 @@ export default function App() {
     }
   }, [activeSessionId]);
 
+  // Current git branch for panelDirectory
+  const [currentBranch, setCurrentBranch] = useState<string>("");
+  useEffect(() => {
+    invoke<{ branch: string; isGitRepo: boolean }>("get_git_status", { directory: panelDirectory })
+      .then((res) => setCurrentBranch(res.isGitRepo ? res.branch : ""))
+      .catch(() => setCurrentBranch(""));
+    // Refresh branch periodically (every 5s)
+    const interval = setInterval(() => {
+      invoke<{ branch: string; isGitRepo: boolean }>("get_git_status", { directory: panelDirectory })
+        .then((res) => setCurrentBranch(res.isGitRepo ? res.branch : ""))
+        .catch(() => setCurrentBranch(""));
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [panelDirectory]);
+
   // Worktrees for the directory dropdown
   const [dropdownWorktrees, setDropdownWorktrees] = useState<string[]>([]);
   useEffect(() => {
@@ -122,17 +137,27 @@ export default function App() {
   const [showDirDropdown, setShowDirDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Close dropdown on outside click
+  // Branch dropdown state
+  const [showBranchDropdown, setShowBranchDropdown] = useState(false);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [branchSearch, setBranchSearch] = useState("");
+  const branchDropdownRef = useRef<HTMLDivElement>(null);
+  const branchSearchRef = useRef<HTMLInputElement>(null);
+
+  // Close dropdowns on outside click
   useEffect(() => {
-    if (!showDirDropdown) return;
+    if (!showDirDropdown && !showBranchDropdown) return;
     const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+      if (showDirDropdown && dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setShowDirDropdown(false);
+      }
+      if (showBranchDropdown && branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node)) {
+        setShowBranchDropdown(false);
       }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [showDirDropdown]);
+  }, [showDirDropdown, showBranchDropdown]);
 
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
@@ -170,8 +195,16 @@ export default function App() {
     }
   };
 
+  // Ref to notify PRPanel to reset to list view
+  const prPanelResetRef = useRef<(() => void) | null>(null);
+
   const togglePanel = (panel: "git" | "prs" | "shell") => {
-    setActivePanel((prev) => (prev === panel ? null : panel));
+    if (activePanel === panel) {
+      // Already on this panel — reset internal state (e.g. PR review → PR list)
+      if (panel === "prs") prPanelResetRef.current?.();
+      return;
+    }
+    setActivePanel(panel);
     if (panel === "shell") ensureShellPty(panelDirectory);
   };
 
@@ -223,11 +256,17 @@ export default function App() {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
     setDirInputDirty(false);
     setSuggestions([]);
-    setRecentDirs(loadRecentDirs());
+    const allRecent = loadRecentDirs();
+    Promise.all(allRecent.map((d) => invoke<boolean>("directory_exists", { path: d }).catch(() => false)))
+      .then((exists) => setRecentDirs(allRecent.filter((_, i) => exists[i])));
+    setRecentDirs(allRecent); // show immediately, then filter
     setShowDirDialog(true);
     const lastDir = localStorage.getItem("claude-orchestrator-last-dir") || "~";
     invoke<string[]>("list_worktrees", { directory: lastDir })
-      .then(setWorktrees)
+      .then((wts) =>
+        Promise.all(wts.map((w) => invoke<boolean>("directory_exists", { path: w }).catch(() => false)))
+          .then((exists) => setWorktrees(wts.filter((_, i) => exists[i])))
+      )
       .catch(() => setWorktrees([]));
   };
 
@@ -334,7 +373,7 @@ export default function App() {
         ) : (
           <div className="absolute inset-0 flex flex-col">
             {/* Tab bar: [color dot] Claude | Git | PRs | Shell | [~/short/path ▼] */}
-            <div className="flex items-center px-2 py-0.5 border-b border-[var(--border-color)] flex-shrink-0">
+            <div className="flex items-center px-2 py-0.5 border-b border-[var(--border-color)] flex-shrink-0 relative">
               <button
                 onClick={() => setActivePanel(null)}
                 className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
@@ -380,7 +419,7 @@ export default function App() {
               </button>
 
               {/* Directory dropdown */}
-              <div className="ml-auto pl-3 relative" ref={dropdownRef}>
+              <div className="pl-3 relative shrink-0" ref={dropdownRef}>
                 <button
                   onClick={() => setShowDirDropdown((v) => !v)}
                   className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] rounded border transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)] font-mono"
@@ -418,6 +457,78 @@ export default function App() {
                   </div>
                 )}
               </div>
+              {currentBranch && (
+                <div className="ml-auto relative shrink-0 pr-1" ref={branchDropdownRef}>
+                  <button
+                    onClick={() => {
+                      if (!showBranchDropdown) {
+                        setBranchSearch("");
+                        invoke<string[]>("list_branches", { directory: panelDirectory })
+                          .then((b) => {
+                            setBranches(b);
+                            setTimeout(() => branchSearchRef.current?.focus(), 0);
+                          })
+                          .catch(() => setBranches([]));
+                      }
+                      setShowBranchDropdown((v) => !v);
+                    }}
+                    className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] font-mono shrink-0 transition-colors"
+                  >
+                    <svg className="w-3 h-3 shrink-0" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
+                    </svg>
+                    {currentBranch}
+                    <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  {showBranchDropdown && (
+                    <div className="absolute right-0 top-full mt-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-20 min-w-[240px] flex flex-col" style={{ maxHeight: "320px" }}>
+                      <div className="p-1.5 border-b border-[var(--border-color)]">
+                        <input
+                          ref={branchSearchRef}
+                          type="text"
+                          value={branchSearch}
+                          onChange={(e) => setBranchSearch(e.target.value)}
+                          placeholder="Search branches…"
+                          className="w-full px-2 py-1 text-[11px] font-mono bg-[var(--bg-primary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] placeholder-[var(--text-tertiary)] outline-none focus:border-[var(--accent)]"
+                        />
+                      </div>
+                      <div className="overflow-y-auto flex-1">
+                        {branches
+                          .filter((b) => b.toLowerCase().includes(branchSearch.toLowerCase()))
+                          .map((branch) => (
+                          <button
+                            key={branch}
+                            onClick={() => {
+                              if (branch !== currentBranch) {
+                                invoke("switch_branch", { directory: panelDirectory, branch })
+                                  .then(() => {
+                                    setCurrentBranch(branch);
+                                    setShowBranchDropdown(false);
+                                  })
+                                  .catch((err: unknown) => {
+                                    console.error("Failed to switch branch:", err);
+                                    setShowBranchDropdown(false);
+                                  });
+                              } else {
+                                setShowBranchDropdown(false);
+                              }
+                            }}
+                            className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[11px] font-mono transition-colors ${
+                              branch === currentBranch
+                                ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                                : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                            }`}
+                          >
+                            <span className="truncate">{branch}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Content area */}
@@ -476,24 +587,27 @@ export default function App() {
                 </div>
               )}
 
-              {/* PRs panel */}
-              {activePanel === "prs" && (
-                <div
-                  className="absolute inset-0 bg-[var(--bg-primary)]"
-                  style={{ zIndex: 2 }}
-                >
-                  <PRPanel
-                    directory={panelDirectory}
-                    isActive={activePanel === "prs"}
-                    onAskClaude={(prompt) => {
-                      if (!activeSessionId) return;
-                      const writeFn = writeTextCallbacks.current.get(activeSessionId);
-                      writeFn?.(prompt + "\n");
-                      setActivePanel(null);
-                    }}
-                  />
-                </div>
-              )}
+              {/* PRs panel — always mounted to preserve review state */}
+              <div
+                className="absolute inset-0 bg-[var(--bg-primary)]"
+                style={{
+                  zIndex: activePanel === "prs" ? 2 : 0,
+                  pointerEvents: activePanel === "prs" ? "auto" : "none",
+                  visibility: activePanel === "prs" ? "visible" : "hidden",
+                }}
+              >
+                <PRPanel
+                  directory={panelDirectory}
+                  isActive={activePanel === "prs"}
+                  onResetRef={prPanelResetRef}
+                  onAskClaude={(prompt) => {
+                    if (!activeSessionId) return;
+                    const writeFn = writeTextCallbacks.current.get(activeSessionId);
+                    writeFn?.(prompt + "\n");
+                    setActivePanel(null);
+                  }}
+                />
+              </div>
 
               {/* Shell */}
               {activePanel === "shell" && shellDirs.has(panelDirectory) && (

@@ -8,6 +8,7 @@ import PRReviewView from "./PRReviewView";
 interface PRPanelProps {
   directory: string;
   isActive?: boolean;
+  onResetRef?: React.RefObject<(() => void) | null>;
   onAskClaude?: (prompt: string) => void;
 }
 
@@ -197,12 +198,20 @@ function PRRow({
   );
 }
 
-export default function PRPanel({ directory, isActive, onAskClaude }: PRPanelProps) {
+export default function PRPanel({ directory, isActive, onAskClaude, onResetRef }: PRPanelProps) {
   const { createSession } = useSessionContext();
   const [result, setResult] = useState<PullRequestsResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [currentBranch, setCurrentBranch] = useState("");
   const [reviewingPr, setReviewingPr] = useState<PullRequest | null>(null);
+
+  // Expose reset function to parent via ref
+  useEffect(() => {
+    if (onResetRef) {
+      onResetRef.current = () => setReviewingPr(null);
+      return () => { onResetRef.current = null; };
+    }
+  }, [onResetRef]);
 
   const handleClaudeReview = useCallback(async (prNumber: number) => {
     const sessionId = await createSession(`Review PR #${prNumber}`, directory);
