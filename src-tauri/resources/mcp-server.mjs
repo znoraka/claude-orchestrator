@@ -108,11 +108,19 @@ server.tool(
       // Fetch the branch from origin
       execFileSync("git", ["fetch", "origin", branch], { cwd: directory, stdio: "pipe" });
 
-      // Create the worktree tracking the remote branch
-      execFileSync("git", ["worktree", "add", worktreePath, `origin/${branch}`], {
-        cwd: directory,
-        stdio: "pipe",
-      });
+      // Create the worktree with a local branch tracking the remote branch
+      try {
+        execFileSync("git", ["worktree", "add", "-b", branch, worktreePath, `origin/${branch}`], {
+          cwd: directory,
+          stdio: "pipe",
+        });
+      } catch {
+        // Branch may already exist locally; try using it directly
+        execFileSync("git", ["worktree", "add", worktreePath, branch], {
+          cwd: directory,
+          stdio: "pipe",
+        });
+      }
 
       // Clone heavy dependency directories (node_modules, .venv, etc.) via APFS cp -Rc
       const depDirs = ["node_modules", ".venv", "venv", "vendor"];
