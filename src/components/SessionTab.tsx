@@ -117,7 +117,7 @@ export default memo(function SessionTab({
         rounded-md
         ${
           isActive
-            ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+            ? "bg-[var(--accent)]/10 text-[var(--text-primary)] ring-1 ring-inset ring-[var(--accent)]/25"
             : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
         }
       `}
