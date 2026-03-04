@@ -13,6 +13,7 @@ import FileEditor from "./components/FileEditor";
 import { repoColor } from "./components/SessionTab";
 import { repoRootDir } from "./utils/workspaces";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
+import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
 import type { Session } from "./types";
 
 export default function App() {
@@ -101,11 +102,18 @@ export default function App() {
 
   // Sanitize directory path into a Tauri-event-safe session ID.
   // Tauri v2 event names only allow alphanumeric, '-', '/', ':', '_'.
-  const shellSessionId = (dir: string) =>
-    `shell-${dir.replace(/[^a-zA-Z0-9\-_/:]/g, "_")}`;
+  const sanitizeDir = (dir: string) => dir.replace(/[^a-zA-Z0-9\-_/:]/g, "_");
 
-  // Track which directories have a shell PTY created
-  const [shellDirs, setShellDirs] = useState<Set<string>>(new Set());
+  // Multiple shell tabs per directory
+  type ShellTab = { id: string; num: number };
+  const [shellTabs, setShellTabs] = useState<Map<string, ShellTab[]>>(new Map());
+  const [activeShellId, setActiveShellId] = useState<Map<string, string>>(new Map());
+
+  const shellTabsForDir = (dir: string) => shellTabs.get(dir) || [];
+  const activeShellForDir = (dir: string) => activeShellId.get(dir) || "";
+
+  const shellCounter = useRef(0);
+  const shellProcessDirs = useShellProcessStatus(shellTabs);
 
 
   const suggestionsRef = useRef<HTMLDivElement>(null);
@@ -133,15 +141,26 @@ export default function App() {
 
   useClipboard(handleImagePath);
 
-  const ensureShellPty = async (dir: string) => {
-    if (shellDirs.has(dir)) return;
-    const sid = shellSessionId(dir);
+  const addShellTab = async (dir: string) => {
+    const num = ++shellCounter.current;
+    const sid = `shell-${sanitizeDir(dir)}-${num}`;
     try {
       await invoke("create_shell_pty_session", { sessionId: sid, directory: dir });
-      setShellDirs((prev) => new Set(prev).add(dir));
+      const tab: ShellTab = { id: sid, num };
+      setShellTabs((prev) => {
+        const next = new Map(prev);
+        next.set(dir, [...(prev.get(dir) || []), tab]);
+        return next;
+      });
+      setActiveShellId((prev) => new Map(prev).set(dir, sid));
     } catch (err) {
       console.error("Failed to create shell PTY:", err);
     }
+  };
+
+  const ensureShellPty = async (dir: string) => {
+    if ((shellTabs.get(dir) || []).length > 0) return;
+    await addShellTab(dir);
   };
 
   // Ref to notify PRPanel to reset to list view
@@ -341,6 +360,7 @@ export default function App() {
         onRenameSession={renameSession}
         onDeleteSession={handleDeleteSession}
         onShowUsage={() => setShowUsagePanel(true)}
+        shellProcessDirs={shellProcessDirs}
       />
 
       {/* Main area */}
@@ -524,29 +544,118 @@ export default function App() {
                 />
               </div>
 
-              {/* Shell — always mounted once created to preserve state */}
-              {shellDirs.has(panelDirectory) && (
+              {/* Shell tabs — all mounted, visibility-toggled */}
+              {shellTabsForDir(panelDirectory).length > 0 && (
                 <div
-                  className="absolute inset-0 bg-[var(--bg-primary)]"
+                  className="absolute inset-0 bg-[var(--bg-primary)] flex flex-col"
                   style={{
                     zIndex: activePanel === "shell" ? 2 : 0,
                     pointerEvents: activePanel === "shell" ? "auto" : "none",
                     visibility: activePanel === "shell" ? "visible" : "hidden",
                   }}
                 >
-                  <Terminal
-                    sessionId={shellSessionId(panelDirectory)}
-                    isActive={activePanel === "shell"}
-                    onExit={() => {
-                      setShellDirs((prev) => {
-                        const next = new Set(prev);
-                        next.delete(panelDirectory);
-                        return next;
-                      });
-                      setActivePanel(null);
-                    }}
-                    onTitleChange={() => {}}
-                  />
+                  {/* Shell tab bar */}
+                  <div className="flex items-center gap-0.5 px-2 py-0.5 border-b border-[var(--border-color)] flex-shrink-0">
+                    {shellTabsForDir(panelDirectory).map((tab, i) => {
+                      const isActive = tab.id === activeShellForDir(panelDirectory);
+                      return (
+                        <div key={tab.id} className="flex items-center group">
+                          <button
+                            onClick={() => setActiveShellId((prev) => new Map(prev).set(panelDirectory, tab.id))}
+                            className={`px-2 py-0.5 text-[11px] rounded-l transition-colors ${
+                              isActive
+                                ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
+                                : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
+                            }`}
+                          >
+                            Shell {i + 1}
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              // Remove this tab
+                              setShellTabs((prev) => {
+                                const next = new Map(prev);
+                                const tabs = (prev.get(panelDirectory) || []).filter((t) => t.id !== tab.id);
+                                if (tabs.length === 0) next.delete(panelDirectory);
+                                else next.set(panelDirectory, tabs);
+                                return next;
+                              });
+                              // If closing the active tab, switch to another or close panel
+                              if (isActive) {
+                                const remaining = shellTabsForDir(panelDirectory).filter((t) => t.id !== tab.id);
+                                if (remaining.length > 0) {
+                                  const nextTab = remaining[Math.min(i, remaining.length - 1)];
+                                  setActiveShellId((prev) => new Map(prev).set(panelDirectory, nextTab.id));
+                                } else {
+                                  setActiveShellId((prev) => { const next = new Map(prev); next.delete(panelDirectory); return next; });
+                                  setActivePanel(null);
+                                }
+                              }
+                            }}
+                            className={`px-1 py-0.5 text-[11px] rounded-r transition-colors opacity-0 group-hover:opacity-100 ${
+                              isActive
+                                ? "text-[var(--text-tertiary)] bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+                                : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
+                            }`}
+                            title="Close shell"
+                          >
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                      );
+                    })}
+                    <button
+                      onClick={() => addShellTab(panelDirectory)}
+                      className="px-1.5 py-0.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
+                      title="New shell tab"
+                    >
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                      </svg>
+                    </button>
+                  </div>
+                  {/* Shell terminals */}
+                  <div className="flex-1 min-h-0 relative">
+                    {shellTabsForDir(panelDirectory).map((tab) => {
+                      const isTabActive = tab.id === activeShellForDir(panelDirectory);
+                      return (
+                        <div
+                          key={tab.id}
+                          className="absolute inset-0"
+                          style={{
+                            zIndex: isTabActive ? 1 : 0,
+                            pointerEvents: isTabActive ? "auto" : "none",
+                            visibility: isTabActive ? "visible" : "hidden",
+                          }}
+                        >
+                          <Terminal
+                            sessionId={tab.id}
+                            isActive={activePanel === "shell" && isTabActive}
+                            onExit={() => {
+                              setShellTabs((prev) => {
+                                const next = new Map(prev);
+                                const tabs = (prev.get(panelDirectory) || []).filter((t) => t.id !== tab.id);
+                                if (tabs.length === 0) next.delete(panelDirectory);
+                                else next.set(panelDirectory, tabs);
+                                return next;
+                              });
+                              const remaining = shellTabsForDir(panelDirectory).filter((t) => t.id !== tab.id);
+                              if (remaining.length > 0) {
+                                setActiveShellId((prev) => new Map(prev).set(panelDirectory, remaining[0].id));
+                              } else {
+                                setActiveShellId((prev) => { const next = new Map(prev); next.delete(panelDirectory); return next; });
+                                setActivePanel(null);
+                              }
+                            }}
+                            onTitleChange={() => {}}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>

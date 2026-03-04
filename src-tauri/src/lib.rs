@@ -203,6 +203,15 @@ fn create_shell_pty_session(
 }
 
 #[tauri::command]
+fn pty_has_child_process(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
+    manager.has_child_process(&session_id)
+}
+
+#[tauri::command]
 fn directory_exists(path: String) -> bool {
     let expanded = if path.starts_with('~') {
         if let Ok(home) = std::env::var("HOME") {
@@ -449,12 +458,58 @@ fn create_worktree(
         }
     }
 
+    // Clone heavy gitignored dirs (node_modules, .venv, etc.) via APFS clonefile
+    clone_heavy_dirs(&expanded, &worktree_path.to_string_lossy());
+
     let home = std::env::var("HOME").unwrap_or_default();
     let result = worktree_path.to_string_lossy().to_string();
     if !home.is_empty() && result.starts_with(&home) {
         Ok(format!("~{}", &result[home.len()..]))
     } else {
         Ok(result)
+    }
+}
+
+/// Clone heavy gitignored directories (node_modules, .venv, etc.) from source repo
+/// into a new worktree using `cp -Rc` (APFS copy-on-write clonefile).
+fn clone_heavy_dirs(source: &str, worktree: &str) {
+    let find_output = std::process::Command::new("find")
+        .current_dir(source)
+        .args([
+            ".",
+            "-path", "./.worktrees", "-prune", "-o",
+            "-path", "./.git", "-prune", "-o",
+            "(", "-name", "node_modules",
+                 "-o", "-name", ".venv",
+                 "-o", "-name", "venv",
+                 "-o", "-name", "vendor", ")",
+            "-type", "d", "-print", "-prune",
+        ])
+        .output();
+
+    let output = match find_output {
+        Ok(o) if o.status.success() => o,
+        _ => return,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for rel_path in stdout.lines() {
+        let rel_path = rel_path.trim_start_matches("./");
+        if rel_path.is_empty() {
+            continue;
+        }
+        let src = std::path::Path::new(source).join(rel_path);
+        let dst = std::path::Path::new(worktree).join(rel_path);
+
+        // Ensure parent directory exists
+        if let Some(parent) = dst.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        // APFS copy-on-write clone
+        let _ = std::process::Command::new("cp")
+            .args(["-Rc", &src.to_string_lossy(), &dst.to_string_lossy()])
+            .output();
     }
 }
 
@@ -494,7 +549,7 @@ fn jsonl_path_for(claude_session_id: &str, directory: &str) -> Result<PathBuf, S
         directory.to_string()
     };
     let trimmed_dir = expanded_dir.trim_end_matches('/');
-    let encoded_path = trimmed_dir.replace('/', "-");
+    let encoded_path = trimmed_dir.replace('/', "-").replace('.', "-");
     Ok(PathBuf::from(&home)
         .join(".claude")
         .join("projects")
@@ -2536,6 +2591,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_pty_session,
             create_shell_pty_session,
+            pty_has_child_process,
             write_to_pty,
             resize_pty,
             directory_exists,

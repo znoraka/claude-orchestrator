@@ -24,6 +24,7 @@ interface SidebarProps {
   onRenameSession: (id: string, name: string) => void;
   onDeleteSession: (id: string) => void;
   onShowUsage?: () => void;
+  shellProcessDirs?: Map<string, number>;
 }
 
 type ViewMode = "workspace" | "date";
@@ -55,6 +56,7 @@ export default function Sidebar({
   onRenameSession,
   onDeleteSession,
   onShowUsage,
+  shellProcessDirs,
 }: SidebarProps) {
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -313,6 +315,7 @@ export default function Sidebar({
                           isActive={session.id === activeSessionId}
                           usage={sessionUsage.get(session.id)}
                           contentOnly={contentOnlyIds.has(session.id)}
+                          shellCount={session.directory ? shellProcessDirs?.get(session.directory) : undefined}
                           onClick={() => onSelectSession(session.id)}
                           onRename={(name) => onRenameSession(session.id, name)}
                           onDelete={() => onDeleteSession(session.id)}
@@ -379,7 +382,10 @@ export default function Sidebar({
                   <span className="text-[11px] font-semibold text-[var(--text-primary)] truncate flex-1">
                     {repoName}
                   </span>
-                  <span className="text-[10px] text-[var(--text-tertiary)] shrink-0">
+                  <span className="text-[10px] text-[var(--text-tertiary)] shrink-0 flex items-center gap-1">
+                    {workspace.worktrees.some((wt) => shellProcessDirs?.get(wt.path)) && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="Shell process running" />
+                    )}
                     {workspace.worktrees.reduce((n, wt) => n + wt.sessions.length, 0)}
                   </span>
                 </button>
@@ -391,6 +397,7 @@ export default function Sidebar({
                     const branch = branches.get(wt.path) || wt.branch;
                     const isWtCollapsed = collapsedWorktrees.has(wt.path);
                     const isActiveWt = activeWorktreePath === wt.path;
+                    const hasShellProcess = !!(shellProcessDirs?.get(wt.path));
 
                     return (
                       <div key={wt.path} className="ml-1">
@@ -426,7 +433,10 @@ export default function Sidebar({
                               </span>
                             )}
                           </span>
-                          <span className="text-[10px] text-[var(--text-tertiary)] shrink-0">
+                          <span className="text-[10px] text-[var(--text-tertiary)] shrink-0 flex items-center gap-1">
+                            {hasShellProcess && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="Shell process running" />
+                            )}
                             {wt.sessions.length}
                           </span>
                         </button>
@@ -529,6 +539,15 @@ export default function Sidebar({
         <span className="text-[10px] text-[var(--text-secondary)]">
           active
         </span>
+        {shellProcessDirs && shellProcessDirs.size > 0 && (() => {
+          const total = [...shellProcessDirs.values()].reduce((a, b) => a + b, 0);
+          return (
+            <span className="flex items-center gap-1 text-[10px] text-green-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+              {total} shell{total !== 1 ? "s" : ""}
+            </span>
+          );
+        })()}
         {(todayCost > 0 || todayTokens > 0) && (
           <button
             onClick={onShowUsage}

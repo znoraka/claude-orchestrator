@@ -69,6 +69,7 @@ export interface SessionTabProps {
   usage?: SessionUsage;
   contentOnly?: boolean;
   hideDirectory?: boolean;
+  shellCount?: number;
   onClick: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
@@ -80,6 +81,7 @@ export default memo(function SessionTab({
   usage,
   contentOnly,
   hideDirectory,
+  shellCount,
   onClick,
   onRename,
   onDelete,
@@ -156,6 +158,14 @@ export default memo(function SessionTab({
         )}
         {!hideDirectory && session.directory && (() => {
           const isWorktree = session.directory.includes("/.worktrees/") || session.directory.includes("/.claude/worktrees/");
+          const shellLabel = shellCount ? (
+            <span className="pl-3 text-[var(--text-tertiary)] ml-4 inline-flex items-center gap-0.5">
+              {shellCount}
+              <svg className="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M0 2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25Zm1.75-.25a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25V2.75a.25.25 0 0 0-.25-.25ZM3.5 6.25a.75.75 0 0 1 .22-.53l2-2a.749.749 0 1 1 1.06 1.06L5.31 6.25l1.47 1.47a.749.749 0 1 1-1.06 1.06l-2-2a.75.75 0 0 1-.22-.53Zm5.5 3.5a.75.75 0 0 1 0-1.5h2a.75.75 0 0 1 0 1.5Z" />
+              </svg>
+            </span>
+          ) : null;
           if (isWorktree) {
             const short = shortenPath(session.directory);
             const slashIdx = short.indexOf("/");
@@ -165,6 +175,7 @@ export default memo(function SessionTab({
               <span className="text-[10px] truncate block mt-0.5">
                 <span style={{ color: repoColor(session.directory) }}>{repo}</span>
                 <span style={{ color: directoryColor(session.directory) }}>{wt}</span>
+                {shellLabel}
               </span>
             );
           }
@@ -174,6 +185,7 @@ export default memo(function SessionTab({
               style={{ color: repoColor(session.directory) }}
             >
               {shortenPath(session.directory)}
+              {shellLabel}
             </span>
           );
         })()}

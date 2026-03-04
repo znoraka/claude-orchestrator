@@ -11,6 +11,7 @@ const MAX_SCROLLBACK_BYTES: usize = 1_024 * 1_024;
 pub struct PtySession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
+    child_pid: Option<u32>,
 }
 
 pub struct PtyManager {
@@ -118,7 +119,8 @@ impl PtyManager {
                      2. Create worktrees manually: git worktree add .worktrees/<name> -b <branch-name>\n\
                      3. Worktrees should live in .worktrees/ relative to the repo root.\n\
                      4. Always call switch_workspace with the absolute path to the new worktree directory after creating it.\n\
-                     5. After switch_workspace returns, run: cd <worktree-path>"
+                     5. After switch_workspace returns, run: cd <worktree-path>\n\
+                     6. Dependency directories (node_modules, .venv, venv, vendor) are automatically cloned into new worktrees via APFS clonefile, so npm install / pip install is usually not needed."
                         .to_string(),
                 );
             }
@@ -155,9 +157,11 @@ impl PtyManager {
         cmd.arg("-lc");
         cmd.arg(&shell_cmd);
 
-        pair.slave
+        let child = pair.slave
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn claude: {}", e))?;
+
+        let child_pid = child.process_id();
 
         // Drop slave – we only need master side
         drop(pair.slave);
@@ -248,6 +252,7 @@ impl PtyManager {
         let session = PtySession {
             writer,
             master: pair.master,
+            child_pid,
         };
 
         self.sessions
@@ -355,9 +360,11 @@ impl PtyManager {
         cmd.arg(&shell_cmd);
         eprintln!("[pty_manager] Spawning shell: {} -lc \"{}\"", shell, shell_cmd);
 
-        pair.slave
+        let child = pair.slave
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn shell: {}", e))?;
+
+        let child_pid = child.process_id();
 
         drop(pair.slave);
 
@@ -445,6 +452,7 @@ impl PtyManager {
         let session = PtySession {
             writer,
             master: pair.master,
+            child_pid,
         };
 
         self.sessions
@@ -453,6 +461,23 @@ impl PtyManager {
             .insert(session_id.to_string(), session);
 
         Ok(())
+    }
+
+    /// Check if the shell process has any child processes (i.e. a command is running).
+    pub fn has_child_process(&self, session_id: &str) -> Result<bool, String> {
+        let sessions = self.sessions.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let session = sessions.get(session_id).ok_or_else(|| format!("Session {} not found", session_id))?;
+        let pid = match session.child_pid {
+            Some(pid) => pid,
+            None => return Ok(false),
+        };
+        // Use pgrep -P to check if the shell has child processes
+        let output = std::process::Command::new("pgrep")
+            .arg("-P")
+            .arg(pid.to_string())
+            .output()
+            .map_err(|e| format!("Failed to run pgrep: {}", e))?;
+        Ok(output.status.success())
     }
 
     pub fn destroy_session(&self, session_id: &str) -> Result<(), String> {
