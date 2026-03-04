@@ -99,7 +99,7 @@ function PRRow({
   directory: string;
   onBranchChanged: () => void;
   onReviewPR: (pr: PullRequest) => void;
-  onClaudeReview: (prNumber: number) => void;
+  onClaudeReview: (prNumber: number, headRefName: string) => void;
 }) {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [worktreeLoading, setWorktreeLoading] = useState(false);
@@ -197,7 +197,7 @@ function PRRow({
             </svg>
           </button>
           <button
-            onClick={(e) => { e.stopPropagation(); onClaudeReview(pr.number); }}
+            onClick={(e) => { e.stopPropagation(); onClaudeReview(pr.number, pr.headRefName); }}
             className="p-1 rounded hover:bg-[var(--bg-secondary)] text-[var(--text-tertiary)] hover:text-[var(--accent)] disabled:opacity-30"
             title="Claude review in new session"
           >
@@ -259,12 +259,27 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
     }
   }, [onResetRef]);
 
-  const handleClaudeReview = useCallback(async (prNumber: number) => {
+  const handleClaudeReview = useCallback(async (prNumber: number, headRefName: string) => {
+    // Check if a worktree already exists for this PR's branch
+    let sessionDir = directory;
+    try {
+      const worktrees = await invoke<Array<{ path: string; branch: string; isMain: boolean }>>(
+        "list_worktrees",
+        { directory }
+      );
+      const match = worktrees.find((wt) => wt.branch === headRefName);
+      if (match) {
+        sessionDir = match.path;
+      }
+    } catch {
+      // Fall back to base directory
+    }
+
     // Inherit permission mode from existing sessions in this workspace
     const skipPerms = sessions.some(
       (s) => s.directory === directory && s.dangerouslySkipPermissions
     );
-    const sessionId = await createSession(`Review PR #${prNumber}`, directory, skipPerms);
+    const sessionId = await createSession(`Review PR #${prNumber}`, sessionDir, skipPerms);
     // Wait for the PTY/CLI to initialize before sending the command
     await new Promise((r) => setTimeout(r, 1500));
     await invoke("write_to_pty", {
@@ -338,6 +353,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
         prNumber={reviewingPr.number}
         prTitle={reviewingPr.title}
         prUrl={reviewingPr.url}
+        headRefName={reviewingPr.headRefName}
         onBack={() => setReviewingPr(null)}
         onAskClaude={onAskClaude}
         onClaudeReview={handleClaudeReview}

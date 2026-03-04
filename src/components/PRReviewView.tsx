@@ -11,12 +11,13 @@ interface PRReviewViewProps {
   prNumber: number;
   prTitle: string;
   prUrl: string;
+  headRefName: string;
   onBack: () => void;
   onAskClaude?: (prompt: string) => void;
-  onClaudeReview?: (prNumber: number) => void;
+  onClaudeReview?: (prNumber: number, headRefName: string) => void;
 }
 
-export default function PRReviewView({ directory, prNumber, prTitle, prUrl, onBack, onAskClaude, onClaudeReview }: PRReviewViewProps) {
+export default function PRReviewView({ directory, prNumber, prTitle, prUrl, headRefName, onBack, onAskClaude, onClaudeReview }: PRReviewViewProps) {
   const [files, setFiles] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileDiff, setFileDiff] = useState("");
@@ -177,7 +178,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, onBa
           )}
           {onClaudeReview && (
             <button
-              onClick={() => onClaudeReview(prNumber)}
+              onClick={() => onClaudeReview(prNumber, headRefName)}
               className="text-[10px] text-[var(--text-tertiary)] hover:text-[var(--accent)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--bg-tertiary)] flex items-center gap-1"
               title="Claude review in new session"
             >
