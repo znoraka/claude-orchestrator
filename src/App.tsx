@@ -90,12 +90,11 @@ export default function App() {
     invoke<{ branch: string; isGitRepo: boolean }>("get_git_status", { directory: panelDirectory })
       .then((res) => setCurrentBranch(res.isGitRepo ? res.branch : ""))
       .catch(() => setCurrentBranch(""));
-    // Refresh branch periodically (every 5s)
     const interval = setInterval(() => {
       invoke<{ branch: string; isGitRepo: boolean }>("get_git_status", { directory: panelDirectory })
         .then((res) => setCurrentBranch(res.isGitRepo ? res.branch : ""))
         .catch(() => setCurrentBranch(""));
-    }, 5000);
+    }, 15_000);
     return () => clearInterval(interval);
   }, [panelDirectory]);
 
@@ -117,6 +116,7 @@ export default function App() {
 
 
   const suggestionsRef = useRef<HTMLDivElement>(null);
+  const dirListRef = useRef<HTMLDivElement>(null);
 
   const registerWriteText = useCallback(
     (sessionId: string, fn: ((text: string) => void) | null) => {
@@ -268,6 +268,27 @@ export default function App() {
     const knownRoots = new Set(workspaces.map((w) => w.directory));
     return recentDirs.filter((d) => !knownRoots.has(d));
   }, [recentDirs, workspaces]);
+
+  // Flat list of all selectable paths in the dialog (for Cmd+N/P navigation)
+  const selectablePaths = useMemo(() => {
+    const paths: string[] = [];
+    for (const ws of workspaces) {
+      const existingPaths = new Set(ws.worktrees.map((wt) => wt.path));
+      const gitWts = gitWorktreesByRepo.get(ws.directory) || [];
+      const sessionlessWts = gitWts.filter((gwt) => !existingPaths.has(gwt.path));
+      for (const wt of ws.worktrees) paths.push(wt.path);
+      for (const gwt of sessionlessWts) paths.push(gwt.path);
+    }
+    for (const d of extraRecentDirs) paths.push(d);
+    return paths;
+  }, [workspaces, gitWorktreesByRepo, extraRecentDirs]);
+
+  // Scroll selected item into view when navigating with Cmd+N/P
+  useEffect(() => {
+    if (!preselectedDir || !dirListRef.current) return;
+    const el = dirListRef.current.querySelector(`[data-path="${CSS.escape(preselectedDir)}"]`);
+    if (el) el.scrollIntoView({ block: "nearest" });
+  }, [preselectedDir]);
 
   const handleDirConfirm = async () => {
     const dir = dirInput.trim();
@@ -692,6 +713,22 @@ export default function App() {
                   value={dirInput}
                   onChange={(e) => { setDirInput(e.target.value); setDirInputDirty(true); }}
                   onKeyDown={(e) => {
+                    // Cmd+N / Cmd+P to navigate the selectable list
+                    if (e.ctrlKey && (e.key === "n" || e.key === "p") && selectablePaths.length > 0) {
+                      e.preventDefault();
+                      const curIdx = preselectedDir ? selectablePaths.indexOf(preselectedDir) : -1;
+                      let next: number;
+                      if (curIdx === -1) {
+                        next = e.key === "n" ? 0 : selectablePaths.length - 1;
+                      } else {
+                        next = e.key === "n"
+                          ? (curIdx + 1) % selectablePaths.length
+                          : (curIdx - 1 + selectablePaths.length) % selectablePaths.length;
+                      }
+                      setPreselectedDir(selectablePaths[next]);
+                      setDirInputDirty(false);
+                      return;
+                    }
                     if (e.key === "Tab" && suggestions.length > 0) {
                       e.preventDefault();
                       acceptSuggestion(suggestions[Math.max(0, selectedIdx)]);
@@ -749,7 +786,7 @@ export default function App() {
 
             {/* Workspace tree + recent dirs */}
             {(workspaces.length > 0 || extraRecentDirs.length > 0) && (
-              <div className="max-h-[340px] overflow-y-auto border-t border-[var(--border-color)]">
+              <div ref={dirListRef} className="max-h-[340px] overflow-y-auto border-t border-[var(--border-color)]">
                 {/* Workspace tree */}
                 {workspaces.map((ws) => {
                   const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
@@ -789,6 +826,7 @@ export default function App() {
                         return (
                           <button
                             key={wt.path}
+                            data-path={wt.path}
                             onClick={() => quickCreate(wt.path)}
                             className={`w-full flex items-center gap-3 pl-8 pr-4 py-1.5 text-left transition-colors group ${
                               preselectedDir === wt.path
@@ -848,6 +886,7 @@ export default function App() {
                     {extraRecentDirs.map((d) => (
                       <button
                         key={d}
+                        data-path={d}
                         onClick={() => quickCreate(d)}
                         className={`w-full flex items-center gap-3 px-4 py-2 text-left transition-colors group ${
                           preselectedDir === d

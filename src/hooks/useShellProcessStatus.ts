@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
  */
 export function useShellProcessStatus(
   shellTabs: Map<string, { id: string; num: number }[]>,
-  pollInterval = 2000
+  pollInterval = 5000
 ): Map<string, number> {
   const [activeCounts, setActiveCounts] = useState<Map<string, number>>(new Map());
   const shellTabsRef = useRef(shellTabs);

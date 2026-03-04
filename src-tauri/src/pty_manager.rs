@@ -195,14 +195,40 @@ impl PtyManager {
             sb.entry(sid.clone()).or_insert_with(Vec::new);
         }
 
-        // Spawn a thread to read PTY output and emit events to the frontend
+        // Spawn a thread to read PTY output and emit events to the frontend.
+        // Uses time-based batching to avoid flooding the event queue during
+        // high-throughput output (e.g. large command output, cat of big files).
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             // Buffer for incomplete UTF-8 sequences split across reads
             let mut pending = Vec::new();
+            // Accumulator for batching emissions
+            let mut emit_buf = Vec::new();
+            let mut last_emit = std::time::Instant::now();
+            const BATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
+            const BATCH_MAX_BYTES: usize = 32 * 1024;
+
+            let flush = |emit_buf: &mut Vec<u8>, scrollback_buf: &std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>, app_handle: &tauri::AppHandle, sid: &str| {
+                if emit_buf.is_empty() { return; }
+                let data = unsafe { std::str::from_utf8_unchecked(emit_buf) };
+                let _ = app_handle.emit(&format!("pty-output-{}", sid), data.to_string());
+                if let Ok(mut sb) = scrollback_buf.lock() {
+                    if let Some(sb_buf) = sb.get_mut(sid) {
+                        sb_buf.extend_from_slice(emit_buf);
+                        if sb_buf.len() > MAX_SCROLLBACK_BYTES {
+                            let drain_to = sb_buf.len() - MAX_SCROLLBACK_BYTES;
+                            sb_buf.drain(..drain_to);
+                        }
+                    }
+                }
+                emit_buf.clear();
+            };
+
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => {
+                        // Flush batched data
+                        flush(&mut emit_buf, &scrollback_buf, &app_handle, &sid);
                         // Flush any remaining pending bytes before closing
                         if !pending.is_empty() {
                             let data = String::from_utf8_lossy(&pending).to_string();
@@ -221,25 +247,7 @@ impl PtyManager {
                         };
 
                         if valid_up_to > 0 {
-                            // Safety: we just validated this range is valid UTF-8
-                            let data = unsafe {
-                                std::str::from_utf8_unchecked(&pending[..valid_up_to])
-                            };
-                            let _ = app_handle.emit(
-                                &format!("pty-output-{}", sid),
-                                data.to_string(),
-                            );
-
-                            // Append to scrollback buffer (cap at MAX_SCROLLBACK_BYTES)
-                            if let Ok(mut sb) = scrollback_buf.lock() {
-                                if let Some(buf) = sb.get_mut(&sid) {
-                                    buf.extend_from_slice(&pending[..valid_up_to]);
-                                    if buf.len() > MAX_SCROLLBACK_BYTES {
-                                        let drain_to = buf.len() - MAX_SCROLLBACK_BYTES;
-                                        buf.drain(..drain_to);
-                                    }
-                                }
-                            }
+                            emit_buf.extend_from_slice(&pending[..valid_up_to]);
                         }
 
                         // Keep any trailing incomplete bytes for the next read
@@ -250,8 +258,16 @@ impl PtyManager {
                         } else {
                             pending.clear();
                         }
+
+                        // Flush if batch interval elapsed or buffer is large enough
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_emit) >= BATCH_INTERVAL || emit_buf.len() >= BATCH_MAX_BYTES {
+                            flush(&mut emit_buf, &scrollback_buf, &app_handle, &sid);
+                            last_emit = now;
+                        }
                     }
                     Err(_) => {
+                        flush(&mut emit_buf, &scrollback_buf, &app_handle, &sid);
                         let _ = app_handle.emit(&format!("pty-exit-{}", sid), ());
                         break;
                     }

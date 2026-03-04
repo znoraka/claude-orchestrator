@@ -25,20 +25,22 @@ export function useWorktreeBranches(workspaces: Workspace[]): {
     const fetchBranches = async () => {
       const newBranches = new Map<string, string>();
       const newByRepo = new Map<string, GitWorktreeInfo[]>();
-      for (const repo of repos) {
-        try {
-          const wts = await invoke<Array<{ path: string; branch: string; isMain: boolean }>>(
-            "list_worktrees",
-            { directory: repo }
-          );
-          newByRepo.set(repo, wts);
-          for (const wt of wts) {
-            newBranches.set(wt.path, wt.branch);
+      await Promise.all(
+        [...repos].map(async (repo) => {
+          try {
+            const wts = await invoke<Array<{ path: string; branch: string; isMain: boolean }>>(
+              "list_worktrees",
+              { directory: repo }
+            );
+            newByRepo.set(repo, wts);
+            for (const wt of wts) {
+              newBranches.set(wt.path, wt.branch);
+            }
+          } catch {
+            // ignore
           }
-        } catch {
-          // ignore
-        }
-      }
+        })
+      );
       if (!cancelled) {
         setBranches(newBranches);
         setByRepo(newByRepo);

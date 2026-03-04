@@ -187,6 +187,13 @@ export default function FileEditor({ baseDirectory, initialFilePath, onClose }: 
             const pos = update.state.selection.main.head;
             const line = update.state.doc.lineAt(pos);
             setCursorPos({ line: line.number, col: pos - line.from + 1 });
+            // Detect vim mode changes from the update
+            const cm = (update.view as any).cm;
+            if (cm?.state?.vim) {
+              const v = cm.state.vim;
+              const mode = v.insertMode ? "INSERT" : v.visualMode ? "VISUAL" : "NORMAL";
+              setVimMode(mode);
+            }
           }),
           EditorView.lineWrapping,
         ],
@@ -234,21 +241,7 @@ export default function FileEditor({ baseDirectory, initialFilePath, onClose }: 
     Vim.defineEx("wquit", "wq", async () => { await saveRef.current(); closeRef.current(); });
   }, [saveFile, onClose]);
 
-  // Track vim mode changes
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (!viewRef.current) return;
-      const cm = (viewRef.current as any).cm;
-      if (cm) {
-        const state = cm.state;
-        if (state?.vim) {
-          const mode = state.vim.insertMode ? "INSERT" : state.vim.visualMode ? "VISUAL" : "NORMAL";
-          setVimMode(mode);
-        }
-      }
-    }, 100);
-    return () => clearInterval(interval);
-  }, []);
+  // Track vim mode changes via EditorView update listener (set up in loadFile)
 
   // Autocomplete for path input
   useEffect(() => {

@@ -241,7 +241,13 @@ fn get_pty_scrollback(session_id: String, state: State<'_, AppState>) -> Result<
 }
 
 #[tauri::command]
-fn list_directories(partial: String) -> Result<Vec<String>, String> {
+async fn list_directories(partial: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_directories_sync(partial))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn list_directories_sync(partial: String) -> Result<Vec<String>, String> {
     let expanded = if partial.starts_with('~') {
         if let Ok(home) = std::env::var("HOME") {
             partial.replacen('~', &home, 1)
@@ -309,7 +315,13 @@ struct WorktreeInfo {
 }
 
 #[tauri::command]
-fn list_worktrees(directory: String) -> Result<Vec<WorktreeInfo>, String> {
+async fn list_worktrees(directory: String) -> Result<Vec<WorktreeInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_worktrees_sync(directory))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn list_worktrees_sync(directory: String) -> Result<Vec<WorktreeInfo>, String> {
     let expanded = if directory.starts_with('~') {
         if let Ok(home) = std::env::var("HOME") {
             directory.replacen('~', &home, 1)
@@ -1058,6 +1070,19 @@ async fn get_usage_dashboard(days: u32, state: State<'_, AppState>) -> Result<Us
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
+/// Walk up from `dir` to find a .git directory/file, returning the repo root.
+fn find_git_root(dir: &str) -> Option<String> {
+    let mut path = PathBuf::from(dir);
+    loop {
+        if path.join(".git").exists() {
+            return Some(path.to_string_lossy().to_string());
+        }
+        if !path.pop() {
+            return None;
+        }
+    }
+}
+
 fn compute_usage_dashboard(days: u32, pricing: &PricingConfig) -> Result<UsageDashboard, String> {
     let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
     let projects_dir = PathBuf::from(&home).join(".claude").join("projects");
@@ -1129,6 +1154,29 @@ fn compute_usage_dashboard(days: u32, pricing: &PricingConfig) -> Result<UsageDa
         }
     }
 
+    // Consolidate by git repo root: walk up each directory to find .git,
+    // then merge all entries that share the same repo root.
+    let mut repo_map: HashMap<String, ProjectUsage> = HashMap::new();
+    for proj in projects {
+        let repo_root = find_git_root(&proj.directory).unwrap_or_else(|| proj.directory.clone());
+        match repo_map.get_mut(&repo_root) {
+            Some(existing) => {
+                existing.cost_usd += proj.cost_usd;
+                existing.total_tokens += proj.total_tokens;
+                existing.session_count += proj.session_count;
+            }
+            None => {
+                repo_map.insert(repo_root.clone(), ProjectUsage {
+                    directory: repo_root,
+                    cost_usd: proj.cost_usd,
+                    total_tokens: proj.total_tokens,
+                    session_count: proj.session_count,
+                });
+            }
+        }
+    }
+    let mut projects: Vec<ProjectUsage> = repo_map.into_values().collect();
+
     // Build history
     let now_secs = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1154,7 +1202,13 @@ fn compute_usage_dashboard(days: u32, pricing: &PricingConfig) -> Result<UsageDa
 }
 
 #[tauri::command]
-fn get_message_count(claude_session_id: String, directory: String) -> Result<u32, String> {
+async fn get_message_count(claude_session_id: String, directory: String) -> Result<u32, String> {
+    tauri::async_runtime::spawn_blocking(move || get_message_count_sync(claude_session_id, directory))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn get_message_count_sync(claude_session_id: String, directory: String) -> Result<u32, String> {
     let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
     if !jsonl_path.exists() {
         return Ok(0);
@@ -1185,7 +1239,13 @@ fn get_message_count(claude_session_id: String, directory: String) -> Result<u32
 }
 
 #[tauri::command]
-fn generate_smart_title(claude_session_id: String, directory: String, include_recent: Option<bool>) -> Result<Option<String>, String> {
+async fn generate_smart_title(claude_session_id: String, directory: String, include_recent: Option<bool>) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || generate_smart_title_sync(claude_session_id, directory, include_recent))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn generate_smart_title_sync(claude_session_id: String, directory: String, include_recent: Option<bool>) -> Result<Option<String>, String> {
     let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
 
     if !jsonl_path.exists() {
@@ -1913,7 +1973,13 @@ struct GitStatusResult {
 }
 
 #[tauri::command]
-fn get_git_status(directory: String) -> Result<GitStatusResult, String> {
+async fn get_git_status(directory: String) -> Result<GitStatusResult, String> {
+    tauri::async_runtime::spawn_blocking(move || get_git_status_sync(directory))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn get_git_status_sync(directory: String) -> Result<GitStatusResult, String> {
     let output = git_command(&directory)
         .args(["status", "--porcelain", "-b"])
         .output()
@@ -2001,7 +2067,13 @@ fn get_git_status(directory: String) -> Result<GitStatusResult, String> {
 }
 
 #[tauri::command]
-fn get_git_diff(directory: String, file_path: String, staged: bool) -> Result<String, String> {
+async fn get_git_diff(directory: String, file_path: String, staged: bool) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || get_git_diff_sync(directory, file_path, staged))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn get_git_diff_sync(directory: String, file_path: String, staged: bool) -> Result<String, String> {
     let mut cmd = git_command(&directory);
     cmd.arg("diff");
     if staged {

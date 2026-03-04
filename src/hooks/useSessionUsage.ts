@@ -82,7 +82,7 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
           fetchUsageForSession(session);
         }
       }
-    }, 2000);
+    }, 5000);
 
     return () => {
       unlistenPromise.then((fn) => fn());

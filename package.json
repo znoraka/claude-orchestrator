@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build && pnpm build:mcp",
     "build:mcp": "esbuild src-tauri/resources/mcp-server.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/mcp-server.bundle.mjs",
     "preview": "vite preview",
     "tauri": "tauri"

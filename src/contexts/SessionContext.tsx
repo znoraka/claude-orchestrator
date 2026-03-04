@@ -149,7 +149,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // ── Persist sessions on every change (debounced, after initial load) ─
+  // Use a stable key that excludes volatile fields (activeTime) to avoid
+  // re-saving every 60s when TICK_ACTIVE_TIMES fires.
+  const saveKey = useMemo(
+    () =>
+      sessions
+        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.dangerouslySkipPermissions}`)
+        .join("|"),
+    [sessions]
+  );
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeTimeSaveRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     if (!loadedRef.current) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -173,7 +183,32 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [sessions]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saveKey]);
+
+  // Save activeTime periodically (every 5 min) to avoid losing it,
+  // but not on every tick
+  useEffect(() => {
+    if (activeTimeSaveRef.current) clearInterval(activeTimeSaveRef.current);
+    activeTimeSaveRef.current = setInterval(() => {
+      if (!loadedRef.current) return;
+      const metas = sessionsRef.current.map((s) => ({
+        id: s.id,
+        name: s.name,
+        createdAt: s.createdAt,
+        lastActiveAt: s.lastActiveAt,
+        directory: s.directory,
+        homeDirectory: s.homeDirectory,
+        claudeSessionId: s.claudeSessionId,
+        dangerouslySkipPermissions: s.dangerouslySkipPermissions,
+        activeTime: s.activeTime || 0,
+      }));
+      invoke("save_sessions", { sessions: metas }).catch(() => {});
+    }, 300_000);
+    return () => {
+      if (activeTimeSaveRef.current) clearInterval(activeTimeSaveRef.current);
+    };
+  }, []);
 
   // ── Kill oldest running sessions when over the limit ─────────────
   // Uses the dispatch-based approach: no refs needed because we read
@@ -398,16 +433,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // ── Duration tracking ──────────────────────────────────────────
   const runningSinceRef = useRef<Map<string, number>>(new Map());
 
+  // Track running status changes (only re-run when the running set changes)
+  const runningStatusKey = useMemo(
+    () => sessions.map((s) => `${s.id}:${s.status}`).join(","),
+    [sessions]
+  );
   useEffect(() => {
-    // Track when sessions start running
-    for (const s of sessions) {
+    for (const s of sessionsRef.current) {
       if (s.status === "running" && !runningSinceRef.current.has(s.id)) {
         runningSinceRef.current.set(s.id, Date.now());
       } else if (s.status !== "running") {
         runningSinceRef.current.delete(s.id);
       }
     }
-  }, [sessions]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningStatusKey]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -505,27 +545,29 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const check = async () => {
       const current = sessionsRef.current;
-      for (const s of current) {
-        if (!s.directory?.includes("/.worktrees/")) continue;
-        try {
-          const exists = await invoke<boolean>("directory_exists", { path: s.directory });
-          if (!exists) {
-            // Prefer the saved home directory; fall back to stripping .worktrees/
-            const root = s.homeDirectory ?? repoRootDir(s.directory);
-            console.log(
-              `[worktree-cleanup] "${s.name}" worktree removed, reverting directory: ${s.directory} → ${root}`
-            );
-            dispatch({ type: "UPDATE", id: s.id, patch: { directory: root, homeDirectory: undefined } });
+      const worktreeSessions = current.filter((s) => s.directory?.includes("/.worktrees/"));
+      if (worktreeSessions.length === 0) return;
+      await Promise.all(
+        worktreeSessions.map(async (s) => {
+          try {
+            const exists = await invoke<boolean>("directory_exists", { path: s.directory });
+            if (!exists) {
+              const root = s.homeDirectory ?? repoRootDir(s.directory);
+              console.log(
+                `[worktree-cleanup] "${s.name}" worktree removed, reverting directory: ${s.directory} → ${root}`
+              );
+              dispatch({ type: "UPDATE", id: s.id, patch: { directory: root, homeDirectory: undefined } });
+            }
+          } catch (err) {
+            console.error("[worktree-cleanup] Failed to check directory:", err);
           }
-        } catch (err) {
-          console.error("[worktree-cleanup] Failed to check directory:", err);
-        }
-      }
+        })
+      );
     };
     check();
-    const interval = setInterval(check, 5_000);
+    const interval = setInterval(check, 15_000);
     return () => clearInterval(interval);
-  }, [sessions]);
+  }, []); // stable — reads from sessionsRef
 
   // ── Derived state / side-effect hooks ────────────────────────────
 

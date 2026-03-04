@@ -143,7 +143,6 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
     }
   }, [compareMode, baseBranch, compareBranch, loadBranchCommits]);
 
-  const myCommits = branchCommits.filter((c) => c.is_mine);
 
   useEffect(() => {
     if (!compareMode || !selectedBranchFile || !baseBranch || !compareBranch) {
@@ -361,17 +360,17 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
               {branches.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
             <span className="text-[10px] text-[var(--text-tertiary)]">
-              {myCommits.length} commit{myCommits.length !== 1 ? "s" : ""}
+              {branchCommits.length} commit{branchCommits.length !== 1 ? "s" : ""}
             </span>
           </div>
           <div className="flex flex-1 min-h-0">
             <div className="w-64 flex-shrink-0 border-r border-[var(--border-color)] overflow-y-auto py-2">
-              {myCommits.length === 0 ? (
+              {branchCommits.length === 0 ? (
                 <div className="px-2 py-4 text-xs text-[var(--text-tertiary)] text-center">
-                  {baseBranch && compareBranch ? "No commits by you" : "Select branches"}
+                  {baseBranch && compareBranch ? "No commits on this branch" : "Select branches"}
                 </div>
               ) : (
-                myCommits.map((commit) => {
+                branchCommits.map((commit) => {
                   const isCollapsed = collapsedCommits.has(commit.hash);
                   return (
                     <div key={commit.hash} className="mb-1">
