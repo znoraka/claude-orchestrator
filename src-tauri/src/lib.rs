@@ -2692,6 +2692,39 @@ fn save_clipboard_image(base64_data: String) -> Result<String, String> {
     clipboard_image::save_image_from_base64(&base64_data)
 }
 
+/// Read file paths from the system pasteboard (macOS).
+/// Uses osascript to get file URLs from Finder clipboard.
+#[tauri::command]
+fn get_clipboard_file_paths() -> Vec<String> {
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(r#"
+            use framework "AppKit"
+            set pb to current application's NSPasteboard's generalPasteboard()
+            set urlClass to current application's NSURL
+            set urls to pb's readObjectsForClasses:{urlClass} options:(missing value)
+            if urls is missing value then return ""
+            set paths to {}
+            repeat with u in urls
+                set end of paths to (u's |path|() as text)
+            end repeat
+            return (paths as list) as text
+        "#)
+        .output();
+
+    match output {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if text.is_empty() {
+                vec![]
+            } else {
+                text.split(", ").map(|s| s.to_string()).collect()
+            }
+        }
+        Err(_) => vec![],
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2753,6 +2786,7 @@ pub fn run() {
             destroy_pty_session,
             get_pty_scrollback,
             save_clipboard_image,
+            get_clipboard_file_paths,
             save_sessions,
             load_sessions,
             list_directories,

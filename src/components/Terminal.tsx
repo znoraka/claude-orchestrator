@@ -13,9 +13,11 @@ interface TerminalProps {
   onTitleChange?: (title: string) => void;
   onActivity?: () => void;
   onRegisterWriteText?: (fn: ((text: string) => void) | null) => void;
+  /** Called on Enter — returns data to prepend before \r, or empty string */
+  getPendingInput?: () => string;
 }
 
-export default function Terminal({ sessionId, isActive, onExit, onTitleChange, onActivity, onRegisterWriteText }: TerminalProps) {
+export default function Terminal({ sessionId, isActive, onExit, onTitleChange, onActivity, onRegisterWriteText, getPendingInput }: TerminalProps) {
   const { showError } = useToast();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
@@ -27,11 +29,16 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
   const onExitRef = useRef(onExit);
   const onTitleChangeRef = useRef(onTitleChange);
   const onActivityRef = useRef(onActivity);
+  const getPendingInputRef = useRef(getPendingInput);
+  // Track last sent PTY dimensions to avoid redundant resize_pty calls
+  // (each resize sends SIGWINCH, which can disrupt ink's interactive UI rendering)
+  const lastPtySizeRef = useRef<{ cols: number; rows: number } | null>(null);
 
   // Keep refs current without causing remounts
   useEffect(() => { onExitRef.current = onExit; }, [onExit]);
   useEffect(() => { onTitleChangeRef.current = onTitleChange; }, [onTitleChange]);
   useEffect(() => { onActivityRef.current = onActivity; }, [onActivity]);
+  useEffect(() => { getPendingInputRef.current = getPendingInput; }, [getPendingInput]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -78,10 +85,23 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
 
     // Send user input to PTY; track prompt submissions (Enter key) for tab ordering
     term.onData((data) => {
-      invoke("write_to_pty", { sessionId, data }).catch(console.error);
       if (data === "\r") {
-        onActivityRef.current?.();
+        const pending = getPendingInputRef.current?.();
+        if (pending) {
+          // Insert image paths via bracketed paste, then send \r after a
+          // delay so ink finishes processing the paste before seeing Enter.
+          const paste = `\x1b[200~${pending}\x1b[201~`;
+          invoke("write_to_pty", { sessionId, data: paste }).then(() => {
+            setTimeout(() => {
+              invoke("write_to_pty", { sessionId, data: "\r" }).catch(console.error);
+            }, 150);
+          }).catch(console.error);
+          onActivityRef.current?.();
+          return;
+        }
       }
+      invoke("write_to_pty", { sessionId, data }).catch(console.error);
+      if (data === "\r") onActivityRef.current?.();
     });
 
     // OSC title change detection
@@ -113,11 +133,18 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
       onExitRef.current();
     });
 
-    // Handle resize
+    // Handle resize — only send resize_pty when dimensions actually change.
+    // Each resize_pty triggers SIGWINCH in Claude Code, which causes ink to
+    // clear and re-render interactive UI (e.g. AskUserQuestion picker).
+    // Redundant SIGWINCHs can disrupt ink mid-render, losing picker options.
     const resizeObserver = new ResizeObserver(() => {
       fitAddon.fit();
       const { cols, rows } = term;
-      invoke("resize_pty", { sessionId, cols, rows }).catch(() => {});
+      const last = lastPtySizeRef.current;
+      if (!last || last.cols !== cols || last.rows !== rows) {
+        lastPtySizeRef.current = { cols, rows };
+        invoke("resize_pty", { sessionId, cols, rows }).catch(() => {});
+      }
     });
     resizeObserver.observe(containerRef.current);
 

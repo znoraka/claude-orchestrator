@@ -145,3 +145,55 @@ body {
   margin: 0.25em 0;
 }
 .pr-comment-body img { max-width: 100%; }
+
+/* Image strip (thumbnail bar above terminal bottom) */
+.image-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.image-strip-item {
+  position: relative;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  padding: 3px;
+}
+
+.image-strip-thumbnail {
+  width: 72px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
+}
+
+.image-strip-remove {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  cursor: pointer;
+}
+.image-strip-remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.image-strip-item:hover .image-strip-remove {
+  opacity: 1;
+}

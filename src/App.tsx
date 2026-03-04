@@ -1,7 +1,6 @@
 import { useCallback, useRef, useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionContext } from "./contexts/SessionContext";
-import { useClipboard } from "./hooks/useClipboard";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
 import SessionConversation from "./components/SessionConversation";
@@ -14,6 +13,7 @@ import { repoColor } from "./components/SessionTab";
 import { repoRootDir } from "./utils/workspaces";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
+import ImageStrip from "./components/ImageStrip";
 import type { Session } from "./types";
 
 export default function App() {
@@ -37,6 +37,8 @@ export default function App() {
 
   // Registry of writeText callbacks from Terminal components
   const writeTextCallbacks = useRef<Map<string, (text: string) => void>>(new Map());
+  // Registry of getPendingInput callbacks from ImageStrip components (per session)
+  const getPendingCallbacks = useRef<Map<string, () => string>>(new Map());
 
   // Recent directories helpers
   const MAX_RECENT_DIRS = 8;
@@ -128,18 +130,6 @@ export default function App() {
     },
     []
   );
-
-  // Clipboard image handler: inject path into active session's PTY
-  const handleImagePath = useCallback(
-    (path: string) => {
-      if (!activeSessionId) return;
-      const writeFn = writeTextCallbacks.current.get(activeSessionId);
-      writeFn?.("'" + path.replace(/'/g, "'\\''") + "' ");
-    },
-    [activeSessionId]
-  );
-
-  useClipboard(handleImagePath);
 
   const addShellTab = async (dir: string) => {
     const num = ++shellCounter.current;
@@ -506,16 +496,39 @@ export default function App() {
                           onResume={() => restartSession(session.id)}
                         />
                       ) : (
-                        <Terminal
-                          sessionId={session.id}
-                          isActive={isVisible}
-                          onExit={() => {
-                            markStopped(session.id);
-                          }}
-                          onTitleChange={() => {}}
-                          onActivity={() => touchSession(session.id)}
-                          onRegisterWriteText={(fn) => registerWriteText(session.id, fn)}
-                        />
+                        <div className="flex flex-col h-full">
+                          <div className="flex-1 min-h-0">
+                            <Terminal
+                              sessionId={session.id}
+                              isActive={isVisible}
+                              onExit={() => {
+                                markStopped(session.id);
+                              }}
+                              onTitleChange={() => {}}
+                              onActivity={() => touchSession(session.id)}
+                              onRegisterWriteText={(fn) => registerWriteText(session.id, fn)}
+                              getPendingInput={() => {
+                                const fn = getPendingCallbacks.current.get(session.id);
+                                return fn?.() ?? "";
+                              }}
+                            />
+                          </div>
+                          {isVisible && (
+                            <ImageStrip
+                              writeToPty={(data) => {
+                                const writeFn = writeTextCallbacks.current.get(session.id);
+                                writeFn?.(data);
+                              }}
+                              onRegisterGetPending={(fn) => {
+                                if (fn) {
+                                  getPendingCallbacks.current.set(session.id, fn);
+                                } else {
+                                  getPendingCallbacks.current.delete(session.id);
+                                }
+                              }}
+                            />
+                          )}
+                        </div>
                       )}
                     </ErrorBoundary>
                   </div>
