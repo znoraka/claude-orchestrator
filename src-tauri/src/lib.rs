@@ -1347,24 +1347,29 @@ fn generate_smart_title_sync(claude_session_id: String, directory: String, inclu
         )
     };
 
-    // Get OAuth token from macOS keychain
-    let token_output = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
-        .output()
-        .map_err(|e| format!("Failed to read keychain: {}", e))?;
-
-    if !token_output.status.success() {
-        return Err("Could not read Claude credentials from keychain".to_string());
-    }
-
-    let creds_json = String::from_utf8_lossy(&token_output.stdout).trim().to_string();
-    let creds: serde_json::Value = serde_json::from_str(&creds_json)
-        .map_err(|e| format!("Failed to parse credentials: {}", e))?;
-    let access_token = creds
-        .get("claudeAiOauth")
-        .and_then(|o| o.get("accessToken"))
-        .and_then(|t| t.as_str())
-        .ok_or("No OAuth access token found")?;
+    // Get API key: try ANTHROPIC_API_KEY env var first, then macOS keychain as fallback
+    let access_token = if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+        if !key.is_empty() { Some(key) } else { None }
+    } else {
+        None
+    }.or_else(|| {
+        // Fall back to macOS keychain (Claude Code OAuth credentials)
+        let token_output = std::process::Command::new("security")
+            .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+            .output()
+            .ok()?;
+        if !token_output.status.success() {
+            return None;
+        }
+        let creds_json = String::from_utf8_lossy(&token_output.stdout).trim().to_string();
+        let creds: serde_json::Value = serde_json::from_str(&creds_json).ok()?;
+        creds
+            .get("claudeAiOauth")
+            .and_then(|o| o.get("accessToken"))
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string())
+    })
+    .ok_or("No API key found. Set ANTHROPIC_API_KEY env var or log in to Claude Code.")?;
 
     // Call Anthropic API directly via curl
     let body = serde_json::json!({
@@ -1934,6 +1939,9 @@ async fn checkout_pr_worktree(
                 return Err(format!("git worktree add failed: {}", err_str.trim()));
             }
         }
+
+        // Clone heavy gitignored dirs (node_modules, .venv, etc.) via APFS clonefile
+        clone_heavy_dirs(&expanded, &worktree_path.to_string_lossy());
 
         Ok(worktree_path.to_string_lossy().to_string())
     })

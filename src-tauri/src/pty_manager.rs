@@ -195,18 +195,27 @@ impl PtyManager {
             sb.entry(sid.clone()).or_insert_with(Vec::new);
         }
 
-        // Spawn a thread to read PTY output and emit events to the frontend.
-        // Uses time-based batching to avoid flooding the event queue during
-        // high-throughput output (e.g. large command output, cat of big files).
+        // Spawn threads to read PTY output and emit events to the frontend.
+        // A dedicated reader thread sends chunks over a channel; the emitter
+        // thread batches them and uses recv_timeout to guarantee a flush when
+        // the stream goes idle (fixes stale display after Claude pauses).
         thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            // Buffer for incomplete UTF-8 sequences split across reads
-            let mut pending = Vec::new();
-            // Accumulator for batching emissions
-            let mut emit_buf = Vec::new();
-            let mut last_emit = std::time::Instant::now();
             const BATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
             const BATCH_MAX_BYTES: usize = 32 * 1024;
+
+            let (tx, rx) = std::sync::mpsc::channel::<Option<Vec<u8>>>();
+
+            // Reader thread — just reads and forwards chunks
+            thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => { let _ = tx.send(None); break; }
+                        Ok(n) => { let _ = tx.send(Some(buf[..n].to_vec())); }
+                        Err(_) => { let _ = tx.send(None); break; }
+                    }
+                }
+            });
 
             let flush = |emit_buf: &mut Vec<u8>, scrollback_buf: &std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>, app_handle: &tauri::AppHandle, sid: &str| {
                 if emit_buf.is_empty() { return; }
@@ -224,12 +233,37 @@ impl PtyManager {
                 emit_buf.clear();
             };
 
+            // Buffer for incomplete UTF-8 sequences split across reads
+            let mut pending: Vec<u8> = Vec::new();
+            // Accumulator for batching emissions
+            let mut emit_buf: Vec<u8> = Vec::new();
+
             loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => {
-                        // Flush batched data
+                // Block until first data, or use timeout if we have buffered data
+                let msg = if emit_buf.is_empty() {
+                    match rx.recv() {
+                        Ok(msg) => msg,
+                        Err(_) => break,
+                    }
+                } else {
+                    match rx.recv_timeout(BATCH_INTERVAL) {
+                        Ok(msg) => msg,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            // Stream idle — flush buffered data so display updates
+                            flush(&mut emit_buf, &scrollback_buf, &app_handle, &sid);
+                            continue;
+                        }
+                        Err(_) => {
+                            flush(&mut emit_buf, &scrollback_buf, &app_handle, &sid);
+                            break;
+                        }
+                    }
+                };
+
+                match msg {
+                    None => {
+                        // EOF
                         flush(&mut emit_buf, &scrollback_buf, &app_handle, &sid);
-                        // Flush any remaining pending bytes before closing
                         if !pending.is_empty() {
                             let data = String::from_utf8_lossy(&pending).to_string();
                             let _ = app_handle.emit(&format!("pty-output-{}", sid), data);
@@ -237,8 +271,8 @@ impl PtyManager {
                         let _ = app_handle.emit(&format!("pty-exit-{}", sid), ());
                         break;
                     }
-                    Ok(n) => {
-                        pending.extend_from_slice(&buf[..n]);
+                    Some(chunk) => {
+                        pending.extend_from_slice(&chunk);
 
                         // Find the last valid UTF-8 boundary in pending
                         let valid_up_to = match std::str::from_utf8(&pending) {
@@ -259,17 +293,11 @@ impl PtyManager {
                             pending.clear();
                         }
 
-                        // Flush if batch interval elapsed or buffer is large enough
-                        let now = std::time::Instant::now();
-                        if now.duration_since(last_emit) >= BATCH_INTERVAL || emit_buf.len() >= BATCH_MAX_BYTES {
+                        // Flush immediately if buffer is large enough
+                        if emit_buf.len() >= BATCH_MAX_BYTES {
                             flush(&mut emit_buf, &scrollback_buf, &app_handle, &sid);
-                            last_emit = now;
                         }
-                    }
-                    Err(_) => {
-                        flush(&mut emit_buf, &scrollback_buf, &app_handle, &sid);
-                        let _ = app_handle.emit(&format!("pty-exit-{}", sid), ());
-                        break;
+                        // Otherwise, loop back — recv_timeout will flush after BATCH_INTERVAL
                     }
                 }
             }
