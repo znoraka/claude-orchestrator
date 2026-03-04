@@ -13,6 +13,7 @@ import FileEditor from "./components/FileEditor";
 import { repoColor } from "./components/SessionTab";
 import { repoRootDir } from "./utils/workspaces";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
+import type { Session } from "./types";
 
 export default function App() {
   const {
@@ -220,6 +221,7 @@ export default function App() {
       localStorage.setItem("claude-orchestrator-last-session-dir", path);
       // Create a session in the new worktree
       await createSession(undefined, path, skipPermissions);
+      setActivePanel(null);
     } catch (err) {
       console.error("Failed to create worktree:", err);
     } finally {
@@ -228,7 +230,7 @@ export default function App() {
   };
 
   // Branch info for all worktrees across all workspaces (shared hook, polls every 10s)
-  const dialogBranches = useWorktreeBranches(workspaces);
+  const { branches: dialogBranches, byRepo: gitWorktreesByRepo } = useWorktreeBranches(workspaces);
 
   const handleNewSession = () => {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
@@ -259,6 +261,7 @@ export default function App() {
     setShowDirDialog(false);
     try {
       await createSession(undefined, dir, skipPermissions);
+      setActivePanel(null);
     } finally {
       setCreating(false);
     }
@@ -311,6 +314,7 @@ export default function App() {
     setShowDirDialog(false);
     try {
       await createSession(undefined, dir, skipPermissions);
+      setActivePanel(null);
     } finally {
       setCreating(false);
     }
@@ -422,6 +426,25 @@ export default function App() {
 
             {/* Content area */}
             <div className="flex-1 min-h-0 relative">
+              {/* Empty state when no session is selected */}
+              {!activeSessionId && activePanel === null && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="text-center max-w-sm">
+                    <div className="w-12 h-12 mx-auto mb-4 rounded-xl bg-[var(--bg-tertiary)] flex items-center justify-center">
+                      <svg className="w-6 h-6 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+                      </svg>
+                    </div>
+                    <p className="text-sm text-[var(--text-secondary)] mb-1">
+                      Select a session from the sidebar
+                    </p>
+                    <p className="text-xs text-[var(--text-tertiary)]">
+                      or press <kbd className="px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] font-mono text-[10px]">⌘N</kbd> to start a new one
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* Session panels — one per session, visibility-toggled */}
               {sessions.map((session) => {
                 const isVisible = session.id === activeSessionId && activePanel === null;
@@ -458,23 +481,25 @@ export default function App() {
                 );
               })}
 
-              {/* Git panel */}
-              {activePanel === "git" && (
-                <div
-                  className="absolute inset-0 bg-[var(--bg-primary)]"
-                  style={{ zIndex: 2 }}
-                >
-                  <GitPanel
-                    directory={panelDirectory}
-                    isActive={activePanel === "git"}
-                    onEditFile={(relativePath) => {
-                      const dir = panelDirectory.endsWith("/") ? panelDirectory : panelDirectory + "/";
-                      setEditorFilePath(dir + relativePath);
-                      setShowFileEditor(true);
-                    }}
-                  />
-                </div>
-              )}
+              {/* Git panel — always mounted to preserve state */}
+              <div
+                className="absolute inset-0 bg-[var(--bg-primary)]"
+                style={{
+                  zIndex: activePanel === "git" ? 2 : 0,
+                  pointerEvents: activePanel === "git" ? "auto" : "none",
+                  visibility: activePanel === "git" ? "visible" : "hidden",
+                }}
+              >
+                <GitPanel
+                  directory={panelDirectory}
+                  isActive={activePanel === "git"}
+                  onEditFile={(relativePath) => {
+                    const dir = panelDirectory.endsWith("/") ? panelDirectory : panelDirectory + "/";
+                    setEditorFilePath(dir + relativePath);
+                    setShowFileEditor(true);
+                  }}
+                />
+              </div>
 
               {/* PRs panel — always mounted to preserve review state */}
               <div
@@ -489,6 +514,7 @@ export default function App() {
                   directory={panelDirectory}
                   isActive={activePanel === "prs"}
                   onResetRef={prPanelResetRef}
+                  onSwitchToClaude={() => setActivePanel(null)}
                   onAskClaude={(prompt) => {
                     if (!activeSessionId) return;
                     const writeFn = writeTextCallbacks.current.get(activeSessionId);
@@ -498,11 +524,15 @@ export default function App() {
                 />
               </div>
 
-              {/* Shell */}
-              {activePanel === "shell" && shellDirs.has(panelDirectory) && (
+              {/* Shell — always mounted once created to preserve state */}
+              {shellDirs.has(panelDirectory) && (
                 <div
                   className="absolute inset-0 bg-[var(--bg-primary)]"
-                  style={{ zIndex: 2 }}
+                  style={{
+                    zIndex: activePanel === "shell" ? 2 : 0,
+                    pointerEvents: activePanel === "shell" ? "auto" : "none",
+                    visibility: activePanel === "shell" ? "visible" : "hidden",
+                  }}
                 >
                   <Terminal
                     sessionId={shellSessionId(panelDirectory)}
@@ -627,8 +657,21 @@ export default function App() {
                           {repoName}
                         </span>
                       </div>
-                      {/* Worktree rows */}
-                      {ws.worktrees.map((wt) => {
+                      {/* Worktree rows (merge in git worktrees that have no sessions) */}
+                      {(() => {
+                        const existingPaths = new Set(ws.worktrees.map((wt) => wt.path));
+                        const gitWts = gitWorktreesByRepo.get(ws.directory) || [];
+                        const sessionlessWts = gitWts
+                          .filter((gwt) => !existingPaths.has(gwt.path))
+                          .map((gwt) => ({
+                            path: gwt.path,
+                            branch: gwt.branch,
+                            isMain: gwt.isMain,
+                            sessions: [] as Session[],
+                            lastActiveAt: 0,
+                          }));
+                        return [...ws.worktrees, ...sessionlessWts];
+                      })().map((wt) => {
                         const isMain = wt.isMain;
                         const wtLabel = isMain ? "main" : wt.path.split("/").filter(Boolean).pop() || wt.path;
                         const branch = dialogBranches.get(wt.path) || "";

@@ -64,7 +64,7 @@ export default function Sidebar({
   const [collapsedWorktrees, setCollapsedWorktrees] = useState<Set<string>>(new Set());
   const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(new Set());
 
-  const branches = useWorktreeBranches(workspaces);
+  const { branches } = useWorktreeBranches(workspaces);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

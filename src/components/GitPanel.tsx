@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { GitFileEntry, GitStatusResult, BranchDiffFile } from "../types";
+import type { GitFileEntry, GitStatusResult, BranchCommit, BranchCommitsResult } from "../types";
 import DiffViewer, { NewFileViewer, countMatches } from "./DiffViewer";
 import FileIcon from "./FileIcon";
 import type { DiffMode } from "./DiffViewer";
@@ -46,9 +46,13 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
   const [branches, setBranches] = useState<string[]>([]);
   const [baseBranch, setBaseBranch] = useState("");
   const [compareBranch, setCompareBranch] = useState("");
-  const [branchDiffFiles, setBranchDiffFiles] = useState<BranchDiffFile[]>([]);
+
+  // Detect if current branch is a feature branch (not master/main)
+  const isFeatureBranch = status?.branch ? !["master", "main"].includes(status.branch) : false;
   const [selectedBranchFile, setSelectedBranchFile] = useState<string | null>(null);
   const [branchDiff, setBranchDiff] = useState("");
+  const [branchCommits, setBranchCommits] = useState<BranchCommit[]>([]);
+  const [collapsedCommits, setCollapsedCommits] = useState<Set<string>>(new Set());
 
   // Cmd+E opens selected file in editor
   useEffect(() => {
@@ -119,23 +123,27 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
     }
   }, [directory, status?.branch]);
 
-  const loadBranchDiff = useCallback(async () => {
+  // Fetch commits when entering compare mode
+  const loadBranchCommits = useCallback(async () => {
     if (!baseBranch || !compareBranch) return;
     try {
-      const result = await invoke<{ files: BranchDiffFile[] }>("get_branch_diff", { directory, base: baseBranch, compare: compareBranch });
-      setBranchDiffFiles(result.files);
-      setSelectedBranchFile(result.files[0]?.path || null);
+      const result = await invoke<BranchCommitsResult>("get_branch_commits", { directory, base: baseBranch, compare: compareBranch });
+      setBranchCommits(result.commits);
+      const myFirst = result.commits.find((c) => c.is_mine);
+      setSelectedBranchFile(myFirst?.files[0]?.path || null);
     } catch (e) {
-      console.error("Failed to get branch diff:", e);
-      setBranchDiffFiles([]);
+      console.error("Failed to load branch commits:", e);
+      setBranchCommits([]);
     }
   }, [directory, baseBranch, compareBranch]);
 
   useEffect(() => {
     if (compareMode && baseBranch && compareBranch) {
-      loadBranchDiff();
+      loadBranchCommits();
     }
-  }, [compareMode, baseBranch, compareBranch, loadBranchDiff]);
+  }, [compareMode, baseBranch, compareBranch, loadBranchCommits]);
+
+  const myCommits = branchCommits.filter((c) => c.is_mine);
 
   useEffect(() => {
     if (!compareMode || !selectedBranchFile || !baseBranch || !compareBranch) {
@@ -306,9 +314,9 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
                 ? "text-[var(--accent)] bg-[var(--accent)]/10"
                 : "text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             }`}
-            title="Compare branches"
+            title={isFeatureBranch ? "Compare with master/main" : "Compare branches"}
           >
-            Compare
+            {isFeatureBranch ? "vs master" : "Compare"}
           </button>
           {!compareMode && (
             <button
@@ -353,38 +361,59 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
               {branches.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
             <span className="text-[10px] text-[var(--text-tertiary)]">
-              {branchDiffFiles.length} file{branchDiffFiles.length !== 1 ? "s" : ""}
+              {myCommits.length} commit{myCommits.length !== 1 ? "s" : ""}
             </span>
           </div>
           <div className="flex flex-1 min-h-0">
             <div className="w-64 flex-shrink-0 border-r border-[var(--border-color)] overflow-y-auto py-2">
-              {branchDiffFiles.length === 0 ? (
+              {myCommits.length === 0 ? (
                 <div className="px-2 py-4 text-xs text-[var(--text-tertiary)] text-center">
-                  {baseBranch && compareBranch ? "No differences" : "Select branches"}
+                  {baseBranch && compareBranch ? "No commits by you" : "Select branches"}
                 </div>
               ) : (
-                branchDiffFiles.map((file) => (
-                  <button
-                    key={file.path}
-                    onClick={() => setSelectedBranchFile(file.path)}
-                    className={`w-full text-left px-2 py-1 text-xs font-mono truncate flex items-center gap-2 rounded transition-colors ${
-                      selectedBranchFile === file.path
-                        ? "bg-[var(--accent)] text-white"
-                        : "text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
-                    }`}
-                    title={file.path}
-                  >
-                    <span className={`w-5 text-center font-bold flex-shrink-0 ${
-                      selectedBranchFile === file.path ? "text-white" : statusColor(file.status)
-                    }`}>
-                      {file.status}
-                    </span>
-                    <FileIcon filename={file.path} />
-                    <span className="truncate flex-1" dir="rtl">
-                      <bdi>{file.path}</bdi>
-                    </span>
-                  </button>
-                ))
+                myCommits.map((commit) => {
+                  const isCollapsed = collapsedCommits.has(commit.hash);
+                  return (
+                    <div key={commit.hash} className="mb-1">
+                      <button
+                        onClick={() => setCollapsedCommits((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(commit.hash)) next.delete(commit.hash);
+                          else next.add(commit.hash);
+                          return next;
+                        })}
+                        className="w-full text-left px-2 py-1.5 text-[11px] flex items-center gap-1.5 hover:bg-[var(--bg-tertiary)] rounded transition-colors"
+                        title={`${commit.short_hash} - ${commit.author_name}`}
+                      >
+                        <span className={`text-[9px] flex-shrink-0 transition-transform ${isCollapsed ? "" : "rotate-90"}`}>▶</span>
+                        <span className="truncate text-[var(--text-primary)]">{commit.subject}</span>
+                        <span className="ml-auto text-[9px] text-[var(--text-tertiary)] flex-shrink-0">{commit.files.length}</span>
+                      </button>
+                      {!isCollapsed && commit.files.map((file) => (
+                        <button
+                          key={file.path}
+                          onClick={() => setSelectedBranchFile(file.path)}
+                          className={`w-full text-left pl-7 pr-2 py-0.5 text-xs font-mono truncate flex items-center gap-2 rounded transition-colors ${
+                            selectedBranchFile === file.path
+                              ? "bg-[var(--accent)] text-white"
+                              : "text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                          }`}
+                          title={file.path}
+                        >
+                          <span className={`w-4 text-center font-bold flex-shrink-0 text-[10px] ${
+                            selectedBranchFile === file.path ? "text-white" : statusColor(file.status)
+                          }`}>
+                            {file.status}
+                          </span>
+                          <FileIcon filename={file.path} />
+                          <span className="truncate flex-1" dir="rtl">
+                            <bdi>{file.path}</bdi>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })
               )}
             </div>
             <div className="flex-1 w-0 flex flex-col bg-[var(--bg-primary)]">

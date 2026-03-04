@@ -1439,6 +1439,20 @@ struct GhPrReview {
 }
 
 #[derive(Deserialize)]
+struct GhCheckRun {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct GhPr {
     number: u32,
     title: String,
@@ -1453,6 +1467,8 @@ struct GhPr {
     author: GhPrAuthor,
     #[serde(default)]
     reviews: Vec<GhPrReview>,
+    #[serde(rename = "statusCheckRollup", default)]
+    status_check_rollup: Vec<GhCheckRun>,
 }
 
 #[derive(Serialize, Clone)]
@@ -1474,6 +1490,21 @@ struct PullRequest {
     has_my_approval: bool,
     #[serde(rename = "hasMyComment")]
     has_my_comment: bool,
+    #[serde(rename = "checksTotal")]
+    checks_total: usize,
+    #[serde(rename = "checksPassing")]
+    checks_passing: usize,
+    #[serde(rename = "checksFailing")]
+    checks_failing: usize,
+    #[serde(rename = "checksPending")]
+    checks_pending: usize,
+    checks: Vec<CheckInfo>,
+}
+
+#[derive(Serialize, Clone)]
+struct CheckInfo {
+    name: String,
+    status: String, // "pass", "fail", "pending"
 }
 
 #[derive(Serialize)]
@@ -1496,6 +1527,36 @@ impl PullRequest {
             r.author.login.eq_ignore_ascii_case(current_user)
                 && (r.state == "COMMENTED" || r.state == "CHANGES_REQUESTED")
         });
+        let checks: Vec<CheckInfo> = pr.status_check_rollup.iter().map(|c| {
+            let name = c.name.clone().or_else(|| c.context.clone()).unwrap_or_else(|| "unknown".to_string());
+            // CheckRun uses conclusion (SUCCESS/FAILURE/...), StatusContext uses state (SUCCESS/FAILURE/...)
+            let conclusion = c.conclusion.as_deref().or(c.state.as_deref()).unwrap_or("");
+            let status_field = c.status.as_deref().unwrap_or("");
+            let status = if conclusion.eq_ignore_ascii_case("SUCCESS")
+                || conclusion.eq_ignore_ascii_case("NEUTRAL")
+                || conclusion.eq_ignore_ascii_case("SKIPPED")
+            {
+                "pass"
+            } else if conclusion.eq_ignore_ascii_case("FAILURE")
+                || conclusion.eq_ignore_ascii_case("TIMED_OUT")
+                || conclusion.eq_ignore_ascii_case("CANCELLED")
+                || conclusion.eq_ignore_ascii_case("ERROR")
+            {
+                "fail"
+            } else if status_field.eq_ignore_ascii_case("COMPLETED") {
+                // completed but no recognized conclusion
+                "pass"
+            } else {
+                "pending"
+            };
+            CheckInfo { name, status: status.to_string() }
+        }).collect();
+
+        let checks_total = checks.len();
+        let checks_passing = checks.iter().filter(|c| c.status == "pass").count();
+        let checks_failing = checks.iter().filter(|c| c.status == "fail").count();
+        let checks_pending = checks.iter().filter(|c| c.status == "pending").count();
+
         Self {
             number: pr.number,
             title: pr.title,
@@ -1508,6 +1569,11 @@ impl PullRequest {
             author: pr.author.login,
             has_my_approval,
             has_my_comment,
+            checks_total,
+            checks_passing,
+            checks_failing,
+            checks_pending,
+            checks,
         }
     }
 }
@@ -1573,7 +1639,7 @@ fn get_pull_requests_sync(directory: &str) -> PullRequestsResult {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
 
-    let json_fields = "number,title,url,state,isDraft,updatedAt,headRefName,author,reviews";
+    let json_fields = "number,title,url,state,isDraft,updatedAt,headRefName,author,reviews,statusCheckRollup";
 
     let review_prs = gh_in_dir(directory)
         .args(["pr", "list", "--search", "involves:@me -author:@me", "--state=open",
@@ -1901,6 +1967,94 @@ fn get_branch_file_diff(directory: String, base: String, compare: String, file_p
         .output()
         .map_err(|e| format!("Failed to run git diff: {}", e))?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[derive(Serialize, Clone)]
+struct BranchCommit {
+    hash: String,
+    short_hash: String,
+    author_email: String,
+    author_name: String,
+    subject: String,
+    is_mine: bool,
+    files: Vec<BranchDiffFile>,
+}
+
+#[derive(Serialize, Clone)]
+struct BranchCommitsResult {
+    commits: Vec<BranchCommit>,
+    user_email: String,
+}
+
+#[tauri::command]
+fn get_branch_commits(directory: String, base: String, compare: String) -> Result<BranchCommitsResult, String> {
+    // Get git user email
+    let email_output = git_command(&directory)
+        .args(["config", "user.email"])
+        .output()
+        .map_err(|e| format!("Failed to get user email: {}", e))?;
+    let user_email = String::from_utf8_lossy(&email_output.stdout).trim().to_string();
+
+    // Get commits with their files using a delimiter-separated format
+    let output = git_command(&directory)
+        .args([
+            "log",
+            "--pretty=format:COMMIT_START%n%H%n%h%n%ae%n%an%n%s",
+            "--name-status",
+            &format!("{}..{}", base, compare),
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run git log: {}", e))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut commits: Vec<BranchCommit> = Vec::new();
+
+    for block in stdout.split("COMMIT_START\n").filter(|b| !b.trim().is_empty()) {
+        let lines: Vec<&str> = block.lines().collect();
+        if lines.len() < 5 {
+            continue;
+        }
+        let hash = lines[0].to_string();
+        let short_hash = lines[1].to_string();
+        let author_email = lines[2].to_string();
+        let author_name = lines[3].to_string();
+        let subject = lines[4].to_string();
+
+        let files: Vec<BranchDiffFile> = lines[5..]
+            .iter()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.is_empty() { return None; }
+                let parts: Vec<&str> = line.splitn(2, '\t').collect();
+                if parts.len() == 2 {
+                    Some(BranchDiffFile {
+                        status: parts[0].to_string(),
+                        path: parts[1].to_string(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let is_mine = !user_email.is_empty()
+            && author_email.to_lowercase() == user_email.to_lowercase();
+
+        commits.push(BranchCommit {
+            hash,
+            short_hash,
+            author_email,
+            author_name,
+            subject,
+            is_mine,
+            files,
+        });
+    }
+
+    Ok(BranchCommitsResult { commits, user_email })
 }
 
 // --- Phase 3: PR Review ---
@@ -2418,6 +2572,7 @@ pub fn run() {
             switch_branch,
             get_branch_diff,
             get_branch_file_diff,
+            get_branch_commits,
             get_pr_diff,
             get_pr_file_diff,
             post_pr_comment,

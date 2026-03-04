@@ -50,6 +50,16 @@ export interface PullRequest {
   authorAvatar: string;
   hasMyApproval: boolean;
   hasMyComment: boolean;
+  checksTotal: number;
+  checksPassing: number;
+  checksFailing: number;
+  checksPending: number;
+  checks: CheckInfo[];
+}
+
+export interface CheckInfo {
+  name: string;
+  status: "pass" | "fail" | "pending";
 }
 
 export interface PullRequestsResult {
@@ -67,6 +77,21 @@ export interface BranchDiffFile {
 
 export interface BranchDiffResult {
   files: BranchDiffFile[];
+}
+
+export interface BranchCommit {
+  hash: string;
+  short_hash: string;
+  author_email: string;
+  author_name: string;
+  subject: string;
+  is_mine: boolean;
+  files: BranchDiffFile[];
+}
+
+export interface BranchCommitsResult {
+  commits: BranchCommit[];
+  user_email: string;
 }
 
 // Phase 3: PR Review
