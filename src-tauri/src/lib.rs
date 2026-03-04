@@ -1287,19 +1287,57 @@ fn generate_smart_title(claude_session_id: String, directory: String, include_re
         )
     };
 
-    let output = std::process::Command::new("claude")
-        .args(["-p", "--model", "haiku", &prompt])
+    // Get OAuth token from macOS keychain
+    let token_output = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
         .output()
-        .map_err(|e| format!("Failed to run claude CLI: {}", e))?;
+        .map_err(|e| format!("Failed to read keychain: {}", e))?;
 
-    if !output.status.success() {
-        return Err(format!(
-            "claude CLI failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+    if !token_output.status.success() {
+        return Err("Could not read Claude credentials from keychain".to_string());
     }
 
-    let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let creds_json = String::from_utf8_lossy(&token_output.stdout).trim().to_string();
+    let creds: serde_json::Value = serde_json::from_str(&creds_json)
+        .map_err(|e| format!("Failed to parse credentials: {}", e))?;
+    let access_token = creds
+        .get("claudeAiOauth")
+        .and_then(|o| o.get("accessToken"))
+        .and_then(|t| t.as_str())
+        .ok_or("No OAuth access token found")?;
+
+    // Call Anthropic API directly via curl
+    let body = serde_json::json!({
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 30,
+        "messages": [{"role": "user", "content": prompt}]
+    });
+
+    let output = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "https://api.anthropic.com/v1/messages",
+            "-H", "Content-Type: application/json",
+            "-H", &format!("x-api-key: {}", access_token),
+            "-H", "anthropic-version: 2023-06-01",
+            "-d", &body.to_string(),
+        ])
+        .output()
+        .map_err(|e| format!("Failed to call Anthropic API: {}", e))?;
+
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to parse API response: {}", e))?;
+
+    let title = response
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|b| b.get("text"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
     if title.is_empty() {
         return Ok(None);
     }
@@ -1798,21 +1836,43 @@ async fn checkout_pr_worktree(
             return Err(format!("git fetch failed: {}", err.trim()));
         }
 
-        // Create worktree
+        // Create worktree with a local branch tracking the remote
         let wt = std::process::Command::new("git")
             .current_dir(&expanded)
             .env("PATH", shell_path())
             .args([
                 "worktree",
                 "add",
+                "-b",
+                &head_ref_name,
                 &worktree_path.to_string_lossy(),
                 &format!("origin/{}", head_ref_name),
             ])
             .output()
             .map_err(|e| format!("Failed to run git worktree add: {}", e))?;
+
+        // If -b failed (branch already exists), try without creating a new branch
         if !wt.status.success() {
-            let err = String::from_utf8_lossy(&wt.stderr);
-            return Err(format!("git worktree add failed: {}", err.trim()));
+            let err_str = String::from_utf8_lossy(&wt.stderr);
+            if err_str.contains("already exists") {
+                let wt2 = std::process::Command::new("git")
+                    .current_dir(&expanded)
+                    .env("PATH", shell_path())
+                    .args([
+                        "worktree",
+                        "add",
+                        &worktree_path.to_string_lossy(),
+                        &head_ref_name,
+                    ])
+                    .output()
+                    .map_err(|e| format!("Failed to run git worktree add: {}", e))?;
+                if !wt2.status.success() {
+                    let err2 = String::from_utf8_lossy(&wt2.stderr);
+                    return Err(format!("git worktree add failed: {}", err2.trim()));
+                }
+            } else {
+                return Err(format!("git worktree add failed: {}", err_str.trim()));
+            }
         }
 
         Ok(worktree_path.to_string_lossy().to_string())
@@ -1873,7 +1933,7 @@ fn get_git_status(directory: String) -> Result<GitStatusResult, String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut lines = stdout.lines();
-    let branch = lines
+    let mut branch = lines
         .next()
         .unwrap_or("")
         .strip_prefix("## ")
@@ -1882,6 +1942,20 @@ fn get_git_status(directory: String) -> Result<GitStatusResult, String> {
         .next()
         .unwrap_or("")
         .to_string();
+
+    // In worktrees, git status may show "HEAD (no branch)" even though a branch is checked out.
+    // Fall back to `git branch --show-current` which handles worktrees correctly.
+    if branch == "HEAD (no branch)" || branch.is_empty() {
+        if let Ok(branch_output) = git_command(&directory)
+            .args(["branch", "--show-current"])
+            .output()
+        {
+            let name = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
+            if !name.is_empty() {
+                branch = name;
+            }
+        }
+    }
 
     let mut files = Vec::new();
     for line in lines {
