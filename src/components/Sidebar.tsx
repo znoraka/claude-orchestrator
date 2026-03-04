@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Session, SessionUsage, Workspace } from "../types";
 import { worktreeName } from "../utils/workspaces";
-import SessionTab, { directoryColor } from "./SessionTab";
+import SessionTab, { repoColor } from "./SessionTab";
 import { useWorktreeBranches } from "../hooks/useWorktreeBranches";
 
 function formatTokens(n: number): string {
@@ -19,13 +19,28 @@ interface SidebarProps {
   todayCost: number;
   todayTokens: number;
   onSelectSession: (id: string) => void;
-  onSelectWorktree: (path: string) => void;
   onCreateSession: () => void;
   onCreateWorktree: (repoDir: string) => void;
   onRenameSession: (id: string, name: string) => void;
   onDeleteSession: (id: string) => void;
   onShowUsage?: () => void;
 }
+
+type ViewMode = "workspace" | "date";
+
+function dateGroup(ts: number): string {
+  const now = new Date();
+  const d = new Date(ts);
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (ts >= startOfToday) return "Today";
+  if (ts >= startOfToday - 86400000) return "Yesterday";
+  const dayOfWeek = now.getDay() || 7; // Mon=1..Sun=7
+  if (ts >= startOfToday - (dayOfWeek - 1) * 86400000) return "This Week";
+  if (d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()) return "This Month";
+  return "Older";
+}
+
+const DATE_GROUP_ORDER = ["Today", "Yesterday", "This Week", "This Month", "Older"];
 
 export default function Sidebar({
   workspaces,
@@ -35,7 +50,6 @@ export default function Sidebar({
   todayCost,
   todayTokens,
   onSelectSession,
-  onSelectWorktree,
   onCreateSession,
   onCreateWorktree,
   onRenameSession,
@@ -44,6 +58,8 @@ export default function Sidebar({
 }: SidebarProps) {
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("workspace");
+  const [collapsedDateGroups, setCollapsedDateGroups] = useState<Set<string>>(new Set());
   const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(new Set());
   const [collapsedWorktrees, setCollapsedWorktrees] = useState<Set<string>>(new Set());
   const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(new Set());
@@ -140,6 +156,30 @@ export default function Sidebar({
     );
   }, [allSessions, filterQ, contentMatchIds]);
 
+  // Date-grouped view
+  const dateGroupedSessions = useMemo(() => {
+    let sessions = allSessions;
+    if (filterQ) sessions = sessions.filter(sessionMatchesFilter);
+    const groups = new Map<string, Session[]>();
+    for (const s of sessions) {
+      const g = dateGroup(s.lastActiveAt);
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g)!.push(s);
+    }
+    // Sort sessions within each group by lastActiveAt desc
+    for (const arr of groups.values()) arr.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+    return DATE_GROUP_ORDER.filter((g) => groups.has(g)).map((g) => ({ label: g, sessions: groups.get(g)! }));
+  }, [allSessions, filterQ, sessionMatchesFilter]);
+
+  const toggleDateGroup = (label: string) => {
+    setCollapsedDateGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  };
+
   const toggleRepo = (repoId: string) => {
     setCollapsedRepos((prev) => {
       const next = new Set(prev);
@@ -161,29 +201,27 @@ export default function Sidebar({
   const runningSessions = allSessions.filter((s) => s.status === "running").length;
 
   return (
-    <div className="w-64 h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-2 pt-4 pb-3">
-      {/* Header */}
-      <div className="px-2 pb-3 flex items-center gap-2">
-        <div className="w-7 h-7 rounded-lg bg-[var(--accent)] flex items-center justify-center text-white text-sm font-bold">
-          C
+    <div className="w-64 h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-2 pt-3 pb-3">
+      {/* Header + New Session */}
+      <div className="px-1 pb-2 flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          <div className="w-6 h-6 rounded-md bg-[var(--accent)] flex items-center justify-center text-white text-xs font-bold shrink-0">
+            C
+          </div>
+          <span className="text-xs font-semibold text-[var(--text-primary)] tracking-tight truncate">
+            Sessions
+          </span>
         </div>
-        <span className="text-sm font-semibold text-[var(--text-primary)] tracking-tight">
-          Claude Sessions
-        </span>
-      </div>
-
-      {/* New Session button */}
-      <div className="px-2 py-2">
         <button
           onClick={onCreateSession}
-          className="w-full py-2 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-medium transition-colors"
+          className="px-2.5 py-1 rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-[11px] font-medium transition-colors shrink-0"
         >
-          New Session
+          + New
         </button>
       </div>
 
       {/* Search */}
-      <div className="px-2 pb-2">
+      <div className="px-1 pb-1.5">
         <div className="relative">
           <svg
             className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)]"
@@ -203,7 +241,7 @@ export default function Sidebar({
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search sessions..."
-            className="sidebar-search w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg pl-8 pr-3 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-colors"
+            className="sidebar-search w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-md pl-8 pr-3 py-1 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-colors"
           />
           {contentSearching && (
             <div className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
@@ -211,9 +249,85 @@ export default function Sidebar({
         </div>
       </div>
 
+      {/* View toggle */}
+      <div className="px-1 pb-1.5 flex">
+        <div className="flex bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-md overflow-hidden w-full">
+          <button
+            onClick={() => setViewMode("workspace")}
+            className={`flex-1 text-[10px] py-0.5 transition-colors ${
+              viewMode === "workspace"
+                ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-medium"
+                : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+            }`}
+          >
+            Workspaces
+          </button>
+          <button
+            onClick={() => setViewMode("date")}
+            className={`flex-1 text-[10px] py-0.5 transition-colors ${
+              viewMode === "date"
+                ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-medium"
+                : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+            }`}
+          >
+            By Date
+          </button>
+        </div>
+      </div>
+
       {/* Tree */}
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {workspaces.length > 0 ? (
+        {viewMode === "date" ? (
+          dateGroupedSessions.length > 0 ? (
+            dateGroupedSessions.map(({ label, sessions }) => {
+              const isCollapsed = collapsedDateGroups.has(label);
+              return (
+                <div key={label} className="mb-1">
+                  <button
+                    onClick={() => toggleDateGroup(label)}
+                    className="w-full flex items-center gap-1.5 px-2 py-1 rounded-md text-left hover:bg-[var(--bg-hover)] transition-colors"
+                  >
+                    <svg
+                      className={`w-3 h-3 shrink-0 text-[var(--text-tertiary)] transition-transform ${
+                        isCollapsed ? "" : "rotate-90"
+                      }`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                    <span className="text-[11px] font-semibold text-[var(--text-secondary)] flex-1">
+                      {label}
+                    </span>
+                    <span className="text-[10px] text-[var(--text-tertiary)] shrink-0">
+                      {sessions.length}
+                    </span>
+                  </button>
+                  {!isCollapsed &&
+                    sessions.map((session) => (
+                      <div key={session.id} className="ml-1">
+                        <SessionTab
+                          session={session}
+                          isActive={session.id === activeSessionId}
+                          usage={sessionUsage.get(session.id)}
+                          contentOnly={contentOnlyIds.has(session.id)}
+                          onClick={() => onSelectSession(session.id)}
+                          onRename={(name) => onRenameSession(session.id, name)}
+                          onDelete={() => onDeleteSession(session.id)}
+                        />
+                      </div>
+                    ))}
+                </div>
+              );
+            })
+          ) : (
+            <div className="px-3 py-12 text-center">
+              <p className="text-xs text-[var(--text-secondary)] mb-3">No sessions found</p>
+            </div>
+          )
+        ) : workspaces.length > 0 ? (
           workspaces.map((workspace) => {
             const repoName = workspace.directory.split("/").filter(Boolean).pop() || workspace.directory;
             const isRepoCollapsed = collapsedRepos.has(workspace.id);
@@ -230,7 +344,7 @@ export default function Sidebar({
 
             if (filterQ && filteredWorktrees.length === 0) return null;
 
-            const color = directoryColor(workspace.directory);
+            const color = repoColor(workspace.directory);
 
             return (
               <div
@@ -241,7 +355,7 @@ export default function Sidebar({
                 {/* Repo header */}
                 <button
                   onClick={() => toggleRepo(workspace.id)}
-                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-left hover:bg-[var(--bg-hover)] transition-colors group"
+                  className="w-full flex items-center gap-1.5 px-2 py-1 rounded-md text-left hover:bg-[var(--bg-hover)] transition-colors group"
                 >
                   <svg
                     className={`w-3 h-3 shrink-0 text-[var(--text-tertiary)] transition-transform ${
@@ -279,38 +393,27 @@ export default function Sidebar({
                     const isActiveWt = activeWorktreePath === wt.path;
 
                     return (
-                      <div key={wt.path} className="ml-3">
+                      <div key={wt.path} className="ml-1">
                         {/* Worktree row */}
                         <button
-                          onClick={(e) => {
-                            if ((e.target as HTMLElement).closest(".wt-collapse-btn")) return;
-                            onSelectWorktree(wt.path);
-                          }}
+                          onClick={() => toggleWorktree(wt.path)}
                           className={`w-full flex items-center gap-1.5 px-2 py-1 rounded-md text-left transition-colors group ${
                             isActiveWt
                               ? "bg-[var(--bg-tertiary)]"
                               : "hover:bg-[var(--bg-hover)]"
                           }`}
                         >
-                          <button
-                            className="wt-collapse-btn shrink-0"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleWorktree(wt.path);
-                            }}
+                          <svg
+                            className={`w-2.5 h-2.5 shrink-0 text-[var(--text-tertiary)] transition-transform ${
+                              isWtCollapsed ? "" : "rotate-90"
+                            }`}
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={2}
                           >
-                            <svg
-                              className={`w-2.5 h-2.5 text-[var(--text-tertiary)] transition-transform ${
-                                isWtCollapsed ? "" : "rotate-90"
-                              }`}
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2}
-                            >
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                            </svg>
-                          </button>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                          </svg>
                           {/* Branch icon */}
                           <svg className="w-3 h-3 shrink-0 text-[var(--text-tertiary)]" viewBox="0 0 16 16" fill="currentColor">
                             <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
@@ -344,7 +447,7 @@ export default function Sidebar({
                           return (
                             <>
                               {visible.map((session) => (
-                                <div key={session.id} className="ml-3">
+                                <div key={session.id} className="ml-1">
                                   <SessionTab
                                     session={session}
                                     isActive={session.id === activeSessionId}
@@ -364,7 +467,7 @@ export default function Sidebar({
                                     next.add(wt.path);
                                     return next;
                                   })}
-                                  className="ml-3 w-[calc(100%-12px)] px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left"
+                                  className="ml-1 w-[calc(100%-4px)] px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left"
                                 >
                                   {hiddenCount} more session{hiddenCount !== 1 ? "s" : ""}…
                                 </button>
@@ -376,7 +479,7 @@ export default function Sidebar({
                                     next.delete(wt.path);
                                     return next;
                                   })}
-                                  className="ml-3 w-[calc(100%-12px)] px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left"
+                                  className="ml-1 w-[calc(100%-4px)] px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left"
                                 >
                                   Show less
                                 </button>
@@ -392,7 +495,7 @@ export default function Sidebar({
                 {!isRepoCollapsed && (
                   <button
                     onClick={() => onCreateWorktree(workspace.directory)}
-                    className="ml-3 w-[calc(100%-12px)] flex items-center gap-1.5 px-2 py-1 rounded-md text-left text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors text-[10px]"
+                    className="ml-1 w-[calc(100%-4px)] flex items-center gap-1.5 px-2 py-1 rounded-md text-left text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors text-[10px]"
                   >
                     <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -419,17 +522,17 @@ export default function Sidebar({
       </div>
 
       {/* Footer */}
-      <div className="px-2 py-3 border-t border-[var(--border-color)] flex items-center gap-2">
-        <div className="w-6 h-6 rounded-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] flex items-center justify-center text-[10px] text-[var(--text-secondary)] font-medium">
+      <div className="px-2 py-2 border-t border-[var(--border-color)] flex items-center gap-1.5">
+        <div className="w-5 h-5 rounded-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] flex items-center justify-center text-[10px] text-[var(--text-secondary)] font-medium shrink-0">
           {runningSessions}
         </div>
-        <span className="text-[11px] text-[var(--text-secondary)]">
-          active sessions
+        <span className="text-[10px] text-[var(--text-secondary)]">
+          active
         </span>
         {(todayCost > 0 || todayTokens > 0) && (
           <button
             onClick={onShowUsage}
-            className="text-[11px] text-[var(--text-secondary)] ml-auto hover:text-[var(--accent)] transition-colors cursor-pointer"
+            className="text-[10px] text-[var(--text-secondary)] ml-auto hover:text-[var(--accent)] transition-colors cursor-pointer"
           >
             {todayTokens > 0 && <>{formatTokens(todayTokens)} tokens · </>}
             ${todayCost.toFixed(2)} today

@@ -10,7 +10,7 @@ import PRPanel from "./components/PRPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
 import UsagePanel from "./components/UsagePanel";
 import FileEditor from "./components/FileEditor";
-import { directoryColor } from "./components/SessionTab";
+import { repoColor } from "./components/SessionTab";
 import { repoRootDir } from "./utils/workspaces";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 
@@ -24,7 +24,6 @@ export default function App() {
     todayCost,
     todayTokens,
     selectSession,
-    selectWorktree,
     createSession,
     createWorktree,
     deleteSession,
@@ -70,6 +69,8 @@ export default function App() {
   const [skipPermissions, setSkipPermissions] = useState(true);
   const [creating, setCreating] = useState(false);
   const [dirInputDirty, setDirInputDirty] = useState(false);
+  // Track exact last-used session directory (including worktree paths)
+  const [preselectedDir, setPreselectedDir] = useState<string | null>(null);
 
   // ── Panel state (replaces per-workspace tab state) ──────────────
   const [activePanel, setActivePanel] = useState<"git" | "prs" | "shell" | null>(null);
@@ -166,6 +167,7 @@ export default function App() {
       if (e.metaKey && e.key === "n") {
         e.preventDefault();
         setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
+        setPreselectedDir(localStorage.getItem("claude-orchestrator-last-session-dir") || null);
         setRecentDirs(loadRecentDirs());
         setShowDirDialog(true);
       }
@@ -215,6 +217,7 @@ export default function App() {
     try {
       const path = await createWorktree(worktreeRepoDir, worktreeBranch.trim());
       setShowWorktreeDialog(false);
+      localStorage.setItem("claude-orchestrator-last-session-dir", path);
       // Create a session in the new worktree
       await createSession(undefined, path, skipPermissions);
     } catch (err) {
@@ -231,6 +234,7 @@ export default function App() {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
     setDirInputDirty(false);
     setSuggestions([]);
+    setPreselectedDir(localStorage.getItem("claude-orchestrator-last-session-dir") || null);
     const allRecent = loadRecentDirs();
     Promise.all(allRecent.map((d) => invoke<boolean>("directory_exists", { path: d }).catch(() => false)))
       .then((exists) => setRecentDirs(allRecent.filter((_, i) => exists[i])));
@@ -250,6 +254,7 @@ export default function App() {
     setCreating(true);
     const rootDir = repoRootDir(dir);
     localStorage.setItem("claude-orchestrator-last-dir", rootDir);
+    localStorage.setItem("claude-orchestrator-last-session-dir", dir);
     saveRecentDir(rootDir);
     setShowDirDialog(false);
     try {
@@ -301,6 +306,7 @@ export default function App() {
     // Save the repo root as last-dir so worktrees are always listed from the main repo
     const rootDir = repoRootDir(dir);
     localStorage.setItem("claude-orchestrator-last-dir", rootDir);
+    localStorage.setItem("claude-orchestrator-last-session-dir", dir);
     saveRecentDir(rootDir);
     setShowDirDialog(false);
     try {
@@ -326,7 +332,6 @@ export default function App() {
         todayCost={todayCost}
         todayTokens={todayTokens}
         onSelectSession={handleSelectSession}
-        onSelectWorktree={(path) => selectWorktree(path)}
         onCreateSession={handleNewSession}
         onCreateWorktree={handleCreateWorktree}
         onRenameSession={renameSession}
@@ -371,7 +376,7 @@ export default function App() {
               {currentBranch && (
                 <>
                   <div className="px-1">
-                    <div className="w-px h-3.5" style={{ backgroundColor: directoryColor(panelDirectory) }} />
+                    <div className="w-px h-3.5" style={{ backgroundColor: repoColor(panelDirectory) }} />
                   </div>
                   <span className="flex items-center gap-1 px-1 py-0.5 text-[11px] text-[var(--text-tertiary)] font-mono shrink-0">
                     <svg className="w-3 h-3 shrink-0" viewBox="0 0 16 16" fill="currentColor">
@@ -560,6 +565,8 @@ export default function App() {
                     } else if (e.key === "Enter") {
                       if (selectedIdx >= 0 && suggestions.length > 0) {
                         acceptSuggestion(suggestions[selectedIdx]);
+                      } else if (!dirInputDirty && preselectedDir) {
+                        quickCreate(preselectedDir);
                       } else {
                         handleDirConfirm();
                       }
@@ -607,7 +614,7 @@ export default function App() {
                 {/* Workspace tree */}
                 {workspaces.map((ws) => {
                   const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
-                  const color = directoryColor(ws.directory);
+                  const color = repoColor(ws.directory);
 
                   return (
                     <div key={ws.id} className="py-1">
@@ -631,7 +638,11 @@ export default function App() {
                           <button
                             key={wt.path}
                             onClick={() => quickCreate(wt.path)}
-                            className="w-full flex items-center gap-3 pl-8 pr-4 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)] group"
+                            className={`w-full flex items-center gap-3 pl-8 pr-4 py-1.5 text-left transition-colors group ${
+                              preselectedDir === wt.path
+                                ? "bg-[var(--accent)]/10 ring-1 ring-inset ring-[var(--accent)]/30"
+                                : "hover:bg-[var(--bg-hover)]"
+                            }`}
                           >
                             <svg className="w-3.5 h-3.5 shrink-0 text-[var(--text-tertiary)] group-hover:text-[var(--text-secondary)]" viewBox="0 0 16 16" fill="currentColor">
                               <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
@@ -646,6 +657,11 @@ export default function App() {
                                 )}
                               </div>
                             </div>
+                            {preselectedDir === wt.path && !dirInputDirty && (
+                              <span className="text-[9px] text-[var(--accent)] font-medium shrink-0 opacity-70">
+                                Enter
+                              </span>
+                            )}
                             {sessionCount > 0 && (
                               <span className="text-[10px] text-[var(--text-tertiary)] shrink-0">
                                 {sessionCount}
@@ -681,7 +697,11 @@ export default function App() {
                       <button
                         key={d}
                         onClick={() => quickCreate(d)}
-                        className="w-full flex items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-[var(--bg-hover)] group"
+                        className={`w-full flex items-center gap-3 px-4 py-2 text-left transition-colors group ${
+                          preselectedDir === d
+                            ? "bg-[var(--accent)]/10 ring-1 ring-inset ring-[var(--accent)]/30"
+                            : "hover:bg-[var(--bg-hover)]"
+                        }`}
                       >
                         <svg className="w-4 h-4 shrink-0 text-[var(--text-tertiary)] group-hover:text-[var(--text-secondary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.06-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />

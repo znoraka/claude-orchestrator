@@ -2,6 +2,19 @@ import { useState, useRef, useEffect, memo } from "react";
 import type { Session, SessionUsage } from "../types";
 
 export function shortenPath(path: string): string {
+  // For worktree paths, show repo/worktree
+  const wtIdx = path.indexOf("/.worktrees/");
+  if (wtIdx !== -1) {
+    const repo = path.slice(0, wtIdx).split("/").filter(Boolean).pop() || "";
+    const wt = path.slice(wtIdx + "/.worktrees/".length).split("/")[0];
+    return repo && wt ? `${repo}/${wt}` : path.split("/").filter(Boolean).pop() || path;
+  }
+  const clIdx = path.indexOf("/.claude/worktrees/");
+  if (clIdx !== -1) {
+    const repo = path.slice(0, clIdx).split("/").filter(Boolean).pop() || "";
+    const wt = path.slice(clIdx + "/.claude/worktrees/".length).split("/")[0];
+    return repo && wt ? `${repo}/${wt}` : path.split("/").filter(Boolean).pop() || path;
+  }
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] || path;
 }
@@ -15,11 +28,21 @@ function repoRoot(dir: string): string {
   return dir;
 }
 
-export function directoryColor(dir: string): string {
+/** Color for the repo root (shared across worktrees). */
+export function repoColor(dir: string): string {
   const base = repoRoot(dir);
+  return hashToColor(base);
+}
+
+/** Color that distinguishes worktrees within the same repo. */
+export function directoryColor(dir: string): string {
+  return hashToColor(dir);
+}
+
+function hashToColor(s: string): string {
   let hash = 0;
-  for (let i = 0; i < base.length; i++) {
-    hash = base.charCodeAt(i) + ((hash << 5) - hash);
+  for (let i = 0; i < s.length; i++) {
+    hash = s.charCodeAt(i) + ((hash << 5) - hash);
   }
   const hue = ((hash % 360) + 360) % 360;
   return `hsl(${hue}, 55%, 55%)`;
@@ -90,8 +113,8 @@ export default memo(function SessionTab({
     <div
       onClick={onClick}
       className={`
-        session-tab group relative flex items-center gap-2.5 px-3 py-2.5 mx-1 my-0.5 cursor-pointer
-        rounded-lg
+        session-tab group relative flex items-center gap-2 px-2 py-1.5 mx-0.5 my-px cursor-pointer
+        rounded-md
         ${
           isActive
             ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
@@ -99,14 +122,8 @@ export default memo(function SessionTab({
         }
       `}
     >
-      {/* Directory color bar + status dot */}
-      <span className="relative shrink-0 flex flex-col items-center gap-1">
-        <span
-          className="w-[3px] rounded-full self-stretch"
-          style={{ backgroundColor: session.directory ? directoryColor(session.directory) : 'transparent' }}
-        />
-      </span>
-      <span className="relative shrink-0 w-2 h-2">
+      {/* Status dot */}
+      <span className="relative shrink-0 w-1.5 h-1.5">
         <span className={`absolute inset-0 rounded-full ${statusColor} ${usage?.isBusy && session.status === "running" ? "animate-blink" : ""}`} />
       </span>
 
@@ -137,14 +154,29 @@ export default memo(function SessionTab({
             {session.name}
           </span>
         )}
-        {!hideDirectory && session.directory && (
-          <span
-            className="text-[10px] truncate block mt-0.5"
-            style={{ color: directoryColor(session.directory) }}
-          >
-            {shortenPath(session.directory)}
-          </span>
-        )}
+        {!hideDirectory && session.directory && (() => {
+          const isWorktree = session.directory.includes("/.worktrees/") || session.directory.includes("/.claude/worktrees/");
+          if (isWorktree) {
+            const short = shortenPath(session.directory);
+            const slashIdx = short.indexOf("/");
+            const repo = short.slice(0, slashIdx);
+            const wt = short.slice(slashIdx);
+            return (
+              <span className="text-[10px] truncate block mt-0.5">
+                <span style={{ color: repoColor(session.directory) }}>{repo}</span>
+                <span style={{ color: directoryColor(session.directory) }}>{wt}</span>
+              </span>
+            );
+          }
+          return (
+            <span
+              className="text-[10px] truncate block mt-0.5"
+              style={{ color: repoColor(session.directory) }}
+            >
+              {shortenPath(session.directory)}
+            </span>
+          );
+        })()}
         {contentOnly && (
           <span className="text-[10px] text-[var(--accent)] truncate block mt-0.5">
             content match
