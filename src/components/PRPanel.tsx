@@ -10,6 +10,7 @@ interface PRPanelProps {
   isActive?: boolean;
   onResetRef?: React.RefObject<(() => void) | null>;
   onAskClaude?: (prompt: string) => void;
+  onSwitchToClaude?: () => void;
 }
 
 function relativeTime(dateStr: string): string {
@@ -37,6 +38,50 @@ function StatusPill({ pr }: { pr: PullRequest }) {
   return (
     <span className="px-1.5 py-0.5 text-[10px] rounded bg-green-900/50 text-green-400">
       Open
+    </span>
+  );
+}
+
+function ChecksIndicator({ pr }: { pr: PullRequest }) {
+  if (pr.checksTotal === 0) return null;
+
+  const allPass = pr.checksFailing === 0 && pr.checksPending === 0;
+  const hasFail = pr.checksFailing > 0;
+
+  const color = hasFail
+    ? "text-red-400"
+    : allPass
+    ? "text-green-400"
+    : "text-yellow-400";
+
+  const bgColor = hasFail
+    ? "bg-red-900/50"
+    : allPass
+    ? "bg-green-900/50"
+    : "bg-yellow-900/50";
+
+  const icon = hasFail ? "✕" : allPass ? "✓" : "●";
+
+  return (
+    <span className={`relative group/checks px-1.5 py-0.5 text-[10px] rounded ${bgColor} ${color} cursor-default`}>
+      {icon} {pr.checksPassing}/{pr.checksTotal}
+      <div className="absolute left-0 top-full mt-1 z-50 hidden group-hover/checks:block min-w-[200px] max-w-[300px] max-h-[300px] overflow-y-auto bg-[var(--bg-primary)] border border-[var(--border-color)] rounded shadow-lg p-2 text-[10px]">
+        <div className="text-[var(--text-secondary)] font-semibold mb-1.5">
+          Checks: {pr.checksPassing} passed, {pr.checksFailing} failed{pr.checksPending > 0 ? `, ${pr.checksPending} pending` : ""}
+        </div>
+        {pr.checks.map((check, i) => (
+          <div key={i} className="flex items-center gap-1.5 py-0.5">
+            <span className={
+              check.status === "pass" ? "text-green-400" :
+              check.status === "fail" ? "text-red-400" :
+              "text-yellow-400"
+            }>
+              {check.status === "pass" ? "✓" : check.status === "fail" ? "✕" : "●"}
+            </span>
+            <span className="text-[var(--text-primary)] truncate">{check.name}</span>
+          </div>
+        ))}
+      </div>
     </span>
   );
 }
@@ -117,6 +162,7 @@ function PRRow({
               #{pr.number}
             </span>
             <StatusPill pr={pr} />
+            <ChecksIndicator pr={pr} />
             {isCurrent && (
               <span className="px-1.5 py-0.5 text-[10px] rounded bg-[var(--accent)]/20 text-[var(--accent)]">
                 current
@@ -198,8 +244,8 @@ function PRRow({
   );
 }
 
-export default function PRPanel({ directory, isActive, onAskClaude, onResetRef }: PRPanelProps) {
-  const { createSession } = useSessionContext();
+export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, onSwitchToClaude }: PRPanelProps) {
+  const { createSession, sessions } = useSessionContext();
   const [result, setResult] = useState<PullRequestsResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [currentBranch, setCurrentBranch] = useState("");
@@ -214,12 +260,19 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef }
   }, [onResetRef]);
 
   const handleClaudeReview = useCallback(async (prNumber: number) => {
-    const sessionId = await createSession(`Review PR #${prNumber}`, directory);
+    // Inherit permission mode from existing sessions in this workspace
+    const skipPerms = sessions.some(
+      (s) => s.directory === directory && s.dangerouslySkipPermissions
+    );
+    const sessionId = await createSession(`Review PR #${prNumber}`, directory, skipPerms);
+    // Wait for the PTY/CLI to initialize before sending the command
+    await new Promise((r) => setTimeout(r, 1500));
     await invoke("write_to_pty", {
       sessionId,
-      data: `/review ${prNumber}`,
+      data: `/review ${prNumber}\n`,
     });
-  }, [createSession, directory]);
+    onSwitchToClaude?.();
+  }, [createSession, directory, sessions, onSwitchToClaude]);
 
   const handleReviewPR = useCallback((pr: PullRequest) => {
     setReviewingPr(pr);
@@ -251,8 +304,14 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef }
     }
   }, [directory]);
 
-  // Only fetch when the panel becomes active for the first time
+  // Reset fetch state when directory changes
   const hasFetched = useRef(false);
+  const lastDirectory = useRef(directory);
+  if (lastDirectory.current !== directory) {
+    lastDirectory.current = directory;
+    hasFetched.current = false;
+  }
+
   useEffect(() => {
     if (isActive && !hasFetched.current) {
       hasFetched.current = true;
@@ -281,6 +340,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef }
         prUrl={reviewingPr.url}
         onBack={() => setReviewingPr(null)}
         onAskClaude={onAskClaude}
+        onClaudeReview={handleClaudeReview}
       />
     );
   }
