@@ -164,13 +164,14 @@ fn create_pty_session(
     claude_session_id: Option<String>,
     resume: bool,
     #[allow(non_snake_case)] dangerouslySkipPermissions: Option<bool>,
+    #[allow(non_snake_case)] extraSystemPrompt: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let skip_perms = dangerouslySkipPermissions.unwrap_or(false);
     eprintln!("[create_pty_session] session_id={}, directory={:?}, claude_session_id={:?}, resume={}, skip_permissions={}", session_id, directory, claude_session_id, resume, skip_perms);
     let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
-    manager.create_session(&session_id, app_handle, directory, claude_session_id, resume, skip_perms, state.mcp_script_path.clone())
+    manager.create_session(&session_id, app_handle, directory, claude_session_id, resume, skip_perms, state.mcp_script_path.clone(), extraSystemPrompt)
 }
 
 #[tauri::command]

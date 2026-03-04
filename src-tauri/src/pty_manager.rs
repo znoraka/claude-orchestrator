@@ -46,6 +46,7 @@ impl PtyManager {
         resume: bool,
         dangerously_skip_permissions: bool,
         mcp_script_path: Option<String>,
+        extra_system_prompt: Option<String>,
     ) -> Result<(), String> {
         if directory.is_empty() {
             return Err("directory is required".to_string());
@@ -126,6 +127,12 @@ impl PtyManager {
                      After it returns, you MUST run `cd <path>` to change your working directory."
                         .to_string(),
                 );
+
+                // Append extra context (e.g. PR review instructions) to the system prompt
+                if let Some(ref extra) = extra_system_prompt {
+                    claude_args.push("--append-system-prompt".to_string());
+                    claude_args.push(extra.clone());
+                }
             }
         }
 

@@ -78,7 +78,8 @@ interface SessionContextValue {
   createSession: (
     name: string | undefined,
     directory: string,
-    dangerouslySkipPermissions?: boolean
+    dangerouslySkipPermissions?: boolean,
+    extraSystemPrompt?: string
   ) => Promise<string>;
   createWorktree: (repoDir: string, branchName: string, worktreeName?: string) => Promise<string>;
   removeWorktree: (path: string) => Promise<void>;
@@ -252,7 +253,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     async (
       name: string | undefined,
       directory: string,
-      dangerouslySkipPermissions = false
+      dangerouslySkipPermissions = false,
+      extraSystemPrompt?: string
     ) => {
       const dir = normalizeDir(directory);
       const id = uuidv4();
@@ -280,6 +282,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           claudeSessionId,
           resume: false,
           dangerouslySkipPermissions,
+          extraSystemPrompt: extraSystemPrompt || null,
         });
         dispatch({ type: "UPDATE", id, patch: { status: "running" } });
         await enforceMaxSessions(id);
