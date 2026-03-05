@@ -4,14 +4,12 @@ import { listen } from "@tauri-apps/api/event";
 import { jsonlDirectory, type Session } from "../types";
 
 interface TitleState {
-  lastMessageCount: number;
-  lastTitleAt: number; // epoch ms of last title generation
+  titled: true;
 }
 
 /**
- * Generates AI titles for sessions via `claude -p --model haiku`.
+ * Generates a one-time AI title for sessions via `claude -p --model haiku`.
  * Waits for the first user+assistant exchange, then generates a 3-6 word title.
- * Re-triggers when message count grows by 5+ (evolving titles, 2-min cooldown).
  * Uses file system events (notify crate) instead of polling timers.
  */
 export function useConversationTitles(
@@ -30,10 +28,7 @@ export function useConversationTitles(
     for (const session of sessions) {
       if (session.hasTitleBeenGenerated && !smartStateRef.current.has(session.id)) {
         // Mark as already having a title so we don't regenerate
-        smartStateRef.current.set(session.id, {
-          lastMessageCount: 0,
-          lastTitleAt: Date.now(),
-        });
+        smartStateRef.current.set(session.id, { titled: true });
       }
     }
   }, [sessions]);
@@ -66,32 +61,21 @@ export function useConversationTitles(
       pathToSession.set(session.claudeSessionId!, session);
     }
 
-    const triggerSmartTitle = (session: Session, includeRecent: boolean) => {
+    const triggerSmartTitle = (session: Session) => {
       if (smartPendingRef.current.has(session.id)) return;
 
       smartPendingRef.current.add(session.id);
       invoke<string | null>("generate_smart_title", {
         claudeSessionId: session.claudeSessionId,
         directory: jsonlDirectory(session),
-        includeRecent,
+        includeRecent: false,
       })
         .then((title) => {
           smartPendingRef.current.delete(session.id);
           if (title) {
             renameSession(session.id, title);
-            // Mark session as having a generated title (persisted to avoid regeneration on resume)
             markTitleGenerated(session.id);
-
-            // Update state with current message count and timestamp
-            invoke<number>("get_message_count", {
-              claudeSessionId: session.claudeSessionId,
-              directory: jsonlDirectory(session),
-            }).then((count) => {
-              smartStateRef.current.set(session.id, {
-                lastMessageCount: count,
-                lastTitleAt: Date.now(),
-              });
-            }).catch(() => {});
+            smartStateRef.current.set(session.id, { titled: true });
           }
         })
         .catch(() => {
@@ -100,31 +84,11 @@ export function useConversationTitles(
     };
 
     const tryResolveTitle = (session: Session) => {
-      const state = smartStateRef.current.get(session.id);
+      if (smartStateRef.current.has(session.id)) return;
 
-      if (state) {
-        // Already have a smart title — check for evolving title
-        if (Date.now() - state.lastTitleAt < 120_000) return;
-        if (smartPendingRef.current.has(session.id)) return;
-
-        invoke<number>("get_message_count", {
-          claudeSessionId: session.claudeSessionId,
-          directory: jsonlDirectory(session),
-        })
-          .then((count) => {
-            const st = smartStateRef.current.get(session.id);
-            if (st && count - st.lastMessageCount >= 5) {
-              triggerSmartTitle(session, true);
-            }
-          })
-          .catch(() => {});
-        return;
-      }
-
-      // No smart title yet — try generating one directly
-      // (generate_smart_title returns None if no assistant response yet, so this
-      // will naturally retry on subsequent JSONL changes until it succeeds)
-      triggerSmartTitle(session, false);
+      // generate_smart_title returns None if no assistant response yet, so this
+      // will naturally retry on subsequent JSONL changes until it succeeds
+      triggerSmartTitle(session);
     };
 
     // Do an initial check for all pending sessions
