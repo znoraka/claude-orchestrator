@@ -450,8 +450,20 @@ const AgentChat = memo(function AgentChat({
 
   const hasMore = messages.length > renderCount;
 
-  // Defer heavy message rendering so input stays responsive
+  // Defer heavy message rendering so input stays responsive,
+  // but always show trailing (new) messages immediately so sends feel instant.
   const deferredMessages = useDeferredValue(visibleMessages);
+  const trailingMessages = useMemo(() => {
+    if (deferredMessages === visibleMessages) return [];
+    // Find messages at the end of visibleMessages not yet in the deferred snapshot
+    const deferredIds = new Set(deferredMessages.map((m) => m.id));
+    const trailing: typeof visibleMessages = [];
+    for (let i = visibleMessages.length - 1; i >= 0; i--) {
+      if (deferredIds.has(visibleMessages[i].id)) break;
+      trailing.unshift(visibleMessages[i]);
+    }
+    return trailing;
+  }, [deferredMessages, visibleMessages]);
 
   const loadMore = useCallback(() => {
     setRenderCount((prev) => Math.min(prev + LOAD_MORE_CHUNK, messages.length));
@@ -465,9 +477,9 @@ const AgentChat = memo(function AgentChat({
   }, []);
 
   useEffect(() => {
-    // Use rAF to scroll after the deferred render has painted
+    // Use rAF to scroll after the render has painted
     requestAnimationFrame(() => scrollToBottom());
-  }, [deferredMessages, scrollToBottom]);
+  }, [deferredMessages, trailingMessages, scrollToBottom]);
 
   // Focus input and scroll to bottom when becoming active
   useEffect(() => {
@@ -1263,7 +1275,21 @@ const AgentChat = memo(function AgentChat({
                 message={msg}
                 toolStates={toolStates}
                 onToggleTool={toggleTool}
-                isLastMessage={idx === deferredMessages.length - 1}
+                isLastMessage={idx === deferredMessages.length - 1 && trailingMessages.length === 0}
+                onAnswerQuestion={answerQuestion}
+                onEdit={editMessage}
+                onFork={forkFromMessage}
+                onRetry={retryMessage}
+                onCopy={copyMessage}
+              />
+            ))}
+            {trailingMessages.map((msg, idx) => (
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                toolStates={toolStates}
+                onToggleTool={toggleTool}
+                isLastMessage={idx === trailingMessages.length - 1}
                 onAnswerQuestion={answerQuestion}
                 onEdit={editMessage}
                 onFork={forkFromMessage}
