@@ -30176,10 +30176,17 @@ server.tool(
     try {
       mkdirSync(join(directory, ".worktrees"), { recursive: true });
       execFileSync("git", ["fetch", "origin", branch], { cwd: directory, stdio: "pipe" });
-      execFileSync("git", ["worktree", "add", worktreePath, `origin/${branch}`], {
-        cwd: directory,
-        stdio: "pipe"
-      });
+      try {
+        execFileSync("git", ["worktree", "add", "-b", branch, worktreePath, `origin/${branch}`], {
+          cwd: directory,
+          stdio: "pipe"
+        });
+      } catch {
+        execFileSync("git", ["worktree", "add", worktreePath, branch], {
+          cwd: directory,
+          stdio: "pipe"
+        });
+      }
       const depDirs = ["node_modules", ".venv", "venv", "vendor"];
       const cloneDeps = (srcBase, dstBase, rel) => {
         for (const name of depDirs) {

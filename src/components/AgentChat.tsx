@@ -186,10 +186,9 @@ export default function AgentChat({
   }, [sessionId, session?.claudeSessionId]);
 
   // ── Listen to agent events ───────────────────────────────────────
+  // Always set up listeners even for stopped sessions, since we may resume them
 
   useEffect(() => {
-    if (isReadOnly) return;
-
     const unlistenMessage = listen<string>(
       `agent-message-${sessionId}`,
       (event) => {
@@ -214,7 +213,7 @@ export default function AgentChat({
       unlistenMessage.then((fn) => fn());
       unlistenExit.then((fn) => fn());
     };
-  }, [sessionId, onExit, isReadOnly]);
+  }, [sessionId, onExit]);
 
   // ── Process SDK messages ─────────────────────────────────────────
 
@@ -248,11 +247,23 @@ export default function AgentChat({
       }
       if (content) {
         setMessages((prev) => {
-          // If we have an API message ID, replace any existing message with the same ID
+          // If we have an API message ID, update the existing message in place
           // This handles streaming updates where the same message is sent multiple times
-          const filtered = apiMessageId
-            ? prev.filter((m) => m.apiMessageId !== apiMessageId)
-            : prev.filter((m) => !m.isStreaming);
+          if (apiMessageId) {
+            const existingIndex = prev.findIndex((m) => m.apiMessageId === apiMessageId);
+            if (existingIndex !== -1) {
+              // Update in place to preserve order
+              const updated = [...prev];
+              updated[existingIndex] = {
+                ...updated[existingIndex],
+                content,
+                timestamp: Date.now(),
+              };
+              return updated;
+            }
+          }
+          // New message - append at end
+          const filtered = prev.filter((m) => !m.isStreaming);
           return [
             ...filtered,
             {

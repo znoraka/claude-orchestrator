@@ -1,8 +1,10 @@
+mod agent_manager;
 mod clipboard_image;
 mod file_watcher;
 mod pty_manager;
 mod signal_watcher;
 
+use agent_manager::AgentManager;
 use file_watcher::JsonlWatcher;
 use pty_manager::PtyManager;
 use signal_watcher::SignalWatcher;
@@ -100,11 +102,13 @@ impl PricingConfig {
 
 struct AppState {
     pty_manager: Mutex<PtyManager>,
+    agent_manager: Mutex<AgentManager>,
     jsonl_cache: Mutex<JsonlCache>,
     pricing: PricingConfig,
     file_watcher: Mutex<JsonlWatcher>,
     _signal_watcher: SignalWatcher,
     mcp_script_path: Option<String>,
+    agent_script_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -155,23 +159,6 @@ fn load_sessions(app_handle: AppHandle) -> Result<Vec<SessionMeta>, String> {
     let sessions: Vec<SessionMeta> =
         serde_json::from_str(&data).map_err(|e| format!("Parse error: {}", e))?;
     Ok(sessions)
-}
-
-#[tauri::command]
-fn create_pty_session(
-    session_id: String,
-    directory: String,
-    claude_session_id: Option<String>,
-    resume: bool,
-    #[allow(non_snake_case)] dangerouslySkipPermissions: Option<bool>,
-    #[allow(non_snake_case)] extraSystemPrompt: Option<String>,
-    app_handle: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    let skip_perms = dangerouslySkipPermissions.unwrap_or(false);
-    eprintln!("[create_pty_session] session_id={}, directory={:?}, claude_session_id={:?}, resume={}, skip_permissions={}", session_id, directory, claude_session_id, resume, skip_perms);
-    let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
-    manager.create_session(&session_id, app_handle, directory, claude_session_id, resume, skip_perms, state.mcp_script_path.clone(), extraSystemPrompt)
 }
 
 #[tauri::command]
@@ -227,17 +214,97 @@ fn directory_exists(path: String) -> bool {
 }
 
 #[tauri::command]
-fn destroy_pty_session(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
-    manager.destroy_session(&session_id)
-}
-
-#[tauri::command]
 fn get_pty_scrollback(session_id: String, state: State<'_, AppState>) -> Result<String, String> {
     let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
     let data = manager.get_scrollback(&session_id)?;
     eprintln!("[get_pty_scrollback] session_id={}, scrollback_len={}", session_id, data.len());
     Ok(data)
+}
+
+// ── Agent session commands ──────────────────────────────────────────
+
+#[tauri::command]
+fn create_agent_session(
+    session_id: String,
+    directory: String,
+    claude_session_id: Option<String>,
+    resume: bool,
+    system_prompt: Option<String>,
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Expand leading ~ to $HOME (shells expand ~ but programmatic callers don't)
+    let home = std::env::var("HOME")
+        .unwrap_or_else(|_| format!("/Users/{}", std::env::var("USER").unwrap_or_default()));
+    let directory = if directory.starts_with("~/") {
+        format!("{}/{}", home, &directory[2..])
+    } else if directory == "~" {
+        home
+    } else {
+        directory
+    };
+
+    eprintln!("[create_agent_session] session_id={}, directory={:?}, claude_session_id={:?}, resume={}", session_id, directory, claude_session_id, resume);
+
+    let agent_script = state
+        .agent_script_path
+        .as_ref()
+        .ok_or_else(|| "Agent bridge script not found. Run `pnpm build:agent` to build it.".to_string())?
+        .clone();
+
+    let mcp_script = state.mcp_script_path.clone();
+
+    // Build MCP servers config for the agent SDK
+    let mcp_servers = if let Some(ref mcp_path) = mcp_script {
+        serde_json::json!({
+            "orchestrator": {
+                "command": "node",
+                "args": [mcp_path],
+                "env": {
+                    "ORCHESTRATOR_SESSION_ID": &session_id,
+                    "ORCHESTRATOR_SIGNAL_DIR": "/tmp/orchestrator-signals"
+                }
+            }
+        })
+    } else {
+        serde_json::json!({})
+    };
+
+    let config = serde_json::json!({
+        "sessionId": &session_id,
+        "cwd": &directory,
+        "resume": if resume { claude_session_id.as_deref() } else { None::<&str> },
+        "mcpServers": mcp_servers,
+        "systemPrompt": system_prompt,
+    });
+    let config_json = config.to_string();
+
+    let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
+    manager.create_session(&session_id, app_handle, &agent_script, &config_json)
+}
+
+#[tauri::command]
+fn send_agent_message(session_id: String, message: String, state: State<'_, AppState>) -> Result<(), String> {
+    let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
+    manager.send_message(&session_id, &message)
+}
+
+#[tauri::command]
+fn abort_agent(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
+    manager.abort(&session_id)
+}
+
+#[tauri::command]
+fn destroy_agent_session(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
+    manager.destroy_session(&session_id)
+}
+
+#[tauri::command]
+fn get_agent_history(session_id: String, state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
+    manager.get_history(&session_id)
 }
 
 #[tauri::command]
@@ -1410,84 +1477,89 @@ fn generate_smart_title_sync(claude_session_id: String, directory: String, inclu
     Ok(Some(title))
 }
 
-#[derive(Serialize, Clone)]
-struct ConversationMessage {
-    role: String,
-    text: String,
-    timestamp: String,
-}
+/// Truncate large text fields in content blocks to keep IPC payloads small.
+/// Modifies the JSON value in-place.
+fn truncate_content_blocks(val: &mut serde_json::Value) {
+    const MAX_TEXT: usize = 20_000; // chars, not bytes
 
-#[tauri::command]
-fn get_session_conversation(claude_session_id: String, directory: String) -> Result<Vec<ConversationMessage>, String> {
-    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+    let content = val
+        .pointer_mut("/message/content");
 
-    if !jsonl_path.exists() {
-        return Ok(vec![]);
-    }
-
-    let file = std::fs::File::open(&jsonl_path)
-        .map_err(|e| format!("Failed to open conversation file: {}", e))?;
-    let reader = std::io::BufReader::new(file);
-
-    let mut messages = Vec::new();
-
-    use std::io::BufRead;
-    for line in reader.lines() {
-        let line = line.map_err(|e| format!("Read error: {}", e))?;
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
-            let msg_type = parsed.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            let timestamp = parsed.get("timestamp").and_then(|t| t.as_str()).unwrap_or("").to_string();
-
-            if msg_type == "user" {
-                if let Some(content) = parsed
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                {
-                    if let Some(user_text) = extract_user_text(content) {
-                        if user_text.starts_with("<command-message>") {
-                            continue;
-                        }
-                        let text: String = user_text.chars().take(2000).collect();
-                        messages.push(ConversationMessage {
-                            role: "user".to_string(),
-                            text,
-                            timestamp,
-                        });
-                    }
-                }
-            } else if msg_type == "assistant" {
-                if let Some(content) = parsed.get("message").and_then(|m| m.get("content")) {
-                    let text = if let Some(s) = content.as_str() {
-                        Some(s.to_string())
-                    } else if let Some(arr) = content.as_array() {
-                        let parts: Vec<String> = arr.iter().filter_map(|block| {
-                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                block.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
-                            } else {
-                                None
-                            }
-                        }).collect();
-                        if parts.is_empty() { None } else { Some(parts.join("\n")) }
-                    } else {
-                        None
-                    };
-                    if let Some(t) = text {
-                        let truncated: String = t.chars().take(2000).collect();
-                        messages.push(ConversationMessage {
-                            role: "assistant".to_string(),
-                            text: truncated,
-                            timestamp,
-                        });
-                    }
+    if let Some(serde_json::Value::Array(blocks)) = content {
+        for block in blocks.iter_mut() {
+            if let Some(serde_json::Value::String(text)) = block.get_mut("text") {
+                if text.len() > MAX_TEXT {
+                    // Truncate at a safe char boundary
+                    let end = text.char_indices()
+                        .nth(MAX_TEXT)
+                        .map(|(i, _)| i)
+                        .unwrap_or(text.len());
+                    text.truncate(end);
+                    text.push_str("\n…[truncated]");
                 }
             }
         }
+    } else if let Some(serde_json::Value::String(text)) = val.pointer_mut("/message/content") {
+        if text.len() > MAX_TEXT {
+            let end = text.char_indices()
+                .nth(MAX_TEXT)
+                .map(|(i, _)| i)
+                .unwrap_or(text.len());
+            text.truncate(end);
+            text.push_str("\n…[truncated]");
+        }
     }
+}
 
-    Ok(messages)
+#[tauri::command]
+async fn get_conversation_jsonl(claude_session_id: String, directory: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+
+        if !jsonl_path.exists() {
+            return Ok(vec![]);
+        }
+
+        let file = std::fs::File::open(&jsonl_path)
+            .map_err(|e| format!("Failed to open conversation file: {}", e))?;
+        let reader = std::io::BufReader::new(file);
+
+        // Only return message types that the frontend actually renders.
+        // Use lightweight string check before expensive JSON parse.
+        // Handle both compact ("type":"user") and spaced ("type": "user") JSON.
+        const WANTED: &[&str] = &[
+            "\"type\":\"user\"", "\"type\": \"user\"",
+            "\"type\":\"assistant\"", "\"type\": \"assistant\"",
+            "\"type\":\"result\"", "\"type\": \"result\"",
+            "\"type\":\"error\"", "\"type\": \"error\"",
+        ];
+
+        // Skip full JSON parse for lines that are already small
+        const TRUNCATE_THRESHOLD: usize = 30_000;
+
+        use std::io::BufRead;
+        let lines: Vec<String> = reader
+            .lines()
+            .filter_map(|l| l.ok())
+            .filter(|l| !l.is_empty() && WANTED.iter().any(|w| l.contains(w)))
+            .map(|l| {
+                if l.len() <= TRUNCATE_THRESHOLD {
+                    return l;
+                }
+                // Parse, truncate large text blocks, re-serialize
+                if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&l) {
+                    truncate_content_blocks(&mut val);
+                    serde_json::to_string(&val).unwrap_or(l)
+                } else {
+                    l
+                }
+            })
+            .collect();
+
+        Ok(lines)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[derive(Deserialize)]
@@ -1578,6 +1650,18 @@ fn shell_path() -> &'static str {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default()
     })
+}
+
+/// Resolve the absolute path of a binary using the shell PATH.
+fn resolve_bin(name: &str) -> Option<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    std::process::Command::new(&shell)
+        .args(["-lc", &format!("which {}", name)])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn gh_command() -> std::process::Command {
@@ -2766,25 +2850,53 @@ pub fn run() {
                 eprintln!("[setup] MCP script not found, MCP injection disabled. Run `pnpm build:mcp` to build it.");
             }
 
+            // Resolve agent bridge script path (same pattern as MCP script)
+            let agent_script_path = {
+                let candidates = [
+                    app.handle()
+                        .path()
+                        .resource_dir()
+                        .ok()
+                        .map(|dir| dir.join("resources").join("agent-bridge.bundle.mjs")),
+                    Some(
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("resources")
+                            .join("agent-bridge.bundle.mjs"),
+                    ),
+                ];
+                candidates.into_iter().flatten().find(|p| p.exists()).map(|p| {
+                    eprintln!("[setup] Agent bridge script found at {:?}", p);
+                    p.to_string_lossy().to_string()
+                })
+            };
+            if agent_script_path.is_none() {
+                eprintln!("[setup] Agent bridge script not found. Run `pnpm build:agent` to build it.");
+            }
+
             app.manage(AppState {
                 pty_manager: Mutex::new(PtyManager::new()),
+                agent_manager: Mutex::new(AgentManager::new()),
                 jsonl_cache: Mutex::new(JsonlCache::new()),
                 pricing: PricingConfig::load(),
                 file_watcher: Mutex::new(watcher),
                 _signal_watcher: signal_watcher,
                 mcp_script_path,
+                agent_script_path,
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            create_pty_session,
             create_shell_pty_session,
             pty_has_child_process,
             write_to_pty,
             resize_pty,
             directory_exists,
-            destroy_pty_session,
             get_pty_scrollback,
+            create_agent_session,
+            send_agent_message,
+            abort_agent,
+            destroy_agent_session,
+            get_agent_history,
             save_clipboard_image,
             get_clipboard_file_paths,
             save_sessions,
@@ -2799,7 +2911,7 @@ pub fn run() {
             get_usage_dashboard,
             get_message_count,
             generate_smart_title,
-            get_session_conversation,
+            get_conversation_jsonl,
             search_session_content,
             watch_jsonl,
             unwatch_jsonl,

@@ -88,6 +88,8 @@ interface SessionContextValue {
   markStopped: (id: string) => void;
   restartSession: (id: string) => Promise<void>;
   touchSession: (id: string) => void;
+  updateClaudeSessionId: (id: string, claudeSessionId: string) => void;
+  setAgentBusy: (sessionId: string, isBusy: boolean) => void;
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -228,7 +230,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const toKill = running.slice(0, totalRunning - MAX_RUNNING_SESSIONS);
     for (const session of toKill) {
       try {
-        await invoke("destroy_pty_session", { sessionId: session.id });
+        await invoke("destroy_agent_session", { sessionId: session.id });
       } catch (err) {
         console.error(`Failed to kill excess session ${session.id}:`, err);
       }
@@ -311,13 +313,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setActiveSessionId(id);
 
       try {
-        await invoke("create_pty_session", {
+        await invoke("create_agent_session", {
           sessionId: id,
           directory: dir,
           claudeSessionId,
           resume: false,
-          dangerouslySkipPermissions,
-          extraSystemPrompt: extraSystemPrompt || null,
+          systemPrompt: extraSystemPrompt || null,
         });
         dispatch({ type: "UPDATE", id, patch: { status: "running" } });
         await enforceMaxSessions(id);
@@ -335,7 +336,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const deleteSession = useCallback(
     async (id: string) => {
       try {
-        await invoke("destroy_pty_session", { sessionId: id });
+        await invoke("destroy_agent_session", { sessionId: id });
       } catch (err) {
         console.error("Failed to destroy session:", err);
       }
@@ -388,13 +389,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const spawnDir = isResume ? jsonlDirectory(session) : session.directory;
 
       try {
-        await invoke("create_pty_session", {
+        await invoke("create_agent_session", {
           sessionId: id,
           directory: spawnDir,
           claudeSessionId,
           resume: isResume,
-          dangerouslySkipPermissions:
-            session.dangerouslySkipPermissions ?? false,
+          systemPrompt: null,
         });
         dispatch({ type: "UPDATE", id, patch: { status: "running" } });
         await enforceMaxSessions(id);
@@ -409,6 +409,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const touchSession = useCallback((id: string) => {
     dispatch({ type: "UPDATE", id, patch: { lastActiveAt: Date.now() } });
+  }, []);
+
+  const updateClaudeSessionId = useCallback((id: string, claudeSessionId: string) => {
+    dispatch({ type: "UPDATE", id, patch: { claudeSessionId } });
   }, []);
 
   const createWorktree = useCallback(
@@ -572,7 +576,49 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // ── Derived state / side-effect hooks ────────────────────────────
 
   useConversationTitles(sessions, renameSession);
-  const sessionUsage = useSessionUsage(sessions);
+  const jsonlUsage = useSessionUsage(sessions);
+
+  // ── Agent busy state (for SDK-based sessions) ─────────────────────
+  const [agentBusyMap, setAgentBusyMap] = useState<Map<string, boolean>>(new Map());
+  const setAgentBusy = useCallback((sessionId: string, isBusy: boolean) => {
+    setAgentBusyMap((prev) => {
+      const next = new Map(prev);
+      if (isBusy) {
+        next.set(sessionId, true);
+      } else {
+        next.delete(sessionId);
+      }
+      return next;
+    });
+  }, []);
+
+  // Merge JSONL usage with agent busy state
+  const sessionUsage = useMemo(() => {
+    const merged = new Map<string, SessionUsage>();
+    // Copy all JSONL usage entries
+    for (const [id, usage] of jsonlUsage) {
+      merged.set(id, usage);
+    }
+    // Override isBusy for agent-based sessions
+    for (const [id, isBusy] of agentBusyMap) {
+      const existing = merged.get(id);
+      if (existing) {
+        merged.set(id, { ...existing, isBusy });
+      } else {
+        // Create a minimal usage entry for agent sessions without JSONL data yet
+        merged.set(id, {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          costUsd: 0,
+          isBusy,
+        });
+      }
+    }
+    return merged;
+  }, [jsonlUsage, agentBusyMap]);
+
   useBackgroundNotifications(sessions, sessionUsage, activeSessionId);
 
   const sortedSessions = useMemo(
@@ -639,6 +685,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       markStopped,
       restartSession,
       touchSession,
+      updateClaudeSessionId,
+      setAgentBusy,
     }),
     [
       sessions,
@@ -661,6 +709,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       markStopped,
       restartSession,
       touchSession,
+      updateClaudeSessionId,
+      setAgentBusy,
     ]
   );
 

@@ -1,9 +1,9 @@
-import { useCallback, useRef, useState, useEffect, useMemo } from "react";
+import { useRef, useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionContext } from "./contexts/SessionContext";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
-import SessionConversation from "./components/SessionConversation";
+import AgentChat from "./components/AgentChat";
 import GitPanel from "./components/GitPanel";
 import PRPanel from "./components/PRPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -13,7 +13,6 @@ import { repoColor } from "./components/SessionTab";
 import { repoRootDir } from "./utils/workspaces";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
-import ImageStrip from "./components/ImageStrip";
 import type { Session } from "./types";
 
 export default function App() {
@@ -33,12 +32,8 @@ export default function App() {
     markStopped,
     restartSession,
     touchSession,
+    updateClaudeSessionId,
   } = useSessionContext();
-
-  // Registry of writeText callbacks from Terminal components
-  const writeTextCallbacks = useRef<Map<string, (text: string) => void>>(new Map());
-  // Registry of getPendingInput callbacks from ImageStrip components (per session)
-  const getPendingCallbacks = useRef<Map<string, () => string>>(new Map());
 
   // Recent directories helpers
   const MAX_RECENT_DIRS = 8;
@@ -119,17 +114,6 @@ export default function App() {
 
   const suggestionsRef = useRef<HTMLDivElement>(null);
   const dirListRef = useRef<HTMLDivElement>(null);
-
-  const registerWriteText = useCallback(
-    (sessionId: string, fn: ((text: string) => void) | null) => {
-      if (fn) {
-        writeTextCallbacks.current.set(sessionId, fn);
-      } else {
-        writeTextCallbacks.current.delete(sessionId);
-      }
-    },
-    []
-  );
 
   const addShellTab = async (dir: string) => {
     const num = ++shellCounter.current;
@@ -490,46 +474,15 @@ export default function App() {
                     }}
                   >
                     <ErrorBoundary key={`eb-${session.id}-${session.status}`}>
-                      {session.status === "stopped" ? (
-                        <SessionConversation
-                          session={session}
-                          onResume={() => restartSession(session.id)}
-                        />
-                      ) : (
-                        <div className="flex flex-col h-full">
-                          <div className="flex-1 min-h-0">
-                            <Terminal
-                              sessionId={session.id}
-                              isActive={isVisible}
-                              onExit={() => {
-                                markStopped(session.id);
-                              }}
-                              onTitleChange={() => {}}
-                              onActivity={() => touchSession(session.id)}
-                              onRegisterWriteText={(fn) => registerWriteText(session.id, fn)}
-                              getPendingInput={() => {
-                                const fn = getPendingCallbacks.current.get(session.id);
-                                return fn?.() ?? "";
-                              }}
-                            />
-                          </div>
-                          {isVisible && (
-                            <ImageStrip
-                              writeToPty={(data) => {
-                                const writeFn = writeTextCallbacks.current.get(session.id);
-                                writeFn?.(data);
-                              }}
-                              onRegisterGetPending={(fn) => {
-                                if (fn) {
-                                  getPendingCallbacks.current.set(session.id, fn);
-                                } else {
-                                  getPendingCallbacks.current.delete(session.id);
-                                }
-                              }}
-                            />
-                          )}
-                        </div>
-                      )}
+                      <AgentChat
+                        sessionId={session.id}
+                        isActive={isVisible}
+                        onExit={() => markStopped(session.id)}
+                        onActivity={() => touchSession(session.id)}
+                        onClaudeSessionId={(claudeSessionId) => updateClaudeSessionId(session.id, claudeSessionId)}
+                        session={session}
+                        onResume={() => restartSession(session.id)}
+                      />
                     </ErrorBoundary>
                   </div>
                 );
@@ -571,8 +524,11 @@ export default function App() {
                   onSwitchToClaude={() => setActivePanel(null)}
                   onAskClaude={(prompt) => {
                     if (!activeSessionId) return;
-                    const writeFn = writeTextCallbacks.current.get(activeSessionId);
-                    writeFn?.(prompt + "\n");
+                    const jsonLine = JSON.stringify({
+                      type: "user",
+                      message: { role: "user", content: prompt },
+                    });
+                    invoke("send_agent_message", { sessionId: activeSessionId, message: jsonLine }).catch(() => {});
                     setActivePanel(null);
                   }}
                 />

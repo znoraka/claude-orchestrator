@@ -148,6 +148,20 @@ export default function UsagePanel({ onClose }: { onClose: () => void }) {
                         </td>
                       </tr>
                     ))}
+                    <tr className="border-t border-[var(--border-color)]">
+                      <td className="py-1.5 text-[var(--text-primary)] font-semibold">
+                        Total
+                      </td>
+                      <td className="py-1.5 text-right text-[var(--text-secondary)] font-semibold">
+                        {projects.reduce((s, p) => s + p.sessionCount, 0)}
+                      </td>
+                      <td className="py-1.5 text-right text-[var(--text-secondary)] font-semibold">
+                        {formatTokens(projects.reduce((s, p) => s + p.totalTokens, 0))}
+                      </td>
+                      <td className="py-1.5 text-right text-[var(--accent)] font-semibold">
+                        ${projects.reduce((s, p) => s + p.costUsd, 0).toFixed(2)}
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               )}
