@@ -16674,7 +16674,7 @@ async function runQuery(userMessage) {
     cwd: currentCwd || process.cwd(),
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
-    abortSignal: abortController.signal,
+    abortController,
     settingSources: ["project"]
   };
   if (claudeCliPath) {
