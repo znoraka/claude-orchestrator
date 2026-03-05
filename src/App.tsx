@@ -33,6 +33,8 @@ export default function App() {
     restartSession,
     touchSession,
     updateClaudeSessionId,
+    setAgentBusy,
+    unreadSessions,
   } = useSessionContext();
 
   // Recent directories helpers
@@ -182,6 +184,10 @@ export default function App() {
       if (e.metaKey && e.key === "t") {
         e.preventDefault();
         togglePanel("shell");
+      }
+      if (e.metaKey && e.key === "j") {
+        e.preventDefault();
+        setActivePanel(null);
       }
     };
     document.addEventListener("keydown", handleKeyDown);
@@ -356,6 +362,7 @@ export default function App() {
         onDeleteSession={handleDeleteSession}
         onShowUsage={() => setShowUsagePanel(true)}
         shellProcessDirs={shellProcessDirs}
+        unreadSessions={unreadSessions}
       />
 
       {/* Main area */}
@@ -406,6 +413,17 @@ export default function App() {
                 </>
               )}
 
+              {activeSession?.claudeSessionId && (
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(activeSession.claudeSessionId!);
+                  }}
+                  className="px-1.5 py-0.5 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] font-mono transition-colors"
+                  title={`Copy session ID: ${activeSession.claudeSessionId}`}
+                >
+                  {activeSession.claudeSessionId.slice(0, 8)}…
+                </button>
+              )}
               <div className="flex flex-1"/>
               <button
                 onClick={() => togglePanel("git")}
@@ -473,12 +491,13 @@ export default function App() {
                       visibility: (isVisible || session.id === activeSessionId) ? "visible" : "hidden",
                     }}
                   >
-                    <ErrorBoundary key={`eb-${session.id}-${session.status}`}>
+                    <ErrorBoundary key={`eb-${session.id}`}>
                       <AgentChat
                         sessionId={session.id}
                         isActive={isVisible}
                         onExit={() => markStopped(session.id)}
                         onActivity={() => touchSession(session.id)}
+                        onBusyChange={(isBusy) => setAgentBusy(session.id, isBusy)}
                         onClaudeSessionId={(claudeSessionId) => updateClaudeSessionId(session.id, claudeSessionId)}
                         session={session}
                         onResume={() => restartSession(session.id)}

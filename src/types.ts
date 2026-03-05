@@ -9,6 +9,7 @@ export interface Session {
   claudeSessionId?: string;
   dangerouslySkipPermissions?: boolean;
   activeTime?: number; // cumulative ms of running time
+  hasTitleBeenGenerated?: boolean; // true if a smart title has been generated
 }
 
 /** The directory where the session's JSONL was created (homeDirectory if the

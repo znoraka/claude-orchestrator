@@ -68,6 +68,7 @@ export interface SessionTabProps {
   isActive: boolean;
   usage?: SessionUsage;
   contentOnly?: boolean;
+  unread?: boolean;
   hideDirectory?: boolean;
   shellCount?: number;
   onClick: () => void;
@@ -80,6 +81,7 @@ export default memo(function SessionTab({
   isActive,
   usage,
   contentOnly,
+  unread,
   hideDirectory,
   shellCount,
   onClick,
@@ -105,11 +107,9 @@ export default memo(function SessionTab({
     setIsEditing(false);
   };
 
-  const statusColor = {
-    running: "bg-green-500",
-    stopped: "bg-red-500",
-    starting: "bg-yellow-500 animate-pulse",
-  }[session.status];
+  const isRunning = session.status === "running" || session.status === "starting";
+  const isBusy = usage?.isBusy && isRunning;
+  const isAwaitingInput = isRunning && !isBusy;
 
   return (
     <div
@@ -124,9 +124,15 @@ export default memo(function SessionTab({
         }
       `}
     >
-      {/* Status dot */}
-      <span className="relative shrink-0 w-1.5 h-1.5">
-        <span className={`absolute inset-0 rounded-full ${statusColor} ${usage?.isBusy && session.status === "running" ? "animate-blink" : ""}`} />
+      {/* Status indicator: spinner (busy) > pulsing dot (awaiting input) > solid dot (unread) */}
+      <span className="shrink-0 w-3 h-3 flex items-center justify-center">
+        {isBusy ? (
+          <span className="w-2.5 h-2.5 border-[1.5px] border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+        ) : isAwaitingInput ? (
+          <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+        ) : unread ? (
+          <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />
+        ) : null}
       </span>
 
       {/* Name + directory */}

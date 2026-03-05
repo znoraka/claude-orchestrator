@@ -58,7 +58,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Signaled orchestrator to update workspace to ${directory}. IMPORTANT: You must now change your working directory by running: cd ${directory}`,
+        text: `Signaled orchestrator to switch workspace to ${directory}. The working directory has been updated automatically.`,
       }],
     };
   }
@@ -96,7 +96,7 @@ server.tool(
       return {
         content: [{
           type: "text",
-          text: `Worktree already exists at ${worktreePath}. Signaled orchestrator to switch. IMPORTANT: You must now run: cd ${worktreePath}`,
+          text: `Worktree already exists at ${worktreePath}. Signaled orchestrator to switch. The working directory has been updated automatically.`,
         }],
       };
     }
@@ -152,7 +152,7 @@ server.tool(
       return {
         content: [{
           type: "text",
-          text: `Created worktree at ${worktreePath} on branch origin/${branch}. Signaled orchestrator to switch. IMPORTANT: You must now run: cd ${worktreePath}`,
+          text: `Created worktree at ${worktreePath} on branch origin/${branch}. Signaled orchestrator to switch. The working directory has been updated automatically.`,
         }],
       };
     } catch (err) {

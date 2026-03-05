@@ -1,10 +1,14 @@
-import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 import { jsonlDirectory, type Session } from "../types";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { getHighlighter, ensureLang, langFromPath } from "./DiffViewer";
+
+// Configure marked once
+marked.setOptions({ breaks: true, gfm: true });
 
 interface AgentChatProps {
   sessionId: string;
@@ -39,20 +43,142 @@ interface ChatMessage {
   content: ContentBlock[];
   timestamp: number;
   isStreaming?: boolean;
-  // API message ID for deduplicating streaming updates
-  apiMessageId?: string;
   // For result messages
   costUsd?: number;
   usage?: { input_tokens?: number; output_tokens?: number };
 }
 
+interface ToolGroup {
+  toolUse: ContentBlock;
+  toolResult?: ContentBlock;
+  blockId: string;
+}
+
+interface GroupedBlocks {
+  items: Array<{ type: "content"; block: ContentBlock } | { type: "toolGroup"; group: ToolGroup }>;
+}
+
+function groupToolBlocks(blocks: ContentBlock[], messageId: string): GroupedBlocks {
+  const items: GroupedBlocks["items"] = [];
+  const toolResultMap = new Map<string, ContentBlock>();
+
+  // First pass: collect all tool results by their tool_use_id
+  for (const block of blocks) {
+    if (block.type === "tool_result" && block.tool_use_id) {
+      toolResultMap.set(block.tool_use_id, block);
+    }
+  }
+
+  // Second pass: build grouped items
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (block.type === "tool_use") {
+      const blockId = block.id || `${messageId}-${i}`;
+      const toolResult = block.id ? toolResultMap.get(block.id) : undefined;
+      items.push({
+        type: "toolGroup",
+        group: { toolUse: block, toolResult, blockId },
+      });
+    } else if (block.type === "tool_result") {
+      // Skip - already paired with tool_use
+      continue;
+    } else {
+      items.push({ type: "content", block });
+    }
+  }
+
+  return { items };
+}
+
+// ── Chunked history parser (avoids blocking main thread) ─────────────
+
+const PARSE_CHUNK_SIZE = 200;
+
+function parseHistoryLines(
+  lines: string[],
+  sdkMessageToChatMessage: (msg: Record<string, unknown>, isHistoryReplay?: boolean) => ChatMessage | null,
+): Promise<ChatMessage[]> {
+  return new Promise((resolve) => {
+    const messageOrder: string[] = [];
+    const messageMap = new Map<string, ChatMessage>();
+    const assistantAccum = new Map<string, ContentBlock[]>();
+    let offset = 0;
+
+    function processChunk() {
+      const end = Math.min(offset + PARSE_CHUNK_SIZE, lines.length);
+      for (let i = offset; i < end; i++) {
+        const line = lines[i];
+        try {
+          const msg = JSON.parse(line);
+          const msgType = msg.type as string;
+
+          if (msgType === "assistant") {
+            const messageObj = msg.message as Record<string, unknown> | undefined;
+            const content = messageObj?.content as ContentBlock[] | undefined;
+            const apiMsgId = (messageObj?.id as string) || `anon-${messageOrder.length}`;
+            if (content) {
+              const existing = assistantAccum.get(apiMsgId) || [];
+              for (const block of content) {
+                const matchIdx = block.type === "tool_use" && block.id
+                  ? existing.findIndex((b: ContentBlock) => b.type === "tool_use" && b.id === block.id)
+                  : block.type === "text"
+                  ? existing.findIndex((b: ContentBlock) => b.type === "text")
+                  : block.type === "thinking"
+                  ? existing.findIndex((b: ContentBlock) => b.type === "thinking")
+                  : -1;
+                if (matchIdx !== -1) {
+                  existing[matchIdx] = block;
+                } else {
+                  existing.push(block);
+                }
+              }
+              assistantAccum.set(apiMsgId, existing);
+              if (!messageMap.has(apiMsgId)) {
+                messageOrder.push(apiMsgId);
+              }
+              messageMap.set(apiMsgId, {
+                id: apiMsgId,
+                type: "assistant",
+                content: [...existing],
+                timestamp: Date.now(),
+              });
+            }
+          } else {
+            const chatMsg = sdkMessageToChatMessage(msg, true);
+            if (chatMsg) {
+              if (!messageMap.has(chatMsg.id)) {
+                messageOrder.push(chatMsg.id);
+              }
+              messageMap.set(chatMsg.id, chatMsg);
+            }
+          }
+        } catch {}
+      }
+      offset = end;
+      if (offset < lines.length) {
+        // Yield to main thread between chunks
+        setTimeout(processChunk, 0);
+      } else {
+        resolve(messageOrder.map(id => messageMap.get(id)!).filter(Boolean));
+      }
+    }
+
+    if (lines.length === 0) {
+      resolve([]);
+    } else {
+      processChunk();
+    }
+  });
+}
+
 // ── Component ────────────────────────────────────────────────────────
 
-export default function AgentChat({
+const AgentChat = memo(function AgentChat({
   sessionId,
   isActive,
   onExit,
   onActivity,
+  onBusyChange,
   onClaudeSessionId,
   session,
   onResume,
@@ -62,14 +188,188 @@ export default function AgentChat({
   const [inputText, setInputText] = useState("");
   const [images, setImages] = useState<Array<{ id: string; data: string; mediaType: string; name: string }>>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+  const [currentTodo, setCurrentTodo] = useState<string | null>(null);
+  // Tool expansion state: single object to avoid double state updates
+  // "expanded" = user manually expanded, "collapsed" = user manually collapsed, undefined = default
+  const [toolStates, setToolStates] = useState<Record<string, "expanded" | "collapsed">>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // ── Slash command autocomplete ─────────────────────────────────────
+  const [slashCommands, setSlashCommands] = useState<Array<{ name: string; description: string; source: string }>>([]);
+  const [slashMenuIndex, setSlashMenuIndex] = useState(0);
+  const slashMenuRef = useRef<HTMLDivElement>(null);
+
+  // ── Model picker ──────────────────────────────────────────────────
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [currentModel, setCurrentModel] = useState("claude-opus-4-6");
+  const [modelPickerIndex, setModelPickerIndex] = useState(0);
+  const MODELS = [
+    { id: "claude-opus-4-6", name: "Opus 4.6", desc: "Most capable for complex work" },
+    { id: "claude-sonnet-4-6", name: "Sonnet 4.6", desc: "Best for everyday tasks" },
+    { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5", desc: "Fastest for quick answers" },
+  ];
   const partialRef = useRef<ContentBlock[]>([]);
   const currentBlockIndexRef = useRef(-1);
   const mountedRef = useRef(true);
-  // Track current streaming apiMessageId for result message deduplication
-  const currentApiMessageIdRef = useRef<string | null>(null);
+
+  // Stable refs for callback props to avoid dependency cascades.
+  // These callbacks come from App as inline arrows (new ref every render),
+  // so using them directly in useEffect/useCallback deps would cause
+  // event listeners to be torn down/recreated on every parent render.
+  const onExitRef = useRef(onExit);
+  onExitRef.current = onExit;
+  const onActivityRef = useRef(onActivity);
+  onActivityRef.current = onActivity;
+  const onBusyChangeRef = useRef(onBusyChange);
+  onBusyChangeRef.current = onBusyChange;
+  const onClaudeSessionIdRef = useRef(onClaudeSessionId);
+  onClaudeSessionIdRef.current = onClaudeSessionId;
+  const onResumeRef = useRef(onResume);
+  onResumeRef.current = onResume;
+
+  // Sync busy state to parent
+  useEffect(() => {
+    onBusyChangeRef.current?.(isGenerating);
+  }, [isGenerating]);
+
+  // Fetch slash commands for the session's directory
+  const sessionDir = session?.directory;
+  useEffect(() => {
+    if (!sessionDir) return;
+    let cancelled = false;
+
+    async function discover() {
+      type Cmd = { name: string; description: string; source: string };
+      const commands: Cmd[] = [];
+
+      // Local commands handled by the orchestrator (not sent to the SDK)
+      const builtins: Cmd[] = [
+        { name: "clear", description: "Clear conversation display", source: "built-in" },
+        { name: "compact", description: "Compact conversation to save context", source: "built-in" },
+        { name: "model", description: "Switch Claude model", source: "built-in" },
+      ];
+
+      // Try the dedicated backend command first (fast, scans both project + user dirs)
+      try {
+        const result = await invoke<Cmd[]>("list_slash_commands", { directory: sessionDir });
+        if (!cancelled && result.length > 0) {
+          const names = new Set(result.map((c) => c.name));
+          setSlashCommands([...result, ...builtins.filter((b) => !names.has(b.name))]);
+          return;
+        }
+      } catch {
+        // Command not available yet (app not rebuilt) — fall back to list_files + read_file
+      }
+
+      // Fallback: scan .claude/commands/ using existing list_files + read_file commands
+      const scanDir = async (cmdDir: string, source: string) => {
+        try {
+          const files = await invoke<Array<[string, boolean]>>("list_files", { partial: cmdDir });
+          for (const [filePath, isDir] of files) {
+            if (isDir || !filePath.endsWith(".md")) continue;
+            const name = filePath.split("/").pop()!.replace(/\.md$/, "");
+            let description = "";
+            try {
+              const content = await invoke<string>("read_file", { filePath });
+              const firstLine = content.split("\n")[0] || "";
+              description = firstLine.trim().replace(/^#+\s*/, "");
+            } catch {}
+            commands.push({ name, description, source });
+          }
+        } catch {}
+      };
+
+      await scanDir(sessionDir + "/.claude/commands/", "project");
+      await scanDir("~/.claude/commands/", "user");
+
+      // Merge with built-ins (project/user commands take priority)
+      const names = new Set(commands.map((c) => c.name));
+      commands.push(...builtins.filter((b) => !names.has(b.name)));
+
+      if (!cancelled) {
+        setSlashCommands(commands);
+      }
+    }
+
+    discover();
+    return () => { cancelled = true; };
+  }, [sessionDir]);
+
+  // Compute filtered slash commands based on input
+  const showSlashMenu = inputText.startsWith("/") && !inputText.includes(" ") && inputText.length > 0;
+  const filteredSlashCommands = useMemo(() => {
+    if (!showSlashMenu) return [];
+    const query = inputText.slice(1).toLowerCase();
+    return slashCommands.filter((cmd) => cmd.name.toLowerCase().includes(query));
+  }, [showSlashMenu, inputText, slashCommands]);
+
+  // Reset menu index when filtered list changes
+  useEffect(() => {
+    setSlashMenuIndex(0);
+  }, [filteredSlashCommands.length, inputText]);
+
+  // Scroll active slash menu item into view
+  useEffect(() => {
+    if (!slashMenuRef.current) return;
+    const active = slashMenuRef.current.children[slashMenuIndex] as HTMLElement | undefined;
+    active?.scrollIntoView({ block: "nearest" });
+  }, [slashMenuIndex]);
+
+  // ── Throttled streaming updates ─────────────────────────────────
+  // Buffer streaming updates and flush at most every 50ms to reduce re-renders.
+  // The SDK sends each content block as a SEPARATE event (not accumulated),
+  // so we must accumulate blocks for the same message ID.
+  const pendingStreamRef = useRef<{ id: string; content: ContentBlock[] } | null>(null);
+  const accumulatedBlocksRef = useRef<Map<string, ContentBlock[]>>(new Map());
+  const rafIdRef = useRef<number | null>(null);
+  const lastFlushRef = useRef<number>(0);
+  const STREAM_THROTTLE_MS = 50;
+
+  const flushPendingStream = useCallback(() => {
+    rafIdRef.current = null;
+    const pending = pendingStreamRef.current;
+    if (!pending) return;
+    pendingStreamRef.current = null;
+    lastFlushRef.current = Date.now();
+
+    const accumulated = accumulatedBlocksRef.current.get(pending.id) || [];
+
+    setMessages((prev) => {
+      // Find existing message with same streaming ID
+      const existingIndex = prev.findIndex(
+        (m) => m.type === "assistant" && m.id === pending.id
+      );
+      if (existingIndex !== -1) {
+        const updated = [...prev];
+        updated[existingIndex] = {
+          ...updated[existingIndex],
+          content: accumulated,
+        };
+        return updated;
+      }
+      // New message - append at end
+      const filtered = prev.filter((m) => !m.isStreaming);
+      return [
+        ...filtered,
+        {
+          id: pending.id,
+          type: "assistant",
+          content: accumulated,
+          timestamp: Date.now(),
+        },
+      ];
+    });
+  }, []);
+
+  // Cleanup RAF on unmount
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+    };
+  }, []);
 
   // ── Windowed rendering: only render tail of messages ───────────
   const INITIAL_WINDOW = 40;
@@ -93,6 +393,9 @@ export default function AgentChat({
 
   const hasMore = messages.length > renderCount;
 
+  // Defer heavy message rendering so input stays responsive
+  const deferredMessages = useDeferredValue(visibleMessages);
+
   const loadMore = useCallback(() => {
     setRenderCount((prev) => Math.min(prev + LOAD_MORE_CHUNK, messages.length));
   }, [messages.length]);
@@ -105,20 +408,33 @@ export default function AgentChat({
   }, []);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, scrollToBottom]);
+    // Use rAF to scroll after the deferred render has painted
+    requestAnimationFrame(() => scrollToBottom());
+  }, [deferredMessages, scrollToBottom]);
 
-  // Focus input when becoming active
+  // Focus input and scroll to bottom when becoming active
   useEffect(() => {
     if (isActive) {
       setTimeout(() => inputRef.current?.focus(), 50);
+      requestAnimationFrame(() => scrollToBottom());
     }
-  }, [isActive]);
+  }, [isActive, scrollToBottom]);
 
   // ── Load history on mount ────────────────────────────────────────
 
+  // Track whether initial history has loaded to prevent overwriting new messages.
+  // Re-run when claudeSessionId changes (e.g., real SDK session ID replaces pre-assigned UUID).
+  const lastLoadedClaudeSessionIdRef = useRef<string | null>(null);
+
   useEffect(() => {
     mountedRef.current = true;
+
+    // Skip reload if we already loaded for this exact claudeSessionId.
+    // We must reload when claudeSessionId changes because the JSONL path depends on it.
+    const currentClaudeSessionId = session?.claudeSessionId ?? null;
+    if (lastLoadedClaudeSessionIdRef.current === currentClaudeSessionId && currentClaudeSessionId !== null) {
+      return;
+    }
 
     async function loadHistory() {
       if (!mountedRef.current) return;
@@ -143,39 +459,36 @@ export default function AgentChat({
       }
 
       if (!mountedRef.current) return;
-      const replayed: ChatMessage[] = [];
-      // Track last index of each apiMessageId to deduplicate streaming updates
-      const apiMessageIdLastIndex = new Map<string, number>();
 
-      // First pass: parse all messages and track apiMessageId positions
-      const parsedMessages: ChatMessage[] = [];
-      for (const line of lines) {
-        try {
-          const msg = JSON.parse(line);
-          const chatMsg = sdkMessageToChatMessage(msg);
-          if (chatMsg) {
-            const idx = parsedMessages.length;
-            parsedMessages.push(chatMsg);
-            if (chatMsg.apiMessageId) {
-              apiMessageIdLastIndex.set(chatMsg.apiMessageId, idx);
-            }
-          }
-        } catch {}
+      // The SDK writes each content block as a separate JSONL line with the same
+      // message ID. We must accumulate blocks per message ID to reconstruct
+      // complete messages, then deduplicate so only one ChatMessage per API
+      // message is shown.
+      //
+      // Strategy: Process all lines and track which message IDs we've seen.
+      // For each unique message (by ID), keep only ONE ChatMessage entry but
+      // update its content as we see more blocks. Track insertion order via
+      // a Map that preserves order.
+      const replayed = await parseHistoryLines(lines, sdkMessageToChatMessage);
+
+      if (replayed.length > 0) {
+        console.log(`[loadHistory] ${sessionId}: ${replayed.length} messages, first=${replayed[0].type}:${replayed[0].id.substring(0, 20)}, last=${replayed[replayed.length-1].type}:${replayed[replayed.length-1].id.substring(0, 20)}`);
       }
 
-      // Second pass: only keep non-duplicated messages (last occurrence of each apiMessageId)
-      for (let i = 0; i < parsedMessages.length; i++) {
-        const chatMsg = parsedMessages[i];
-        if (chatMsg.apiMessageId) {
-          // Only include if this is the last occurrence of this apiMessageId
-          if (apiMessageIdLastIndex.get(chatMsg.apiMessageId) === i) {
-            replayed.push(chatMsg);
-          }
-        } else {
-          replayed.push(chatMsg);
+      setMessages((prev) => {
+        lastLoadedClaudeSessionIdRef.current = session?.claudeSessionId ?? null;
+
+        if (prev.length === 0) {
+          return replayed;
         }
-      }
-      setMessages(replayed);
+        const newMessages = prev.filter((m) => {
+          return !replayed.some((r) => r.id === m.id);
+        });
+        if (newMessages.length === 0) {
+          return replayed;
+        }
+        return [...replayed, ...newMessages];
+      });
     }
 
     loadHistory();
@@ -185,48 +498,17 @@ export default function AgentChat({
     };
   }, [sessionId, session?.claudeSessionId]);
 
-  // ── Listen to agent events ───────────────────────────────────────
-  // Always set up listeners even for stopped sessions, since we may resume them
-
-  useEffect(() => {
-    const unlistenMessage = listen<string>(
-      `agent-message-${sessionId}`,
-      (event) => {
-        if (!mountedRef.current) return;
-        try {
-          const msg = JSON.parse(event.payload);
-          handleAgentMessage(msg);
-        } catch {}
-      }
-    );
-
-    const unlistenExit = listen<string>(
-      `agent-exit-${sessionId}`,
-      () => {
-        if (!mountedRef.current) return;
-        setIsGenerating(false);
-        onExit();
-      }
-    );
-
-    return () => {
-      unlistenMessage.then((fn) => fn());
-      unlistenExit.then((fn) => fn());
-    };
-  }, [sessionId, onExit]);
-
   // ── Process SDK messages ─────────────────────────────────────────
 
   const handleAgentMessage = useCallback((msg: Record<string, unknown>) => {
-    onActivity();
 
     const msgType = msg.type as string;
 
     // System init message — capture the real Claude session ID
     if (msgType === "system" && msg.subtype === "init") {
       const claudeSessionId = msg.session_id as string | undefined;
-      if (claudeSessionId && onClaudeSessionId) {
-        onClaudeSessionId(claudeSessionId);
+      if (claudeSessionId && onClaudeSessionIdRef.current) {
+        onClaudeSessionIdRef.current(claudeSessionId);
       }
       return;
     }
@@ -236,67 +518,77 @@ export default function AgentChat({
     }
 
     // Assistant message (may be partial during streaming or final)
+    // NOTE: The SDK sends each content block as a SEPARATE event with the same
+    // message ID, not as accumulated content. We must merge blocks ourselves.
     if (msgType === "assistant") {
+      // Ensure isGenerating is true when we receive streaming content
+      // (handles cases where component mounts while agent is already running)
+      setIsGenerating(true);
       const messageObj = msg.message as Record<string, unknown> | undefined;
       const content = messageObj?.content as ContentBlock[] | undefined;
-      // Use the API message ID to deduplicate streaming updates
-      const apiMessageId = messageObj?.id as string | undefined;
-      // Track current apiMessageId for result deduplication
-      if (apiMessageId) {
-        currentApiMessageIdRef.current = apiMessageId;
-      }
+      const apiMsgId = messageObj?.id as string | undefined;
       if (content) {
-        setMessages((prev) => {
-          // If we have an API message ID, update the existing message in place
-          // This handles streaming updates where the same message is sent multiple times
-          if (apiMessageId) {
-            const existingIndex = prev.findIndex((m) => m.apiMessageId === apiMessageId);
-            if (existingIndex !== -1) {
-              // Update in place to preserve order
-              const updated = [...prev];
-              updated[existingIndex] = {
-                ...updated[existingIndex],
-                content,
-                timestamp: Date.now(),
-              };
-              return updated;
+        // Use a stable ID for this streaming message
+        const streamId = apiMsgId || "stream-current";
+
+        // Accumulate blocks for this message ID.
+        // Each SDK event typically contains a single block; merge them all.
+        const existing = accumulatedBlocksRef.current.get(streamId) || [];
+        // Replace blocks by matching type+id (for tool_use updates) or append new ones
+        const merged = [...existing];
+        for (const block of content) {
+          const matchIdx = block.type === "tool_use" && block.id
+            ? merged.findIndex((b) => b.type === "tool_use" && b.id === block.id)
+            : block.type === "text"
+            ? merged.findIndex((b) => b.type === "text")
+            : block.type === "thinking"
+            ? merged.findIndex((b) => b.type === "thinking")
+            : -1;
+          if (matchIdx !== -1) {
+            merged[matchIdx] = block; // Update existing block in place
+          } else {
+            merged.push(block);
+          }
+        }
+        accumulatedBlocksRef.current.set(streamId, merged);
+
+        // Buffer the update for throttled flushing
+        pendingStreamRef.current = { id: streamId, content: merged };
+
+        // Extract current in-progress todo from TodoWrite tool calls
+        for (const block of content) {
+          if (block.type === "tool_use" && block.name === "TodoWrite" && block.input) {
+            const todos = (block.input as { todos?: Array<{ content: string; status: string; activeForm?: string }> }).todos;
+            if (todos) {
+              const inProgress = todos.find(t => t.status === "in_progress");
+              setCurrentTodo(inProgress?.activeForm || inProgress?.content || null);
             }
           }
-          // New message - append at end
-          const filtered = prev.filter((m) => !m.isStreaming);
-          return [
-            ...filtered,
-            {
-              id: `assistant-${Date.now()}`,
-              type: "assistant",
-              content,
-              timestamp: Date.now(),
-              apiMessageId,
-            },
-          ];
-        });
+        }
+
+        // Throttle: only schedule flush if enough time has passed
+        const now = Date.now();
+        if (now - lastFlushRef.current >= STREAM_THROTTLE_MS) {
+          // Flush immediately
+          flushPendingStream();
+        } else if (!rafIdRef.current) {
+          // Schedule flush on next frame
+          rafIdRef.current = requestAnimationFrame(flushPendingStream);
+        }
       }
       partialRef.current = [];
       currentBlockIndexRef.current = -1;
       return;
     }
 
-    // Result message - replace previous result for the same apiMessageId to avoid duplicates
+    // Result message
     if (msgType === "result") {
       setIsGenerating(false);
+      setCurrentTodo(null);
+      accumulatedBlocksRef.current.clear();
       const result = msg as Record<string, unknown>;
-      // Associate this result with the current streaming apiMessageId
-      const resultApiMessageId = currentApiMessageIdRef.current;
       setMessages((prev) => {
-        // Remove streaming messages AND any previous result for the same apiMessageId
-        const filtered = prev.filter((m) => {
-          if (m.isStreaming) return false;
-          // If this result has an apiMessageId, remove previous results with the same ID
-          if (m.type === "result" && resultApiMessageId && m.apiMessageId === resultApiMessageId) {
-            return false;
-          }
-          return true;
-        });
+        const filtered = prev.filter((m) => !m.isStreaming);
         return [
           ...filtered,
           {
@@ -306,7 +598,6 @@ export default function AgentChat({
             timestamp: Date.now(),
             costUsd: result.cost_usd as number | undefined,
             usage: result.usage as { input_tokens?: number; output_tokens?: number } | undefined,
-            apiMessageId: resultApiMessageId || undefined,
           },
         ];
       });
@@ -318,18 +609,24 @@ export default function AgentChat({
     // Query complete
     if (msgType === "query_complete") {
       setIsGenerating(false);
+      setCurrentTodo(null);
+      accumulatedBlocksRef.current.clear();
       return;
     }
 
     // Abort
     if (msgType === "aborted") {
       setIsGenerating(false);
+      setCurrentTodo(null);
+      accumulatedBlocksRef.current.clear();
       return;
     }
 
     // Error
     if (msgType === "error") {
       setIsGenerating(false);
+      setCurrentTodo(null);
+      accumulatedBlocksRef.current.clear();
       setMessages((prev) => [
         ...prev.filter((m) => !m.isStreaming),
         {
@@ -347,14 +644,89 @@ export default function AgentChat({
     if (chatMsg) {
       setMessages((prev) => [...prev, chatMsg]);
     }
-  }, [onActivity, onClaudeSessionId]);
+  }, []);
+
+  // ── Listen to agent events ───────────────────────────────────────
+  // Always set up listeners even for stopped sessions, since we may resume them
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlistenMessageFn: (() => void) | null = null;
+    let unlistenExitFn: (() => void) | null = null;
+
+    listen<string>(
+      `agent-message-${sessionId}`,
+      (event) => {
+        if (cancelled || !mountedRef.current) return;
+        try {
+          const msg = JSON.parse(event.payload);
+          handleAgentMessage(msg);
+        } catch {}
+      }
+    ).then((fn) => {
+      if (cancelled) {
+        fn(); // Already unmounted, clean up immediately
+      } else {
+        unlistenMessageFn = fn;
+      }
+    });
+
+    listen<string>(
+      `agent-exit-${sessionId}`,
+      () => {
+        if (cancelled || !mountedRef.current) return;
+        setIsGenerating(false);
+        onExitRef.current();
+      }
+    ).then((fn) => {
+      if (cancelled) {
+        fn();
+      } else {
+        unlistenExitFn = fn;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unlistenMessageFn?.();
+      unlistenExitFn?.();
+    };
+  }, [sessionId, handleAgentMessage]);
 
   // ── Convert SDK messages to ChatMessage ──────────────────────────
 
-  function sdkMessageToChatMessage(msg: Record<string, unknown>): ChatMessage | null {
+  // Detect Task/Agent tool prompts - these are synthetic messages sent to subagents
+  // They should not be displayed as user messages since the user didn't type them
+  function looksLikeTaskPrompt(text: string): boolean {
+    if (!text || text.length < 50) return false;
+    const lines = text.split("\n");
+    // Task prompts typically have multiple lines with structured instructions
+    if (lines.length < 3) return false;
+    // Common patterns in Task prompts
+    const hasInstructionalPatterns =
+      text.includes("Focus on") ||
+      text.includes("I need to understand") ||
+      text.includes("Return file paths") ||
+      text.includes("Return the") ||
+      text.includes("Do not") ||
+      text.includes("Make sure to") ||
+      /thoroughly|comprehensive|investigate|explore|search/i.test(text);
+    // Has numbered list (1. 2. etc) which is common in structured prompts
+    const hasNumberedList = /^\s*\d+\.\s/m.test(text) && /^\s*[2-9]\.\s/m.test(text);
+    // Combination of patterns
+    return hasInstructionalPatterns && (hasNumberedList || lines.length >= 5);
+  }
+
+  function sdkMessageToChatMessage(msg: Record<string, unknown>, isHistoryReplay = false): ChatMessage | null {
     const msgType = msg.type as string;
 
     if (msgType === "user") {
+      // During live streaming, skip user messages from SDK - they are either:
+      // 1. Duplicates of messages already added via sendMessage()
+      // 2. Synthetic messages like Task tool prompts
+      // Only process user messages during history replay (loading persisted conversations)
+      if (!isHistoryReplay) return null;
+
       const message = msg.message as Record<string, unknown> | undefined;
       const rawContent = message?.content;
       let blocks: ContentBlock[];
@@ -367,6 +739,11 @@ export default function AgentChat({
       }
       // Skip tool-result-only messages (tool plumbing, not user input)
       if (blocks.every((b) => b.type === "tool_result")) return null;
+      // Skip messages that look like Task/Agent tool prompts
+      const textContent = blocks.find((b) => b.type === "text")?.text || "";
+      if (looksLikeTaskPrompt(textContent)) {
+        return null;
+      }
       return {
         id: `user-${Date.now()}-${Math.random()}`,
         type: "user",
@@ -378,14 +755,12 @@ export default function AgentChat({
     if (msgType === "assistant") {
       const messageObj = msg.message as Record<string, unknown> | undefined;
       const content = messageObj?.content as ContentBlock[] | undefined;
-      const apiMessageId = messageObj?.id as string | undefined;
       if (!content) return null;
       return {
         id: `assistant-${Date.now()}-${Math.random()}`,
         type: "assistant",
         content,
         timestamp: Date.now(),
-        apiMessageId,
       };
     }
 
@@ -414,9 +789,27 @@ export default function AgentChat({
 
   // ── Send message ─────────────────────────────────────────────────
 
-  const sendMessage = useCallback(async () => {
-    const text = inputText.trim();
+  const sendMessage = useCallback(async (overrideText?: string) => {
+    const text = (overrideText ?? inputText).trim();
     if (!text && images.length === 0) return;
+
+    // Handle local-only built-in commands (these don't work through the SDK)
+    if (text === "/clear") {
+      setMessages([]);
+      setInputText("");
+      return;
+    }
+    if (text === "/compact") {
+      setInputText("");
+      sendMessage("Please provide a brief summary of our conversation so far, then we can continue from that context.");
+      return;
+    }
+    if (text === "/model") {
+      setInputText("");
+      setShowModelPicker(true);
+      setModelPickerIndex(MODELS.findIndex((m) => m.id === currentModel));
+      return;
+    }
 
     // Build content blocks
     let content: unknown;
@@ -457,11 +850,12 @@ export default function AgentChat({
     setInputText("");
     setImages([]);
     setIsGenerating(true);
+    onActivityRef.current(); // Update session timestamp when user sends a message
 
     // If the session is stopped, transparently restart the bridge first
-    if (isReadOnly && onResume) {
+    if (isReadOnly && onResumeRef.current) {
       try {
-        await onResume();
+        await onResumeRef.current();
       } catch (err) {
         setIsGenerating(false);
         setMessages((prev) => [
@@ -496,10 +890,33 @@ export default function AgentChat({
         },
       ]);
     }
-  }, [inputText, images, sessionId, isReadOnly, onResume]);
+  }, [inputText, images, sessionId, isReadOnly]);
 
   const handleAbort = useCallback(() => {
     invoke("abort_agent", { sessionId }).catch(() => {});
+  }, [sessionId]);
+
+  // Answer an AskUserQuestion by sending the answer to the bridge
+  const answerQuestion = useCallback((answer: string) => {
+    // Send the answer via the ask_user_answer protocol to the bridge,
+    // which interrupted the query at the AskUserQuestion tool call.
+    const msg = JSON.stringify({ type: "ask_user_answer", answer });
+    invoke("send_agent_message", { sessionId, message: msg }).catch(() => {
+      // Fallback: if the bridge doesn't support ask_user_answer (older bridge),
+      // just put it in the input for the user to send manually
+      setInputText(answer);
+      inputRef.current?.focus();
+    });
+    // Show the answer as a user message in the chat
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `user-${Date.now()}`,
+        type: "user",
+        content: [{ type: "text", text: answer }],
+        timestamp: Date.now(),
+      },
+    ]);
   }, [sessionId]);
 
   // ── Image paste ──────────────────────────────────────────────────
@@ -544,81 +961,241 @@ export default function AgentChat({
 
   // ── Key handling ─────────────────────────────────────────────────
 
+  const selectSlashCommand = useCallback((cmd: { name: string }) => {
+    setInputText("/" + cmd.name + " ");
+    inputRef.current?.focus();
+  }, []);
+
+  const selectModel = useCallback((model: typeof MODELS[number]) => {
+    setCurrentModel(model.id);
+    setShowModelPicker(false);
+    // Send set_model to the agent bridge
+    const msg = JSON.stringify({ type: "set_model", model: model.id });
+    invoke("send_agent_message", { sessionId, message: msg }).catch(() => {});
+    setMessages((prev) => [...prev, {
+      id: `system-${Date.now()}`,
+      type: "system" as const,
+      content: [{ type: "text", text: `Model switched to ${model.name}` }],
+      timestamp: Date.now(),
+    }]);
+    inputRef.current?.focus();
+  }, [sessionId]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // Model picker navigation
+      if (showModelPicker) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setModelPickerIndex((i) => Math.min(i + 1, MODELS.length - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setModelPickerIndex((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === "Enter" || e.key === "Tab") {
+          e.preventDefault();
+          selectModel(MODELS[modelPickerIndex]);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setShowModelPicker(false);
+          return;
+        }
+        return; // consume all keys while picker is open
+      }
+      // Slash menu navigation
+      if (showSlashMenu && filteredSlashCommands.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSlashMenuIndex((i) => Math.min(i + 1, filteredSlashCommands.length - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSlashMenuIndex((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+          e.preventDefault();
+          const cmd = filteredSlashCommands[slashMenuIndex];
+          if (e.key === "Enter" && filteredSlashCommands.length === 1) {
+            setInputText("");
+            sendMessage("/" + cmd.name);
+          } else {
+            selectSlashCommand(cmd);
+          }
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setInputText("");
+          return;
+        }
+      }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         if (!isGenerating) {
           sendMessage();
         }
       }
+      if (e.key === "Escape" && isGenerating) {
+        e.preventDefault();
+        handleAbort();
+      }
     },
-    [sendMessage, isGenerating]
+    [sendMessage, isGenerating, handleAbort, showSlashMenu, filteredSlashCommands, slashMenuIndex, selectSlashCommand, showModelPicker, modelPickerIndex, selectModel]
   );
 
   // ── Toggle tool card expansion ───────────────────────────────────
 
-  const toggleTool = useCallback((blockId: string) => {
-    setExpandedTools((prev) => {
-      const next = new Set(prev);
-      if (next.has(blockId)) {
-        next.delete(blockId);
-      } else {
-        next.add(blockId);
-      }
-      return next;
-    });
+  const toggleTool = useCallback((blockId: string, isCurrentlyExpanded: boolean) => {
+    // Single state update instead of two separate Set updates
+    setToolStates((prev) => ({
+      ...prev,
+      [blockId]: isCurrentlyExpanded ? "collapsed" : "expanded",
+    }));
   }, []);
 
   // ── Render ───────────────────────────────────────────────────────
+
+  // Restore scroll position when tab becomes active again
+  const savedScrollRef = useRef<number | null>(null);
+  const wasActiveRef = useRef(isActive);
+  useEffect(() => {
+    if (!isActive && wasActiveRef.current && scrollRef.current) {
+      // Becoming inactive — save scroll position
+      savedScrollRef.current = scrollRef.current.scrollTop;
+    }
+    if (isActive && !wasActiveRef.current && scrollRef.current && savedScrollRef.current !== null) {
+      // Becoming active — restore scroll position
+      scrollRef.current.scrollTop = savedScrollRef.current;
+      savedScrollRef.current = null;
+    }
+    wasActiveRef.current = isActive;
+  }, [isActive]);
 
   return (
     <div className="flex flex-col h-full">
       {/* Messages area */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto px-4 py-3" style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+        className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3"
       >
-        {messages.length === 0 && !isGenerating && (
-          <div className="flex items-center justify-center h-full">
-            <p className="text-sm text-[var(--text-tertiary)]">
-              Send a message to start the conversation
-            </p>
-          </div>
-        )}
+        {/* Skip rendering message DOM for inactive tabs to avoid layout thrash */}
+        {isActive ? (
+          <>
+            {messages.length === 0 && !isGenerating && (
+              <div className="flex items-center justify-center h-full">
+                <p className="text-sm text-[var(--text-tertiary)]">
+                  Send a message to start the conversation
+                </p>
+              </div>
+            )}
 
-        {hasMore && (
-          <button
-            onClick={loadMore}
-            className="self-center px-3 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
-          >
-            Load {Math.min(LOAD_MORE_CHUNK, messages.length - renderCount)} earlier messages…
-          </button>
-        )}
+            {hasMore && (
+              <button
+                onClick={loadMore}
+                className="self-center px-3 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
+              >
+                Load {Math.min(LOAD_MORE_CHUNK, messages.length - renderCount)} earlier messages…
+              </button>
+            )}
 
-        {visibleMessages.map((msg) => (
-          <MessageBubble
-            key={msg.id}
-            message={msg}
-            expandedTools={expandedTools}
-            onToggleTool={toggleTool}
-          />
-        ))}
+            {deferredMessages.map((msg, idx) => (
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                toolStates={toolStates}
+                onToggleTool={toggleTool}
+                isLastMessage={idx === deferredMessages.length - 1}
+                onAnswerQuestion={answerQuestion}
+              />
+            ))}
 
-        {isGenerating && (
-          <div className="flex items-center gap-2 px-3 py-2">
-            <div className="flex gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse [animation-delay:150ms]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse [animation-delay:300ms]" />
-            </div>
-            <span className="text-xs text-[var(--text-tertiary)]">Thinking…</span>
-          </div>
-        )}
+            {isGenerating && (
+              <div className="flex items-center gap-2 px-3 py-2">
+                <div className="flex gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse [animation-delay:150ms]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse [animation-delay:300ms]" />
+                </div>
+                <span className="text-xs text-[var(--text-tertiary)]">
+                  {currentTodo || "Thinking…"}
+                </span>
+              </div>
+            )}
+          </>
+        ) : null}
       </div>
 
       {/* Input area */}
-      <div className="border-t border-[var(--border-color)] px-4 py-3">
+      <div className="border-t border-[var(--border-color)] px-4 py-3 relative">
+        {/* Model picker */}
+        {showModelPicker && (
+          <div className="absolute bottom-full left-0 right-0 mx-4 mb-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50">
+            <div className="px-3 py-2 text-xs text-[var(--text-tertiary)] border-b border-[var(--border-color)]">
+              Select a model
+            </div>
+            {MODELS.map((model, i) => (
+              <button
+                key={model.id}
+                className={`w-full text-left px-3 py-2.5 flex items-center gap-3 text-sm transition-colors ${
+                  i === modelPickerIndex
+                    ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
+                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                }`}
+                onMouseEnter={() => setModelPickerIndex(i)}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  selectModel(model);
+                }}
+              >
+                <div className="flex-1">
+                  <div className="font-medium text-[var(--text-primary)]">{model.name}</div>
+                  <div className="text-xs text-[var(--text-tertiary)]">{model.desc}</div>
+                </div>
+                {currentModel === model.id && (
+                  <svg className="w-4 h-4 text-[var(--accent)] shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+        {/* Slash command autocomplete */}
+        {showSlashMenu && filteredSlashCommands.length > 0 && (
+          <div
+            ref={slashMenuRef}
+            className="absolute bottom-full left-0 right-0 mx-4 mb-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"
+          >
+            {filteredSlashCommands.map((cmd, i) => (
+              <button
+                key={cmd.name}
+                className={`w-full text-left px-3 py-2 flex items-baseline gap-4 text-sm transition-colors ${
+                  i === slashMenuIndex
+                    ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
+                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                }`}
+                onMouseEnter={() => setSlashMenuIndex(i)}
+                onMouseDown={(e) => {
+                  e.preventDefault(); // keep focus on textarea
+                  selectSlashCommand(cmd);
+                }}
+              >
+                <span className="font-mono text-[var(--accent)] shrink-0">/{cmd.name}</span>
+                <span className="text-[var(--text-tertiary)] truncate text-xs">{cmd.description}</span>
+                {cmd.source === "user" && (
+                  <span className="text-[10px] text-[var(--text-tertiary)] opacity-60 ml-auto shrink-0">(user)</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
         {/* Image thumbnails */}
         {images.length > 0 && (
           <div className="flex gap-2 mb-2 flex-wrap">
@@ -670,7 +1247,7 @@ export default function AgentChat({
             </button>
           ) : (
             <button
-              onClick={sendMessage}
+              onClick={() => sendMessage()}
               disabled={!inputText.trim() && images.length === 0}
               className="px-3 py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors shrink-0"
             >
@@ -681,18 +1258,32 @@ export default function AgentChat({
       </div>
     </div>
   );
-}
+}, (prev, next) => {
+  // Callback props are stored in refs inside the component, so we only
+  // need to re-render when these data props change:
+  return (
+    prev.sessionId === next.sessionId &&
+    prev.isActive === next.isActive &&
+    prev.session === next.session
+  );
+});
+
+export default AgentChat;
 
 // ── MessageBubble ──────────────────────────────────────────────────
 
 const MessageBubble = memo(function MessageBubble({
   message,
-  expandedTools,
+  toolStates,
   onToggleTool,
+  isLastMessage,
+  onAnswerQuestion,
 }: {
   message: ChatMessage;
-  expandedTools: Set<string>;
-  onToggleTool: (id: string) => void;
+  toolStates: Record<string, "expanded" | "collapsed">;
+  onToggleTool: (id: string, isCurrentlyExpanded: boolean) => void;
+  isLastMessage: boolean;
+  onAnswerQuestion?: (answer: string) => void;
 }) {
   if (message.type === "user") {
     // Filter out tool_result blocks (tool plumbing, not user content)
@@ -705,6 +1296,14 @@ const MessageBubble = memo(function MessageBubble({
             <ContentBlockView key={i} block={block} isUser />
           ))}
         </div>
+      </div>
+    );
+  }
+
+  if (message.type === "system") {
+    return (
+      <div className="px-3 py-1.5 text-xs text-[var(--text-tertiary)] italic text-center">
+        {message.content[0]?.text}
       </div>
     );
   }
@@ -735,100 +1334,135 @@ const MessageBubble = memo(function MessageBubble({
     );
   }
 
-  // Assistant message
+  // Assistant message - group tool blocks for consolidated display
+  const grouped = useMemo(
+    () => groupToolBlocks(message.content, message.id),
+    [message.content, message.id]
+  );
+
+  // Find the last tool group to determine which should be expanded
+  // Only expand the last tool of the last message (and only if it has no result yet)
+  const toolGroups = grouped.items.filter(
+    (item): item is { type: "toolGroup"; group: ToolGroup } =>
+      item.type === "toolGroup"
+  );
+  const lastToolGroupId =
+    isLastMessage && toolGroups.length > 0
+      ? toolGroups[toolGroups.length - 1].group.blockId
+      : null;
+
   return (
-    <div className="max-w-[95%] flex flex-col" style={{ gap: "12px" }}>
-      {message.content.map((block, i) => {
-        const blockId = block.id || `${message.id}-${i}`;
-        if (block.type === "tool_use") {
+    <div className="max-w-[95%] flex flex-col gap-3">
+      {grouped.items.map((item, i) => {
+        if (item.type === "toolGroup") {
+          const { group } = item;
+          if (group.toolUse.name === "AskUserQuestion") {
+            return (
+              <AskUserQuestionBlock
+                key={group.blockId}
+                group={group}
+                isLastMessage={isLastMessage}
+                onAnswer={onAnswerQuestion}
+              />
+            );
+          }
+          const isLast = group.blockId === lastToolGroupId;
           return (
-            <ToolUseCard
-              key={blockId}
-              block={block}
-              blockId={blockId}
-              expanded={expandedTools.has(blockId)}
-              onToggle={() => onToggleTool(blockId)}
+            <ConsolidatedToolGroup
+              key={group.blockId}
+              group={group}
+              isLast={isLast}
+              isLastMessage={isLastMessage}
+              expanded={toolStates[group.blockId] === "expanded"}
+              collapsed={toolStates[group.blockId] === "collapsed"}
+              onToggle={(isCurrentlyExpanded) =>
+                onToggleTool(group.blockId, isCurrentlyExpanded)
+              }
             />
           );
         }
-        if (block.type === "tool_result") {
-          return <ToolResultCard key={blockId} block={block} />;
-        }
-        return <ContentBlockView key={i} block={block} />;
+        return <ContentBlockView key={i} block={item.block} />;
       })}
     </div>
   );
 });
+
+// ── Link helpers ───────────────────────────────────────────────────
+
+const URL_RE = /(https?:\/\/[^\s<>'")\]]+)/g;
+
+/** Intercept <a> clicks and open in default browser via Tauri */
+function handleLinkClick(e: React.MouseEvent<HTMLDivElement>) {
+  const target = (e.target as HTMLElement).closest("a");
+  if (target?.href) {
+    e.preventDefault();
+    openUrl(target.href);
+  }
+}
+
+/** Render plain text with URLs converted to clickable links */
+function LinkifiedText({ text, className }: { text: string; className?: string }) {
+  const parts = useMemo(() => {
+    const result: (string | { url: string })[] = [];
+    let lastIndex = 0;
+    for (const match of text.matchAll(URL_RE)) {
+      if (match.index > lastIndex) result.push(text.slice(lastIndex, match.index));
+      result.push({ url: match[0] });
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text.length) result.push(text.slice(lastIndex));
+    return result;
+  }, [text]);
+
+  return (
+    <span className={className} onClick={handleLinkClick}>
+      {parts.map((p, i) =>
+        typeof p === "string" ? p : (
+          <a key={i} href={p.url} className="text-[var(--accent)] underline">
+            {p.url}
+          </a>
+        )
+      )}
+    </span>
+  );
+}
+
+// ── Markdown rendering (marked + DOMPurify) ────────────────────────
+
+const markedRenderer = new marked.Renderer();
+
+// Open links in new tab
+markedRenderer.link = ({ href, text }) =>
+  `<a href="${href}" class="text-[var(--accent)] underline" target="_blank" rel="noreferrer">${text}</a>`;
+
+const markedOptions = { renderer: markedRenderer };
+
+function MarkdownContent({ text }: { text: string }) {
+  const html = useMemo(() => {
+    // Strip CLI XML-like tags (e.g. <command-message-help>, <command-name>)
+    // that DOMPurify preserves as valid custom elements
+    const cleaned = text.replace(/<\/?[a-z]+-[a-z-]*>/g, "");
+    const raw = marked.parse(cleaned, markedOptions) as string;
+    return DOMPurify.sanitize(raw, { ADD_ATTR: ["target"] });
+  }, [text]);
+
+  return (
+    <div
+      className="text-sm text-[var(--text-primary)] prose-agent"
+      onClick={handleLinkClick}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
 
 // ── Content block rendering ────────────────────────────────────────
 
 function ContentBlockView({ block, isUser }: { block: ContentBlock; isUser?: boolean }) {
   if (block.type === "text" && block.text) {
     if (isUser) {
-      return (
-        <div className="text-sm whitespace-pre-wrap break-words">
-          {block.text}
-        </div>
-      );
+      return <LinkifiedText text={block.text} className="text-sm whitespace-pre-wrap break-words" />;
     }
-    return (
-      <div className="text-sm text-[var(--text-primary)] prose-agent">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            pre: ({ children }) => (
-              <pre className="bg-[var(--bg-tertiary)] rounded-lg p-3 my-2 overflow-x-auto text-xs font-mono">
-                {children}
-              </pre>
-            ),
-            code: ({ children, className }) => {
-              const isBlock = className?.startsWith("language-");
-              if (isBlock) {
-                return <code className="text-[var(--text-primary)]">{children}</code>;
-              }
-              return (
-                <code className="bg-[#2d333b] px-1 py-0.5 rounded text-[var(--text-secondary)]">
-                  {children}
-                </code>
-              );
-            },
-            p: ({ children }) => <p className="my-3 leading-7">{children}</p>,
-            ul: ({ children }) => <ul className="list-disc pl-5 my-3 space-y-1.5">{children}</ul>,
-            ol: ({ children }) => <ol className="list-decimal pl-5 my-3 space-y-1.5">{children}</ol>,
-            li: ({ children }) => <li className="leading-7">{children}</li>,
-            h1: ({ children }) => <h1 className="text-lg font-bold mt-3 mb-1">{children}</h1>,
-            h2: ({ children }) => <h2 className="text-base font-bold mt-3 mb-1">{children}</h2>,
-            h3: ({ children }) => <h3 className="text-sm font-bold mt-2 mb-1">{children}</h3>,
-            strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-            a: ({ href, children }) => (
-              <a href={href} className="text-[var(--accent)] underline" target="_blank" rel="noreferrer">
-                {children}
-              </a>
-            ),
-            blockquote: ({ children }) => (
-              <blockquote className="border-l-2 border-[var(--border-color)] pl-3 my-2 text-[var(--text-secondary)]">
-                {children}
-              </blockquote>
-            ),
-            table: ({ children }) => (
-              <div className="overflow-x-auto my-2">
-                <table className="text-xs border-collapse border border-[var(--border-color)]">{children}</table>
-              </div>
-            ),
-            th: ({ children }) => (
-              <th className="border border-[var(--border-color)] bg-[var(--bg-tertiary)] px-2 py-1 text-left font-medium">
-                {children}
-              </th>
-            ),
-            td: ({ children }) => (
-              <td className="border border-[var(--border-color)] px-2 py-1">{children}</td>
-            ),
-          }}
-        >
-          {block.text}
-        </ReactMarkdown>
-      </div>
-    );
+    return <MarkdownContent text={block.text} />;
   }
 
   if (block.type === "thinking" && block.thinking) {
@@ -867,19 +1501,34 @@ interface HighlightedToken {
   color?: string;
 }
 
-function useShikiHighlight(code: string, filePath: string): HighlightedToken[][] | null {
+function useShikiHighlight(code: string, filePath: string, containerRef: React.RefObject<HTMLElement | null>): HighlightedToken[][] | null {
   const [tokens, setTokens] = useState<HighlightedToken[][] | null>(null);
   const idRef = useRef(0);
+  const [isVisible, setIsVisible] = useState(false);
+
+  // Only highlight when visible in viewport
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setIsVisible(true); observer.disconnect(); } },
+      { rootMargin: "200px" }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [containerRef]);
 
   useEffect(() => {
-    if (!code) { setTokens(null); return; }
+    if (!isVisible || !code) { return; }
     const id = ++idRef.current;
     const lang = langFromPath(filePath);
     if (!lang) {
       setTokens(code.split("\n").map(l => [{ content: l }]));
       return;
     }
-    (async () => {
+    // Use requestIdleCallback to avoid blocking during streaming
+    const schedule = window.requestIdleCallback || ((cb: () => void) => setTimeout(cb, 16));
+    schedule(async () => {
       const hl = await getHighlighter();
       await ensureLang(hl, lang);
       const result = hl.codeToTokens(code, { lang, theme: "github-dark" });
@@ -888,8 +1537,8 @@ function useShikiHighlight(code: string, filePath: string): HighlightedToken[][]
           lineTokens.map(t => ({ content: t.content, color: t.color }))
         ));
       }
-    })();
-  }, [code, filePath]);
+    });
+  }, [code, filePath, isVisible]);
 
   return tokens;
 }
@@ -911,13 +1560,14 @@ function EditDiffView({ filePath, oldStr, newStr }: {
   oldStr: string;
   newStr: string;
 }) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const oldLines = useMemo(() => oldStr.split("\n"), [oldStr]);
   const newLines = useMemo(() => newStr.split("\n"), [newStr]);
-  const oldTokens = useShikiHighlight(oldStr, filePath);
-  const newTokens = useShikiHighlight(newStr, filePath);
+  const oldTokens = useShikiHighlight(oldStr, filePath, containerRef);
+  const newTokens = useShikiHighlight(newStr, filePath, containerRef);
 
   return (
-    <div className="font-mono text-[11px] leading-[18px] overflow-x-auto">
+    <div ref={containerRef} className="font-mono text-[11px] leading-[18px] overflow-x-auto">
       <table style={{ minWidth: "100%", borderCollapse: "collapse" }}>
         <tbody>
           {oldLines.map((line, i) => (
@@ -954,15 +1604,16 @@ function WriteContentView({ filePath, content }: {
   filePath: string;
   content: string;
 }) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const lines = useMemo(() => content.split("\n"), [content]);
-  const tokens = useShikiHighlight(content, filePath);
+  const tokens = useShikiHighlight(content, filePath, containerRef);
   const maxLines = 30;
   const truncated = lines.length > maxLines;
   const displayLines = truncated ? lines.slice(0, maxLines) : lines;
   const displayTokens = truncated ? tokens?.slice(0, maxLines) : tokens;
 
   return (
-    <div className="font-mono text-[11px] leading-[18px] overflow-x-auto">
+    <div ref={containerRef} className="font-mono text-[11px] leading-[18px] overflow-x-auto">
       <table style={{ minWidth: "100%", borderCollapse: "collapse" }}>
         <tbody>
           {displayLines.map((line, i) => (
@@ -992,28 +1643,293 @@ function WriteContentView({ filePath, content }: {
   );
 }
 
-// ── Tool use card ──────────────────────────────────────────────────
+// ── Todo list view for TodoWrite tool ──────────────────────────────
 
-function ToolUseCard({
-  block,
+interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  activeForm?: string;
+}
+
+function TodoListView({ todos }: { todos: TodoItem[] }) {
+  return (
+    <div className="px-3 py-2 space-y-1">
+      {todos.map((todo, i) => {
+        const statusIcon = todo.status === "completed" ? (
+          <svg className="w-3.5 h-3.5 text-green-400 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+          </svg>
+        ) : todo.status === "in_progress" ? (
+          <svg className="w-3.5 h-3.5 text-blue-400 shrink-0 animate-spin" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2}>
+            <circle cx="10" cy="10" r="7" strokeOpacity={0.25} />
+            <path d="M10 3a7 7 0 016.93 6" strokeLinecap="round" />
+          </svg>
+        ) : (
+          <span className="w-3.5 h-3.5 rounded-full border border-[var(--text-tertiary)] shrink-0" />
+        );
+
+        const textColor = todo.status === "completed"
+          ? "text-[var(--text-tertiary)] line-through"
+          : todo.status === "in_progress"
+          ? "text-[var(--text-primary)]"
+          : "text-[var(--text-secondary)]";
+
+        return (
+          <div key={i} className="flex items-start gap-2">
+            <div className="mt-0.5">{statusIcon}</div>
+            <span className={`text-xs ${textColor}`}>{todo.content}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Tool input view ────────────────────────────────────────────────
+
+function ToolInputView({ toolName, input }: { toolName: string; input: Record<string, unknown> }) {
+  // Render a key-value pair with appropriate formatting
+  const renderValue = (key: string, value: unknown) => {
+    if (value == null) return null;
+    const strVal = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    // For long string values (commands, code), render as a code block
+    if (typeof value === "string" && (value.includes("\n") || value.length > 100)) {
+      return (
+        <div key={key} className="px-3 py-1">
+          <span className="text-[10px] uppercase tracking-wider text-[var(--text-tertiary)]">{key}</span>
+          <pre className="mt-0.5 text-xs text-[var(--text-secondary)] whitespace-pre-wrap break-words font-mono bg-[var(--bg-tertiary)] rounded px-2 py-1.5 max-h-32 overflow-y-auto">
+            {value}
+          </pre>
+        </div>
+      );
+    }
+    return (
+      <div key={key} className="flex gap-2 px-3 py-0.5 items-baseline">
+        <span className="text-[10px] uppercase tracking-wider text-[var(--text-tertiary)] shrink-0">{key}</span>
+        <span className="text-xs text-[var(--text-secondary)] font-mono truncate">
+          <LinkifiedText text={strVal} />
+        </span>
+      </div>
+    );
+  };
+
+  // Tool-specific layouts
+  switch (toolName) {
+    case "Read":
+      return (
+        <div className="py-1.5">
+          {renderValue("path", input.file_path)}
+          {input.offset != null ? renderValue("from line", input.offset) : null}
+          {input.limit != null ? renderValue("lines", input.limit) : null}
+        </div>
+      );
+    case "Bash":
+      return (
+        <div className="py-1.5">
+          <div className="px-3">
+            <pre className="text-xs text-[var(--text-secondary)] whitespace-pre-wrap break-words font-mono bg-[var(--bg-tertiary)] rounded px-2 py-1.5 max-h-48 overflow-y-auto">
+              <span className="text-[var(--text-tertiary)] select-none">$ </span>{input.command as string}
+            </pre>
+          </div>
+          {input.timeout != null ? renderValue("timeout", `${input.timeout}ms`) : null}
+        </div>
+      );
+    case "Grep": {
+      const ctx = [
+        input["-B"] ? `-B ${input["-B"]}` : "",
+        input["-A"] ? `-A ${input["-A"]}` : "",
+        input["-C"] ? `-C ${input["-C"]}` : "",
+      ].filter(Boolean).join(" ");
+      return (
+        <div className="py-1.5">
+          {renderValue("pattern", input.pattern)}
+          {input.path != null ? renderValue("path", input.path) : null}
+          {input.glob != null ? renderValue("glob", input.glob) : null}
+          {input.output_mode != null ? renderValue("mode", input.output_mode) : null}
+          {ctx ? renderValue("context", ctx) : null}
+        </div>
+      );
+    }
+    case "Glob":
+      return (
+        <div className="py-1.5">
+          {renderValue("pattern", input.pattern)}
+          {input.path != null ? renderValue("path", input.path) : null}
+        </div>
+      );
+    case "WebSearch":
+      return (
+        <div className="py-1.5">
+          {renderValue("query", input.query)}
+        </div>
+      );
+    case "WebFetch":
+      return (
+        <div className="py-1.5">
+          {renderValue("url", input.url)}
+          {input.prompt != null ? renderValue("prompt", input.prompt) : null}
+        </div>
+      );
+    case "LSP":
+      return (
+        <div className="py-1.5">
+          {renderValue("command", input.command)}
+          {input.file_path != null ? renderValue("path", input.file_path) : null}
+          {input.query != null ? renderValue("query", input.query) : null}
+        </div>
+      );
+    case "Task":
+      return (
+        <div className="py-1.5">
+          {renderValue("description", input.description)}
+          {input.prompt != null ? renderValue("prompt", input.prompt) : null}
+        </div>
+      );
+    default: {
+      // Generic: render all key-value pairs cleanly
+      const entries = Object.entries(input);
+      if (entries.length === 0) return null;
+      return (
+        <div className="py-1.5">
+          {entries.map(([k, v]) => renderValue(k, v))}
+        </div>
+      );
+    }
+  }
+}
+
+// ── Consolidated tool group ────────────────────────────────────────
+
+// ── AskUserQuestion block ──────────────────────────────────────────
+
+interface AskQuestion {
+  question: string;
+  header?: string;
+  options?: Array<{ label: string; description?: string }>;
+  multiSelect?: boolean;
+}
+
+function AskUserQuestionBlock({
+  group,
+  isLastMessage,
+  onAnswer,
+}: {
+  group: ToolGroup;
+  isLastMessage: boolean;
+  onAnswer?: (answer: string) => void;
+}) {
+  const input = group.toolUse.input || {};
+  const questions = (input.questions as AskQuestion[]) || [];
+  // Only disable buttons when there's an explicit tool_result for this AskUserQuestion.
+  // Unlike other tools, don't infer "has result" from !isLastMessage — the bridge
+  // interrupts the query at AskUserQuestion to wait for user input.
+  const hasResult = !!group.toolResult;
+
+  // Fallback: if no structured questions, try to show a simple question string
+  if (questions.length === 0) {
+    const questionText = (input.question as string) || (input.text as string) || "";
+    return (
+      <div className="border border-[var(--accent)]/30 rounded-lg px-4 py-3 bg-[var(--accent)]/5">
+        <div className="text-xs font-medium text-[var(--accent)] mb-1">Question</div>
+        <div className="text-sm text-[var(--text-primary)]">{questionText}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {questions.map((q, qi) => (
+        <div
+          key={qi}
+          className="border border-[var(--accent)]/30 rounded-lg overflow-hidden bg-[var(--accent)]/5"
+        >
+          {q.header && (
+            <div className="px-4 pt-3 pb-1 text-xs font-semibold text-[var(--accent)] uppercase tracking-wide">
+              {q.header}
+            </div>
+          )}
+          <div className="px-4 py-2 text-sm text-[var(--text-primary)]">
+            {q.question}
+          </div>
+          {q.options && q.options.length > 0 && (
+            <div className="px-3 pb-3 flex flex-col gap-1.5">
+              {q.options.map((opt, oi) => (
+                <button
+                  key={oi}
+                  disabled={hasResult}
+                  onClick={() => onAnswer?.(opt.label)}
+                  className={`text-left px-3 py-2 rounded-md border text-sm transition-colors ${
+                    hasResult
+                      ? "border-[var(--border-color)] bg-[var(--bg-secondary)] text-[var(--text-tertiary)] cursor-default"
+                      : "border-[var(--border-color)] bg-[var(--bg-secondary)] hover:bg-[var(--accent)]/10 hover:border-[var(--accent)]/40 text-[var(--text-primary)] cursor-pointer"
+                  }`}
+                >
+                  <div className="font-medium">{opt.label}</div>
+                  {opt.description && (
+                    <div className="text-xs text-[var(--text-tertiary)] mt-0.5">
+                      {opt.description}
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ConsolidatedToolGroup({
+  group,
+  isLast,
+  isLastMessage,
   expanded,
+  collapsed,
   onToggle,
 }: {
-  block: ContentBlock;
-  blockId: string;
+  group: ToolGroup;
+  isLast: boolean;
+  isLastMessage: boolean;
   expanded: boolean;
-  onToggle: () => void;
+  collapsed: boolean;
+  onToggle: (isCurrentlyExpanded: boolean) => void;
 }) {
-  const toolName = block.name || "Unknown tool";
-  const input = block.input || {};
+  const toolName = group.toolUse.name || "Unknown tool";
+  const input = group.toolUse.input || {};
+  // Tool has a result if either:
+  // 1. We have an explicit tool_result block matched to it, OR
+  // 2. This is not the last message (so Claude must have received the result to continue)
+  const hasResult = !!group.toolResult || !isLastMessage;
+  const isError = group.toolResult?.is_error;
+
+  // Determine if this should be shown expanded:
+  // - Expanded if manually expanded
+  // - Expanded if last tool AND still in-progress (no result yet) AND not manually collapsed
+  const shouldExpand = expanded || (isLast && !hasResult && !collapsed);
+
+  // Shorten an absolute file path to last N segments
+  const shortPath = (p: string, n = 3) => {
+    if (!p) return "";
+    const segs = p.split("/");
+    return segs.length > n ? segs.slice(-n).join("/") : p;
+  };
 
   // Generate a short summary based on tool name and input
   const summary = useMemo(() => {
     switch (toolName) {
-      case "Read":
-        return input.file_path as string || "";
+      case "Read": {
+        const fp = shortPath(input.file_path as string);
+        if (input.offset || input.limit) {
+          const parts = [fp];
+          if (input.offset) parts.push(`L${input.offset}`);
+          if (input.limit) parts.push(`+${input.limit}`);
+          return parts.join(" ");
+        }
+        return fp;
+      }
       case "Write":
-        return input.file_path as string || "";
+        return shortPath(input.file_path as string);
       case "Edit": {
         const fp = input.file_path as string || "";
         if (input.old_string != null && input.new_string != null) {
@@ -1022,22 +1938,51 @@ function ToolUseCard({
           const short = fp.split("/").slice(-2).join("/");
           return `${short}  −${removed} +${added}`;
         }
-        return fp;
+        return shortPath(fp);
       }
       case "Bash":
-        return (input.command as string)?.slice(0, 80) || "";
-      case "Glob":
-        return input.pattern as string || "";
-      case "Grep":
-        return input.pattern as string || "";
+        return (input.command as string)?.slice(0, 120) || "";
+      case "Glob": {
+        const pat = input.pattern as string || "";
+        const gpath = input.path as string;
+        return gpath ? `${pat} in ${shortPath(gpath)}` : pat;
+      }
+      case "Grep": {
+        const pat = input.pattern as string || "";
+        const gpath = input.path as string;
+        const mode = input.output_mode as string;
+        const parts = [pat];
+        if (gpath) parts.push(`in ${shortPath(gpath)}`);
+        if (mode && mode !== "files_with_matches") parts.push(`(${mode})`);
+        return parts.join(" ");
+      }
       case "WebSearch":
         return input.query as string || "";
       case "WebFetch":
         return input.url as string || "";
-      case "Agent":
+      case "Task":
         return input.description as string || "";
-      default:
-        return "";
+      case "TodoWrite": {
+        const todos = input.todos as Array<{ content: string; status: string }> | undefined;
+        if (!todos || todos.length === 0) return "";
+        const completed = todos.filter(t => t.status === "completed").length;
+        const inProgress = todos.filter(t => t.status === "in_progress").length;
+        const pending = todos.filter(t => t.status === "pending").length;
+        const parts: string[] = [];
+        if (completed > 0) parts.push(`${completed} done`);
+        if (inProgress > 0) parts.push(`${inProgress} active`);
+        if (pending > 0) parts.push(`${pending} pending`);
+        return parts.join(", ");
+      }
+      case "LSP":
+        return input.command as string || "";
+      default: {
+        // For unknown tools (e.g. MCP), try to generate a useful summary
+        const vals = Object.values(input);
+        if (vals.length === 0) return "";
+        const first = vals.find(v => typeof v === "string" && (v as string).length > 0) as string | undefined;
+        return first ? first.slice(0, 80) : "";
+      }
     }
   }, [toolName, input]);
 
@@ -1051,19 +1996,27 @@ function ToolUseCard({
       case "Glob": return "text-purple-400";
       case "Grep": return "text-pink-400";
       case "WebSearch": case "WebFetch": return "text-cyan-400";
-      case "Agent": return "text-indigo-400";
+      case "Task": return "text-indigo-400";
+      case "TodoWrite": return "text-emerald-400";
       default: return "text-[var(--text-secondary)]";
     }
   }, [toolName]);
 
+  // Result content for inline display
+  const resultContent = useMemo(() => {
+    if (!group.toolResult) return null;
+    const content = group.toolResult.content;
+    return typeof content === "string" ? content : JSON.stringify(content, null, 2);
+  }, [group.toolResult]);
+
   return (
     <div className="border border-[var(--border-color)] rounded-lg overflow-hidden">
       <button
-        onClick={onToggle}
+        onClick={() => onToggle(shouldExpand)}
         className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
       >
         <svg
-          className={`w-3 h-3 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`}
+          className={`w-3 h-3 shrink-0 transition-transform ${shouldExpand ? "rotate-90" : ""}`}
           viewBox="0 0 24 24"
           fill="currentColor"
         >
@@ -1075,8 +2028,16 @@ function ToolUseCard({
             {summary}
           </span>
         )}
+        {hasResult && !shouldExpand && (
+          <span className={`text-xs ${isError ? "text-red-400" : "text-green-400"}`}>
+            {isError ? "✗" : "✓"}
+          </span>
+        )}
+        {!hasResult && !shouldExpand && (
+          <span className="w-3 h-3 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
+        )}
       </button>
-      {expanded && (
+      {shouldExpand && (
         <div className="border-t border-[var(--border-color)] bg-[var(--bg-secondary)]">
           {toolName === "Edit" && input.file_path && input.old_string != null && input.new_string != null ? (
             <div className="py-1">
@@ -1093,36 +2054,26 @@ function ToolUseCard({
                 content={input.content as string}
               />
             </div>
+          ) : toolName === "TodoWrite" && input.todos ? (
+            <TodoListView todos={input.todos as TodoItem[]} />
           ) : (
-            <pre className="text-xs text-[var(--text-secondary)] whitespace-pre-wrap break-words overflow-x-auto font-mono px-3 py-2">
-              {JSON.stringify(input, null, 2)}
-            </pre>
+            <ToolInputView toolName={toolName} input={input} />
+          )}
+          {/* Inline result */}
+          {resultContent && (
+            <div
+              className={`mx-3 mb-2 px-3 py-2 rounded text-xs font-mono whitespace-pre-wrap break-words max-h-40 overflow-y-auto ${
+                isError
+                  ? "bg-red-500/10 text-red-400 border border-red-500/20"
+                  : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
+              }`}
+              onClick={handleLinkClick}
+            >
+              <LinkifiedText text={resultContent} />
+            </div>
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-// ── Tool result card ───────────────────────────────────────────────
-
-function ToolResultCard({ block }: { block: ContentBlock }) {
-  const isError = block.is_error;
-  const content = typeof block.content === "string"
-    ? block.content
-    : JSON.stringify(block.content, null, 2);
-
-  if (!content) return null;
-
-  return (
-    <div
-      className={`px-3 py-2 rounded text-xs font-mono whitespace-pre-wrap break-words max-h-40 overflow-y-auto ${
-        isError
-          ? "bg-red-500/10 text-red-400 border border-red-500/20"
-          : "bg-[var(--bg-secondary)] text-[var(--text-secondary)]"
-      }`}
-    >
-      {content}
     </div>
   );
 }

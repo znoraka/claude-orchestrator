@@ -16,12 +16,27 @@ interface TitleState {
  */
 export function useConversationTitles(
   sessions: Session[],
-  renameSession: (id: string, name: string) => void
+  renameSession: (id: string, name: string) => void,
+  markTitleGenerated: (id: string) => void
 ) {
   const smartStateRef = useRef<Map<string, TitleState>>(new Map());
   const smartPendingRef = useRef<Set<string>>(new Set());
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+
+  // Initialize state for sessions that already have a generated title (e.g., on resume)
+  // This prevents regenerating titles when resuming a conversation
+  useEffect(() => {
+    for (const session of sessions) {
+      if (session.hasTitleBeenGenerated && !smartStateRef.current.has(session.id)) {
+        // Mark as already having a title so we don't regenerate
+        smartStateRef.current.set(session.id, {
+          lastMessageCount: 0,
+          lastTitleAt: Date.now(),
+        });
+      }
+    }
+  }, [sessions]);
 
   // Stable key: only changes when the set of running sessions changes (not on activeTime/name updates)
   const runningKey = sessions.filter((s) => s.status === "running").map((s) => s.id).join(",");
@@ -64,6 +79,8 @@ export function useConversationTitles(
           smartPendingRef.current.delete(session.id);
           if (title) {
             renameSession(session.id, title);
+            // Mark session as having a generated title (persisted to avoid regeneration on resume)
+            markTitleGenerated(session.id);
 
             // Update state with current message count and timestamp
             invoke<number>("get_message_count", {
@@ -133,11 +150,11 @@ export function useConversationTitles(
           tryResolveTitle(session);
         }
       }
-    }, 15_000);
+    }, 5_000);
 
     return () => {
       unlistenPromise.then((fn) => fn());
       clearInterval(fallbackInterval);
     };
-  }, [runningSessions, renameSession]);
+  }, [runningSessions, renameSession, markTitleGenerated]);
 }

@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build && pnpm build:mcp && pnpm build:agent",
     "build:mcp": "esbuild src-tauri/resources/mcp-server.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/mcp-server.bundle.mjs",
-    "build:agent": "esbuild src-tauri/resources/agent-bridge.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/agent-bridge.bundle.mjs --external:@anthropic-ai/claude-agent-sdk",
+    "build:agent": "esbuild src-tauri/resources/agent-bridge.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/agent-bridge.bundle.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -37,11 +37,11 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.16.0",
     "@xterm/xterm": "^5.5.0",
+    "dompurify": "^3.3.1",
+    "marked": "^17.0.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-markdown": "^10.1.0",
     "react-window": "^2.2.7",
-    "remark-gfm": "^4.0.1",
     "shiki": "^4.0.1",
     "uuid": "^11.1.0"
   },

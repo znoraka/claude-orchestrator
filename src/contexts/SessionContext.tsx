@@ -11,6 +11,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { v4 as uuidv4 } from "uuid";
 import { useConversationTitles } from "../hooks/useConversationTitles";
 import { useSessionUsage } from "../hooks/useSessionUsage";
@@ -90,6 +91,7 @@ interface SessionContextValue {
   touchSession: (id: string) => void;
   updateClaudeSessionId: (id: string, claudeSessionId: string) => void;
   setAgentBusy: (sessionId: string, isBusy: boolean) => void;
+  unreadSessions: Set<string>;
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -123,6 +125,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         claudeSessionId?: string;
         dangerouslySkipPermissions?: boolean;
         activeTime?: number;
+        hasTitleBeenGenerated?: boolean;
       }>
     >("load_sessions")
       .then((saved) => {
@@ -138,6 +141,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             claudeSessionId: s.claudeSessionId,
             dangerouslySkipPermissions: s.dangerouslySkipPermissions,
             activeTime: s.activeTime || 0,
+            hasTitleBeenGenerated: s.hasTitleBeenGenerated,
           }));
           dispatch({ type: "SET_ALL", sessions: restored });
         }
@@ -150,34 +154,57 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
+  // ── Session refs (needed early for save functions) ─────────────────
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+
+  // ── Helper to build session metadata for saving ───────────────────
+  const buildSessionMetas = useCallback(() => {
+    return sessionsRef.current.map((s) => ({
+      id: s.id,
+      name: s.name,
+      createdAt: s.createdAt,
+      lastActiveAt: s.lastActiveAt,
+      directory: s.directory,
+      homeDirectory: s.homeDirectory,
+      claudeSessionId: s.claudeSessionId,
+      dangerouslySkipPermissions: s.dangerouslySkipPermissions,
+      activeTime: s.activeTime || 0,
+      hasTitleBeenGenerated: s.hasTitleBeenGenerated,
+    }));
+  }, []);
+
+  // ── Immediate save for critical operations (create, delete) ───────
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeTimeSaveRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const saveSessionsImmediately = useCallback(async () => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    try {
+      await invoke("save_sessions", { sessions: buildSessionMetas() });
+    } catch (err) {
+      console.error("Failed to save sessions:", err);
+    }
+  }, [buildSessionMetas]);
+
   // ── Persist sessions on every change (debounced, after initial load) ─
   // Use a stable key that excludes volatile fields (activeTime) to avoid
   // re-saving every 60s when TICK_ACTIVE_TIMES fires.
   const saveKey = useMemo(
     () =>
       sessions
-        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.dangerouslySkipPermissions}`)
+        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.dangerouslySkipPermissions}:${s.hasTitleBeenGenerated}`)
         .join("|"),
     [sessions]
   );
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const activeTimeSaveRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     if (!loadedRef.current) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      const metas = sessionsRef.current.map((s) => ({
-        id: s.id,
-        name: s.name,
-        createdAt: s.createdAt,
-        lastActiveAt: s.lastActiveAt,
-        directory: s.directory,
-        homeDirectory: s.homeDirectory,
-        claudeSessionId: s.claudeSessionId,
-        dangerouslySkipPermissions: s.dangerouslySkipPermissions,
-        activeTime: s.activeTime || 0,
-      }));
-      invoke("save_sessions", { sessions: metas }).catch((err) => {
+      invoke("save_sessions", { sessions: buildSessionMetas() }).catch((err) => {
         console.error("Failed to save sessions:", err);
         showError(`Failed to save sessions: ${err}`);
       });
@@ -194,29 +221,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (activeTimeSaveRef.current) clearInterval(activeTimeSaveRef.current);
     activeTimeSaveRef.current = setInterval(() => {
       if (!loadedRef.current) return;
-      const metas = sessionsRef.current.map((s) => ({
-        id: s.id,
-        name: s.name,
-        createdAt: s.createdAt,
-        lastActiveAt: s.lastActiveAt,
-        directory: s.directory,
-        homeDirectory: s.homeDirectory,
-        claudeSessionId: s.claudeSessionId,
-        dangerouslySkipPermissions: s.dangerouslySkipPermissions,
-        activeTime: s.activeTime || 0,
-      }));
-      invoke("save_sessions", { sessions: metas }).catch(() => {});
+      invoke("save_sessions", { sessions: buildSessionMetas() }).catch(() => {});
     }, 300_000);
     return () => {
       if (activeTimeSaveRef.current) clearInterval(activeTimeSaveRef.current);
     };
-  }, []);
+  }, [buildSessionMetas]);
 
-  // ── Kill oldest running sessions when over the limit ─────────────
-  // Uses the dispatch-based approach: no refs needed because we read
-  // current state from the sessions array captured by the effect.
-  const sessionsRef = useRef(sessions);
-  sessionsRef.current = sessions;
+  // ── Flush pending saves before app close ──────────────────────────
+  useEffect(() => {
+    const unlisten = getCurrentWindow().onCloseRequested(async () => {
+      await saveSessionsImmediately();
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [saveSessionsImmediately]);
 
   const enforceMaxSessions = useCallback(async (excludeId?: string) => {
     const current = sessionsRef.current;
@@ -312,6 +332,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       dispatch({ type: "ADD", session });
       setActiveSessionId(id);
 
+      // Save immediately after adding to ensure session is persisted
+      // Use setTimeout(0) to ensure dispatch has updated sessionsRef
+      setTimeout(() => saveSessionsImmediately(), 0);
+
       try {
         await invoke("create_agent_session", {
           sessionId: id,
@@ -330,7 +354,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
       return id;
     },
-    [enforceMaxSessions, showError]
+    [enforceMaxSessions, showError, saveSessionsImmediately]
   );
 
   const deleteSession = useCallback(
@@ -345,15 +369,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
       setActiveSessionId((prev) => {
         if (prev !== id) return prev;
-        const remaining = sessionsRef.current.filter((s) => s.id !== id);
+        const remaining = sessionsRef.current
+          .filter((s) => s.id !== id)
+          .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
         return remaining.length > 0 ? remaining[0].id : null;
       });
+
+      // Save immediately after removal to ensure deletion is persisted
+      // Use setTimeout(0) to ensure dispatch has updated sessionsRef
+      setTimeout(() => saveSessionsImmediately(), 0);
     },
-    []
+    [saveSessionsImmediately]
   );
 
   const renameSession = useCallback((id: string, name: string) => {
     dispatch({ type: "UPDATE", id, patch: { name } });
+  }, []);
+
+  const markTitleGenerated = useCallback((id: string) => {
+    dispatch({ type: "UPDATE", id, patch: { hasTitleBeenGenerated: true } });
   }, []);
 
   const markStopped = useCallback((id: string) => {
@@ -509,6 +543,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       );
       showInfo(`Switched "${session.name}" → ${directory.split("/").pop()}`);
 
+      // Update the agent bridge's working directory so future queries use the new cwd
+      invoke("set_agent_cwd", { sessionId: fromSessionId, cwd: directory }).catch((err: unknown) =>
+        console.warn(`[orchestrator-signal] set_agent_cwd failed:`, err)
+      );
+
       // When switching into a worktree, remember the original directory so we
       // can restore it if the worktree is later deleted.
       const isWorktree = directory.includes("/.worktrees/");
@@ -575,20 +614,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   // ── Derived state / side-effect hooks ────────────────────────────
 
-  useConversationTitles(sessions, renameSession);
+  useConversationTitles(sessions, renameSession, markTitleGenerated);
   const jsonlUsage = useSessionUsage(sessions);
 
   // ── Agent busy state (for SDK-based sessions) ─────────────────────
   const [agentBusyMap, setAgentBusyMap] = useState<Map<string, boolean>>(new Map());
   const setAgentBusy = useCallback((sessionId: string, isBusy: boolean) => {
     setAgentBusyMap((prev) => {
-      const next = new Map(prev);
       if (isBusy) {
+        if (prev.get(sessionId) === true) return prev; // no change
+        const next = new Map(prev);
         next.set(sessionId, true);
+        return next;
       } else {
+        if (!prev.has(sessionId)) return prev; // no change
+        const next = new Map(prev);
         next.delete(sessionId);
+        return next;
       }
-      return next;
     });
   }, []);
 
@@ -620,6 +663,42 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [jsonlUsage, agentBusyMap]);
 
   useBackgroundNotifications(sessions, sessionUsage, activeSessionId);
+
+  // ── Unread badge: tracks sessions that finished computing while not active ──
+  const [unreadSessions, setUnreadSessions] = useState<Set<string>>(new Set());
+  const prevBusyForUnreadRef = useRef<Map<string, boolean>>(new Map());
+
+  useEffect(() => {
+    for (const session of sessions) {
+      const usage = sessionUsage.get(session.id);
+      const wasBusy = prevBusyForUnreadRef.current.get(session.id) ?? false;
+      const isBusy = usage?.isBusy ?? false;
+
+      // busy → idle on a non-active session → mark unread
+      if (wasBusy && !isBusy && session.id !== activeSessionId) {
+        setUnreadSessions((prev) => {
+          if (prev.has(session.id)) return prev;
+          const next = new Set(prev);
+          next.add(session.id);
+          return next;
+        });
+      }
+
+      prevBusyForUnreadRef.current.set(session.id, isBusy);
+    }
+  }, [sessions, sessionUsage, activeSessionId]);
+
+  // Clear unread when session becomes active
+  useEffect(() => {
+    if (activeSessionId) {
+      setUnreadSessions((prev) => {
+        if (!prev.has(activeSessionId)) return prev;
+        const next = new Set(prev);
+        next.delete(activeSessionId);
+        return next;
+      });
+    }
+  }, [activeSessionId]);
 
   const sortedSessions = useMemo(
     () => [...sessions].sort((a, b) => b.lastActiveAt - a.lastActiveAt),
@@ -687,6 +766,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       touchSession,
       updateClaudeSessionId,
       setAgentBusy,
+      unreadSessions,
     }),
     [
       sessions,
@@ -711,6 +791,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       touchSession,
       updateClaudeSessionId,
       setAgentBusy,
+      unreadSessions,
     ]
   );
 

@@ -27,12 +27,19 @@ const log = (msg) => {
 const config = JSON.parse(process.argv[2] || "{}");
 const {
   sessionId,
-  cwd,
+  cwd: initialCwd,
   resume,
   mcpServers,
   systemPrompt,
   allowedTools,
+  claudeCliPath,
 } = config;
+
+// Mutable working directory — updated by set_cwd messages (e.g. after switch_workspace)
+let currentCwd = initialCwd;
+
+// Mutable model — updated by set_model messages
+let currentModel = config.model || null;
 
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
@@ -41,9 +48,9 @@ function emit(obj) {
 log(`PATH: ${process.env.PATH}`);
 log(`HOME: ${process.env.HOME}`);
 log(`node: ${process.execPath}`);
-log(`cwd config: ${cwd}`);
+log(`cwd config: ${initialCwd}`);
 log(`cwd actual: ${process.cwd()}`);
-log(`cwd exists: ${existsSync(cwd || process.cwd())}`);
+log(`cwd exists: ${existsSync(initialCwd || process.cwd())}`);
 
 // ── Session state ───────────────────────────────────────────────────
 
@@ -52,6 +59,9 @@ log(`cwd exists: ${existsSync(cwd || process.cwd())}`);
 let claudeSessionId = resume || null;
 let abortController = null;
 let queryInProgress = false;
+
+// AskUserQuestion interception: when set, we're waiting for user input
+let askUserResolve = null;
 
 // ── Stdin handling ──────────────────────────────────────────────────
 
@@ -82,6 +92,34 @@ async function handleStdinMessage(msg) {
     if (abortController) {
       abortController.abort();
       abortController = null;
+    }
+    // Also unblock any pending AskUserQuestion wait
+    if (askUserResolve) {
+      askUserResolve(null);
+      askUserResolve = null;
+    }
+    return;
+  }
+
+  if (msg.type === "set_cwd") {
+    currentCwd = msg.cwd;
+    log(`cwd updated to: ${currentCwd}`);
+    emit({ type: "cwd_updated", cwd: currentCwd });
+    return;
+  }
+
+  if (msg.type === "set_model") {
+    currentModel = msg.model || null;
+    log(`model updated to: ${currentModel}`);
+    emit({ type: "model_updated", model: currentModel });
+    return;
+  }
+
+  // User answered an AskUserQuestion prompt
+  if (msg.type === "ask_user_answer") {
+    if (askUserResolve) {
+      askUserResolve(msg.answer);
+      askUserResolve = null;
     }
     return;
   }
@@ -136,13 +174,18 @@ async function runQuery(userMessage) {
   }
 
   const options = {
-    cwd: cwd || process.cwd(),
+    cwd: currentCwd || process.cwd(),
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     abortSignal: abortController.signal,
-    executable: process.execPath,
     settingSources: ["project"],
   };
+
+  // Point the SDK to the real `claude` CLI binary (required in production builds
+  // where import.meta.url resolves inside the app bundle, not node_modules)
+  if (claudeCliPath) {
+    options.pathToClaudeCodeExecutable = claudeCliPath;
+  }
 
   // Resume from previous turn if we have a session ID
   if (claudeSessionId) {
@@ -157,16 +200,50 @@ async function runQuery(userMessage) {
   }
   if (mcpServers && Object.keys(mcpServers).length > 0) options.mcpServers = mcpServers;
   if (allowedTools) options.allowedTools = allowedTools;
+  if (currentModel) options.model = currentModel;
 
   try {
     log(`query() starting — cwd=${options.cwd}, resume=${claudeSessionId || "(new)"}`);
-    for await (const message of query({ prompt, options })) {
+    const q = query({ prompt, options });
+    for await (const message of q) {
       // Capture session ID from init message for future resume
       if (message.type === "system" && message.subtype === "init" && message.session_id) {
         claudeSessionId = message.session_id;
         log(`Session ID captured: ${claudeSessionId}`);
       }
       emit(message);
+
+      // Intercept AskUserQuestion: interrupt the query and wait for user input
+      if (
+        message.type === "assistant" &&
+        message.message?.content?.some(
+          (b) => b.type === "tool_use" && b.name === "AskUserQuestion"
+        ) &&
+        message.message?.stop_reason === "tool_use"
+      ) {
+        log("AskUserQuestion detected — interrupting query to wait for user input");
+        try { await q.interrupt(); } catch (e) { log(`interrupt error: ${e.message}`); }
+
+        // Signal that the query paused (so frontend hides "Thinking..." indicator)
+        emit({ type: "query_complete" });
+
+        // Wait for the user's answer via stdin (ask_user_answer message)
+        const answer = await new Promise((resolve) => {
+          askUserResolve = resolve;
+        });
+
+        if (answer !== null) {
+          log(`User answered AskUserQuestion: ${answer.substring(0, 100)}`);
+          // Resume the conversation with the user's answer
+          abortController = null;
+          queryInProgress = false;
+          await runQuery(answer);
+        } else {
+          log("AskUserQuestion cancelled (abort)");
+          emit({ type: "aborted" });
+        }
+        return; // Don't emit query_complete — runQuery handles it
+      }
     }
     emit({ type: "query_complete" });
   } catch (err) {
@@ -187,5 +264,5 @@ emit({
   type: "system",
   subtype: "bridge_ready",
   sessionId,
-  cwd: cwd || process.cwd(),
+  cwd: currentCwd || process.cwd(),
 });

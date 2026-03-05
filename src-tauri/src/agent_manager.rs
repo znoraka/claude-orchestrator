@@ -111,6 +111,7 @@ impl AgentManager {
         let app_handle_clone = app_handle.clone();
         let sid_clone = sid.clone();
         let history_clone = Arc::clone(&history_ref);
+        let sessions_clone = Arc::clone(&self.sessions);
         thread::spawn(move || {
             use std::io::{BufRead, BufReader};
             let reader = BufReader::new(stdout);
@@ -137,7 +138,10 @@ impl AgentManager {
                 let _ = app_handle_clone.emit(&event_name, &line);
             }
 
-            // Process exited
+            // Process exited — remove session so we don't try to write to a dead pipe
+            if let Ok(mut sessions) = sessions_clone.lock() {
+                sessions.remove(&sid_clone);
+            }
             let exit_event = format!("agent-exit-{}", sid_clone);
             let _ = app_handle_clone.emit(&exit_event, "exited");
         });

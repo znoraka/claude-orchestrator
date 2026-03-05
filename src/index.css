@@ -7,7 +7,7 @@
   --bg-tertiary: #1c2128;
   --bg-hover: #21262d;
   --border-color: #30363d;
-  --text-primary: #e6edf3;
+  --text-primary: #c9d1d9;
   --text-secondary: #8b949e;
   --text-tertiary: #6e7681;
   --accent: #e07020;
@@ -145,6 +145,61 @@ body {
   margin: 0.25em 0;
 }
 .pr-comment-body img { max-width: 100%; }
+
+/* Agent chat markdown prose */
+.prose-agent { font-weight: 500; }
+.prose-agent p { margin: 0.75rem 0; line-height: 1.75; }
+.prose-agent ul { list-style: disc; padding-left: 1.25rem; margin: 0.75rem 0; }
+.prose-agent ul li { margin: 0.375rem 0; line-height: 1.75; }
+.prose-agent ol { list-style: decimal; padding-left: 1.25rem; margin: 0.75rem 0; }
+.prose-agent ol li { margin: 0.375rem 0; line-height: 1.75; }
+.prose-agent h1 { font-size: 1.125rem; font-weight: 700; margin: 0.75rem 0 0.25rem; }
+.prose-agent h2 { font-size: 1rem; font-weight: 700; margin: 0.75rem 0 0.25rem; }
+.prose-agent h3 { font-size: 0.875rem; font-weight: 700; margin: 0.5rem 0 0.25rem; }
+.prose-agent strong { font-weight: 600; }
+.prose-agent a { color: var(--accent); text-decoration: underline; }
+.prose-agent blockquote {
+  border-left: 2px solid var(--border-color);
+  padding-left: 0.75rem;
+  margin: 0.5rem 0;
+  color: var(--text-secondary);
+}
+.prose-agent pre {
+  background: var(--bg-tertiary);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  margin: 0.5rem 0;
+  overflow-x: auto;
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+.prose-agent pre code { background: none; padding: 0; border-radius: 0; color: var(--text-primary); }
+.prose-agent code {
+  background: #2d333b;
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.25rem;
+  color: var(--text-secondary);
+  font-size: 0.85em;
+}
+.prose-agent table {
+  font-size: 0.75rem;
+  border-collapse: collapse;
+  border: 1px solid var(--border-color);
+  margin: 0.5rem 0;
+  overflow-x: auto;
+  display: block;
+}
+.prose-agent th {
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+  font-weight: 500;
+}
+.prose-agent td {
+  border: 1px solid var(--border-color);
+  padding: 0.25rem 0.5rem;
+}
 
 /* Image strip (thumbnail bar above terminal bottom) */
 .image-strip {

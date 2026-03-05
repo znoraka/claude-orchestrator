@@ -25,6 +25,7 @@ interface SidebarProps {
   onDeleteSession: (id: string) => void;
   onShowUsage?: () => void;
   shellProcessDirs?: Map<string, number>;
+  unreadSessions?: Set<string>;
 }
 
 type ViewMode = "workspace" | "date";
@@ -57,6 +58,7 @@ export default function Sidebar({
   onDeleteSession,
   onShowUsage,
   shellProcessDirs,
+  unreadSessions,
 }: SidebarProps) {
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -200,7 +202,6 @@ export default function Sidebar({
     });
   };
 
-  const runningSessions = allSessions.filter((s) => s.status === "running").length;
 
   return (
     <div className="w-64 h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-2 pt-3 pb-3">
@@ -315,6 +316,7 @@ export default function Sidebar({
                           isActive={session.id === activeSessionId}
                           usage={sessionUsage.get(session.id)}
                           contentOnly={contentOnlyIds.has(session.id)}
+                          unread={unreadSessions?.has(session.id)}
                           shellCount={session.directory ? shellProcessDirs?.get(session.directory) : undefined}
                           onClick={() => onSelectSession(session.id)}
                           onRename={(name) => onRenameSession(session.id, name)}
@@ -463,6 +465,7 @@ export default function Sidebar({
                                     isActive={session.id === activeSessionId}
                                     usage={sessionUsage.get(session.id)}
                                     contentOnly={contentOnlyIds.has(session.id)}
+                                    unread={unreadSessions?.has(session.id)}
                                     hideDirectory
                                     onClick={() => onSelectSession(session.id)}
                                     onRename={(name) => onRenameSession(session.id, name)}
@@ -533,12 +536,6 @@ export default function Sidebar({
 
       {/* Footer */}
       <div className="px-2 py-2 border-t border-[var(--border-color)] flex items-center gap-1.5">
-        <div className="w-5 h-5 rounded-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] flex items-center justify-center text-[10px] text-[var(--text-secondary)] font-medium shrink-0">
-          {runningSessions}
-        </div>
-        <span className="text-[10px] text-[var(--text-secondary)]">
-          active
-        </span>
         {shellProcessDirs && shellProcessDirs.size > 0 && (() => {
           const total = [...shellProcessDirs.values()].reduce((a, b) => a + b, 0);
           return (

@@ -129,6 +129,8 @@ struct SessionMeta {
     dangerously_skip_permissions: bool,
     #[serde(default, rename = "activeTime")]
     active_time: f64,
+    #[serde(default, rename = "hasTitleBeenGenerated")]
+    has_title_been_generated: bool,
 }
 
 fn sessions_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -270,12 +272,16 @@ fn create_agent_session(
         serde_json::json!({})
     };
 
+    // Resolve the `claude` CLI so the Agent SDK can find it inside the app bundle
+    let claude_cli = resolve_bin("claude");
+
     let config = serde_json::json!({
         "sessionId": &session_id,
         "cwd": &directory,
         "resume": if resume { claude_session_id.as_deref() } else { None::<&str> },
         "mcpServers": mcp_servers,
         "systemPrompt": system_prompt,
+        "claudeCliPath": claude_cli,
     });
     let config_json = config.to_string();
 
@@ -293,6 +299,23 @@ fn send_agent_message(session_id: String, message: String, state: State<'_, AppS
 fn abort_agent(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
     manager.abort(&session_id)
+}
+
+#[tauri::command]
+fn set_agent_cwd(session_id: String, cwd: String, state: State<'_, AppState>) -> Result<(), String> {
+    // Expand ~ to absolute path (agent bridge needs absolute paths)
+    let home = std::env::var("HOME")
+        .unwrap_or_else(|_| format!("/Users/{}", std::env::var("USER").unwrap_or_default()));
+    let abs_cwd = if cwd.starts_with("~/") {
+        format!("{}/{}", home, &cwd[2..])
+    } else if cwd == "~" {
+        home
+    } else {
+        cwd
+    };
+    let msg = serde_json::json!({"type": "set_cwd", "cwd": abs_cwd}).to_string();
+    let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
+    manager.send_message(&session_id, &msg)
 }
 
 #[tauri::command]
@@ -371,6 +394,77 @@ fn list_directories_sync(partial: String) -> Result<Vec<String>, String> {
     results.sort();
     results.truncate(50);
     Ok(results)
+}
+
+// ── Slash commands discovery ──────────────────────────────────────────
+
+#[derive(Serialize, Clone)]
+struct SlashCommand {
+    name: String,
+    description: String,
+    source: String, // "project" or "user"
+}
+
+#[tauri::command]
+async fn list_slash_commands(directory: String) -> Result<Vec<SlashCommand>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_slash_commands_sync(directory))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn list_slash_commands_sync(directory: String) -> Result<Vec<SlashCommand>, String> {
+    let mut commands = Vec::new();
+
+    // Scan project-level .claude/commands/
+    let project_dir = std::path::Path::new(&directory).join(".claude").join("commands");
+    if project_dir.is_dir() {
+        scan_commands_dir(&project_dir, "project", &mut commands);
+    }
+
+    // Scan user-level ~/.claude/commands/
+    if let Ok(home) = std::env::var("HOME") {
+        let user_dir = std::path::Path::new(&home).join(".claude").join("commands");
+        if user_dir.is_dir() {
+            scan_commands_dir(&user_dir, "user", &mut commands);
+        }
+    }
+
+    commands.sort_by(|a, b| a.name.cmp(&b.name));
+    // Deduplicate: project commands take priority over user commands
+    commands.dedup_by(|b, a| {
+        if a.name == b.name {
+            // Keep a (first occurrence), which is project if both exist (sorted + stable)
+            true
+        } else {
+            false
+        }
+    });
+    Ok(commands)
+}
+
+fn scan_commands_dir(dir: &std::path::Path, source: &str, commands: &mut Vec<SlashCommand>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    let description = std::fs::read_to_string(&path)
+                        .ok()
+                        .and_then(|content| {
+                            content.lines().next().map(|line| {
+                                line.trim().trim_start_matches('#').trim().to_string()
+                            })
+                        })
+                        .unwrap_or_default();
+                    commands.push(SlashCommand {
+                        name: stem.to_string(),
+                        description,
+                        source: source.to_string(),
+                    });
+                }
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -1390,9 +1484,9 @@ fn generate_smart_title_sync(claude_session_id: String, directory: String, inclu
         }
     }
 
-    let (user_msg, assistant_msg) = match (first_user_message, first_assistant_text) {
-        (Some(u), Some(a)) => (u, a),
-        _ => return Ok(None),
+    let user_msg = match first_user_message {
+        Some(u) => u,
+        None => return Ok(None),
     };
 
     let prompt = if include_recent.unwrap_or(false) && all_exchanges.len() > 2 {
@@ -1403,14 +1497,24 @@ fn generate_smart_title_sync(claude_session_id: String, directory: String, inclu
             let truncated: String = text.chars().take(200).collect();
             recent_text.push_str(&format!("\n{}: {}", if role == "user" { "User" } else { "Assistant" }, truncated));
         }
+        let first_exchange = if let Some(ref a) = first_assistant_text {
+            format!("User: {}\nAssistant: {}", user_msg, a)
+        } else {
+            format!("User: {}", user_msg)
+        };
         format!(
-            "Summarize this conversation in 3-6 words as a short title. The conversation has evolved, so consider the recent messages too. Reply with ONLY the title, nothing else.\n\nFirst exchange:\nUser: {}\nAssistant: {}\n\nRecent messages:{}",
-            user_msg, assistant_msg, recent_text
+            "Summarize this conversation in 3-6 words as a short title. The conversation has evolved, so consider the recent messages too. Reply with ONLY the title, nothing else.\n\nFirst exchange:\n{}\n\nRecent messages:{}",
+            first_exchange, recent_text
         )
-    } else {
+    } else if let Some(ref assistant_msg) = first_assistant_text {
         format!(
             "Summarize this conversation in 3-6 words as a short title. Reply with ONLY the title, nothing else.\n\nUser: {}\nAssistant: {}",
             user_msg, assistant_msg
+        )
+    } else {
+        format!(
+            "Summarize this request in 3-6 words as a short title. Reply with ONLY the title, nothing else.\n\nUser: {}",
+            user_msg
         )
     };
 
@@ -1438,26 +1542,23 @@ fn generate_smart_title_sync(claude_session_id: String, directory: String, inclu
     })
     .ok_or("No API key found. Set ANTHROPIC_API_KEY env var or log in to Claude Code.")?;
 
-    // Call Anthropic API directly via curl
+    // Call Anthropic API via reqwest
     let body = serde_json::json!({
         "model": "claude-haiku-4-5-20251001",
         "max_tokens": 30,
         "messages": [{"role": "user", "content": prompt}]
     });
 
-    let output = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "https://api.anthropic.com/v1/messages",
-            "-H", "Content-Type: application/json",
-            "-H", &format!("x-api-key: {}", access_token),
-            "-H", "anthropic-version: 2023-06-01",
-            "-d", &body.to_string(),
-        ])
-        .output()
-        .map_err(|e| format!("Failed to call Anthropic API: {}", e))?;
-
-    let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+    let client = reqwest::blocking::Client::new();
+    let response: serde_json::Value = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("content-type", "application/json")
+        .header("x-api-key", &access_token)
+        .header("anthropic-version", "2023-06-01")
+        .json(&body)
+        .send()
+        .map_err(|e| format!("Failed to call Anthropic API: {}", e))?
+        .json()
         .map_err(|e| format!("Failed to parse API response: {}", e))?;
 
     let title = response
@@ -2895,6 +2996,7 @@ pub fn run() {
             create_agent_session,
             send_agent_message,
             abort_agent,
+            set_agent_cwd,
             destroy_agent_session,
             get_agent_history,
             save_clipboard_image,
@@ -2902,6 +3004,7 @@ pub fn run() {
             save_sessions,
             load_sessions,
             list_directories,
+            list_slash_commands,
             list_worktrees,
             create_worktree,
             remove_worktree,
