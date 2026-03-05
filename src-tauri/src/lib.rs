@@ -849,6 +849,8 @@ struct SessionUsage {
     cache_read_input_tokens: u64,
     #[serde(rename = "costUsd")]
     cost_usd: f64,
+    #[serde(rename = "contextTokens")]
+    context_tokens: u64,
     #[serde(rename = "isBusy")]
     is_busy: bool,
 }
@@ -948,6 +950,7 @@ fn parse_session_usage_incremental(
                     usage.output_tokens += out;
                     usage.cache_creation_input_tokens += cc;
                     usage.cache_read_input_tokens += cr;
+                    usage.context_tokens = inp + cc + cr;
 
                     let (ip, op, cp, rp) = pricing.lookup(model);
                     usage.cost_usd += (inp as f64 * ip
@@ -2910,6 +2913,28 @@ fn get_clipboard_file_paths() -> Vec<String> {
     }
 }
 
+#[tauri::command]
+fn set_dock_badge(label: Option<String>) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSApplication;
+        use objc2_foundation::{MainThreadMarker, NSString};
+        if let Some(mtm) = MainThreadMarker::new() {
+            let app = NSApplication::sharedApplication(mtm);
+            let tile = app.dockTile();
+            match label {
+                Some(text) => {
+                    let ns_str = NSString::from_str(&text);
+                    tile.setBadgeLabel(Some(&ns_str));
+                }
+                None => {
+                    tile.setBadgeLabel(None);
+                }
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3039,6 +3064,7 @@ pub fn run() {
             get_pr_comments,
             get_pr_viewed_files,
             set_pr_file_viewed,
+            set_dock_badge,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

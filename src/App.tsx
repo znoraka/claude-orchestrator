@@ -1,9 +1,9 @@
-import { useRef, useState, useEffect, useMemo } from "react";
+import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionContext } from "./contexts/SessionContext";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
-import AgentChat from "./components/AgentChat";
+import AgentChat, { MODELS } from "./components/AgentChat";
 import GitPanel from "./components/GitPanel";
 import PRPanel from "./components/PRPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -15,6 +15,7 @@ import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
 import type { Session } from "./types";
 
+
 export default function App() {
   const {
     sessions,
@@ -22,8 +23,6 @@ export default function App() {
     activeSessionId,
     activeWorktreePath,
     sessionUsage,
-    todayCost,
-    todayTokens,
     selectSession,
     createSession,
     createWorktree,
@@ -34,6 +33,7 @@ export default function App() {
     touchSession,
     updateClaudeSessionId,
     setAgentBusy,
+    setSessionDraft,
     unreadSessions,
   } = useSessionContext();
 
@@ -75,6 +75,37 @@ export default function App() {
 
   // ── Panel state (replaces per-workspace tab state) ──────────────
   const [activePanel, setActivePanel] = useState<"git" | "prs" | "shell" | null>(null);
+  const [chatInputHeight, setChatInputHeight] = useState(0);
+
+  // ── Model picker (persisted across sessions) ──────────────────
+  const [selectedModel, setSelectedModel] = useState(() =>
+    localStorage.getItem("claude-orchestrator-model") || "claude-opus-4-6"
+  );
+  const [showModelDropdown, setShowModelDropdown] = useState(false);
+  const modelDropdownRef = useRef<HTMLDivElement>(null);
+
+  const handleModelChange = useCallback((modelId: string) => {
+    setSelectedModel(modelId);
+    localStorage.setItem("claude-orchestrator-model", modelId);
+    setShowModelDropdown(false);
+    // Send set_model to the active session's agent
+    if (activeSessionId) {
+      const msg = JSON.stringify({ type: "set_model", model: modelId });
+      invoke("send_agent_message", { sessionId: activeSessionId, message: msg }).catch(() => {});
+    }
+  }, [activeSessionId]);
+
+  // Close model dropdown on outside click
+  useEffect(() => {
+    if (!showModelDropdown) return;
+    const handleClick = (e: MouseEvent) => {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
+        setShowModelDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showModelDropdown]);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
@@ -82,20 +113,8 @@ export default function App() {
   );
 
   const panelDirectory = activeSession?.directory ?? "~";
+  const activeUsage = activeSessionId ? sessionUsage.get(activeSessionId) : undefined;
 
-  // Current git branch for panelDirectory
-  const [currentBranch, setCurrentBranch] = useState<string>("");
-  useEffect(() => {
-    invoke<{ branch: string; isGitRepo: boolean }>("get_git_status", { directory: panelDirectory })
-      .then((res) => setCurrentBranch(res.isGitRepo ? res.branch : ""))
-      .catch(() => setCurrentBranch(""));
-    const interval = setInterval(() => {
-      invoke<{ branch: string; isGitRepo: boolean }>("get_git_status", { directory: panelDirectory })
-        .then((res) => setCurrentBranch(res.isGitRepo ? res.branch : ""))
-        .catch(() => setCurrentBranch(""));
-    }, 15_000);
-    return () => clearInterval(interval);
-  }, [panelDirectory]);
 
 
   // Sanitize directory path into a Tauri-event-safe session ID.
@@ -353,14 +372,11 @@ export default function App() {
         activeSessionId={activeSessionId}
         activeWorktreePath={activeWorktreePath}
         sessionUsage={sessionUsage}
-        todayCost={todayCost}
-        todayTokens={todayTokens}
         onSelectSession={handleSelectSession}
         onCreateSession={handleNewSession}
         onCreateWorktree={handleCreateWorktree}
         onRenameSession={renameSession}
         onDeleteSession={handleDeleteSession}
-        onShowUsage={() => setShowUsagePanel(true)}
         shellProcessDirs={shellProcessDirs}
         unreadSessions={unreadSessions}
       />
@@ -385,80 +401,22 @@ export default function App() {
             </div>
           </div>
         ) : (
-          <div className="absolute inset-0 flex flex-col">
-            {/* Tab bar: [color dot] Claude | Git | PRs | Shell | [~/short/path ▼] */}
-            <div className="flex items-center px-2 py-0.5 border-b border-[var(--border-color)] flex-shrink-0 relative">
-              <button
-                onClick={() => setActivePanel(null)}
-                className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
-                  activePanel === null
-                    ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
-                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-                }`}
-              >
-                Claude
-              </button>
-
-              {currentBranch && (
-                <>
-                  <div className="px-1">
-                    <div className="w-px h-3.5" style={{ backgroundColor: repoColor(panelDirectory) }} />
-                  </div>
-                  <span className="flex items-center gap-1 px-1 py-0.5 text-[11px] text-[var(--text-tertiary)] font-mono shrink-0">
-                    <svg className="w-3 h-3 shrink-0" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
-                    </svg>
-                    {currentBranch}
-                  </span>
-                </>
-              )}
-
-              {activeSession?.claudeSessionId && (
+          <div className="absolute inset-0">
+            {/* Content area */}
+            <div className="absolute inset-0 flex flex-col">
+              {/* Session ID (subtle, top-right corner) */}
+              {activeSession?.claudeSessionId && activePanel === null && (
                 <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(activeSession.claudeSessionId!);
-                  }}
-                  className="px-1.5 py-0.5 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] font-mono transition-colors"
+                  onClick={() => navigator.clipboard.writeText(activeSession.claudeSessionId!)}
+                  className="absolute top-1 right-12 z-10 px-1.5 py-0.5 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] font-mono transition-colors rounded hover:bg-[var(--bg-tertiary)]"
                   title={`Copy session ID: ${activeSession.claudeSessionId}`}
                 >
                   {activeSession.claudeSessionId.slice(0, 8)}…
                 </button>
               )}
-              <div className="flex flex-1"/>
-              <button
-                onClick={() => togglePanel("git")}
-                className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
-                  activePanel === "git"
-                    ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
-                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-                }`}
-              >
-                Git
-              </button>
-              <button
-                onClick={() => togglePanel("prs")}
-                className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
-                  activePanel === "prs"
-                    ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
-                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-                }`}
-              >
-                PRs
-              </button>
-              <button
-                onClick={() => togglePanel("shell")}
-                className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
-                  activePanel === "shell"
-                    ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
-                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-                }`}
-              >
-                Shell
-              </button>
-            </div>
 
-            {/* Content area */}
-            <div className="flex-1 min-h-0 relative">
+              {/* Panel content */}
+              <div className="flex-1 min-h-0 relative">
               {/* Empty state when no session is selected */}
               {!activeSessionId && activePanel === null && (
                 <div className="absolute inset-0 flex items-center justify-center">
@@ -495,12 +453,16 @@ export default function App() {
                       <AgentChat
                         sessionId={session.id}
                         isActive={isVisible}
-                        onExit={() => markStopped(session.id)}
+                        onExit={(exitCode) => markStopped(session.id, exitCode)}
                         onActivity={() => touchSession(session.id)}
                         onBusyChange={(isBusy) => setAgentBusy(session.id, isBusy)}
+                        onDraftChange={(hasDraft) => setSessionDraft(session.id, hasDraft)}
                         onClaudeSessionId={(claudeSessionId) => updateClaudeSessionId(session.id, claudeSessionId)}
                         session={session}
                         onResume={() => restartSession(session.id)}
+                        onFork={(systemPrompt) => createSession(`Fork of ${session.name}`, session.directory, session.dangerouslySkipPermissions, systemPrompt)}
+                        currentModel={selectedModel}
+                        onInputHeightChange={isVisible ? setChatInputHeight : undefined}
                       />
                     </ErrorBoundary>
                   </div>
@@ -509,7 +471,7 @@ export default function App() {
 
               {/* Git panel — always mounted to preserve state */}
               <div
-                className="absolute inset-0 bg-[var(--bg-primary)]"
+                className="absolute inset-0 right-10 bg-[var(--bg-primary)]"
                 style={{
                   zIndex: activePanel === "git" ? 2 : 0,
                   pointerEvents: activePanel === "git" ? "auto" : "none",
@@ -529,7 +491,7 @@ export default function App() {
 
               {/* PRs panel — always mounted to preserve review state */}
               <div
-                className="absolute inset-0 bg-[var(--bg-primary)]"
+                className="absolute inset-0 right-10 bg-[var(--bg-primary)]"
                 style={{
                   zIndex: activePanel === "prs" ? 2 : 0,
                   pointerEvents: activePanel === "prs" ? "auto" : "none",
@@ -556,7 +518,7 @@ export default function App() {
               {/* Shell tabs — all mounted, visibility-toggled */}
               {shellTabsForDir(panelDirectory).length > 0 && (
                 <div
-                  className="absolute inset-0 bg-[var(--bg-primary)] flex flex-col"
+                  className="absolute inset-0 right-10 bg-[var(--bg-primary)] flex flex-col"
                   style={{
                     zIndex: activePanel === "shell" ? 2 : 0,
                     pointerEvents: activePanel === "shell" ? "auto" : "none",
@@ -667,6 +629,134 @@ export default function App() {
                   </div>
                 </div>
               )}
+              </div>
+
+              {/* Context usage bar — below input */}
+              {activeUsage && activeUsage.contextTokens > 0 && activePanel === null && (
+                <div
+                  className="h-[2px] w-full shrink-0"
+                  title={`Context: ${activeUsage.contextTokens.toLocaleString()} / 200,000 tokens\nInput: ${activeUsage.inputTokens.toLocaleString()} | Output: ${activeUsage.outputTokens.toLocaleString()} | Cache read: ${activeUsage.cacheReadInputTokens.toLocaleString()} | Cache write: ${activeUsage.cacheCreationInputTokens.toLocaleString()}`}
+                >
+                  <div
+                    className="h-full transition-all duration-500"
+                    style={{
+                      width: `${Math.min(100, Math.round((activeUsage.contextTokens / 200_000) * 100))}%`,
+                      backgroundColor: activeUsage.contextTokens / 200_000 > 0.8 ? '#d97706' : '#d9770640',
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Activity bar — vertical icon tabs (right side, stops above input on Claude panel) */}
+            <div
+              className={`absolute top-0 right-0 w-10 flex flex-col items-center py-2 gap-1 border-l border-[var(--border-color)] bg-[var(--bg-secondary)] z-10 ${!activeSessionId ? "hidden" : ""}`}
+              style={{ bottom: activePanel === null ? chatInputHeight : 0 }}
+            >
+              <button
+                onClick={() => setActivePanel(null)}
+                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                  activePanel === null
+                    ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
+                }`}
+                title="Claude (⌘J)"
+              >
+                <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+                </svg>
+              </button>
+              <button
+                onClick={() => togglePanel("git")}
+                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                  activePanel === "git"
+                    ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
+                }`}
+                title="Git (⌘G)"
+              >
+                <svg className="w-[18px] h-[18px]" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
+                </svg>
+              </button>
+              <button
+                onClick={() => togglePanel("prs")}
+                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                  activePanel === "prs"
+                    ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
+                }`}
+                title="Pull Requests (⌘P)"
+              >
+                <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+                </svg>
+              </button>
+              <button
+                onClick={() => togglePanel("shell")}
+                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                  activePanel === "shell"
+                    ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
+                }`}
+                title="Shell (⌘T)"
+              >
+                <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" />
+                </svg>
+              </button>
+
+              {/* Spacer to push bottom items down */}
+              <div className="flex-1" />
+              <button
+                onClick={() => setShowUsagePanel(true)}
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50 transition-colors"
+                title="Usage stats"
+              >
+                <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+                </svg>
+              </button>
+              <div className="w-5 h-px bg-[var(--border-color)] my-0.5" />
+              <div className="relative" ref={modelDropdownRef}>
+                <button
+                  onClick={() => setShowModelDropdown((v) => !v)}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50 transition-colors"
+                  title={MODELS.find((m) => m.id === selectedModel)?.name ?? "Model"}
+                >
+                  <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z" />
+                  </svg>
+                </button>
+                {showModelDropdown && (
+                  <div className="absolute bottom-0 right-full mr-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 min-w-[180px]">
+                    {MODELS.map((model) => (
+                      <button
+                        key={model.id}
+                        className={`w-full text-left px-3 py-2 flex items-center gap-3 text-sm transition-colors ${
+                          selectedModel === model.id
+                            ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
+                            : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                        }`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          handleModelChange(model.id);
+                        }}
+                      >
+                        <div className="flex-1">
+                          <div className="font-medium text-[var(--text-primary)] text-xs">{model.name}</div>
+                          <div className="text-[10px] text-[var(--text-tertiary)]">{model.desc}</div>
+                        </div>
+                        {selectedModel === model.id && (
+                          <svg className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                          </svg>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}

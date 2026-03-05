@@ -70,7 +70,6 @@ export interface SessionTabProps {
   contentOnly?: boolean;
   unread?: boolean;
   hideDirectory?: boolean;
-  shellCount?: number;
   onClick: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
@@ -83,7 +82,6 @@ export default memo(function SessionTab({
   contentOnly,
   unread,
   hideDirectory,
-  shellCount,
   onClick,
   onRename,
   onDelete,
@@ -109,7 +107,9 @@ export default memo(function SessionTab({
 
   const isRunning = session.status === "running" || session.status === "starting";
   const isBusy = usage?.isBusy && isRunning;
-  const isAwaitingInput = isRunning && !isBusy;
+  const isAwaitingInput = isRunning && !isBusy && !isActive && unread;
+  const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
+  const hasDraft = session.hasDraft && isRunning && !isBusy;
 
   return (
     <div
@@ -124,10 +124,18 @@ export default memo(function SessionTab({
         }
       `}
     >
-      {/* Status indicator: spinner (busy) > pulsing dot (awaiting input) > solid dot (unread) */}
+      {/* Status indicator: error > spinner (busy) > draft (pencil) > pulsing dot (awaiting input) > solid dot (unread) */}
       <span className="shrink-0 w-3 h-3 flex items-center justify-center">
-        {isBusy ? (
+        {hasError ? (
+          <svg className="w-3 h-3 text-red-400" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575ZM8 5a.75.75 0 0 0-.75.75v2.5a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8 5Zm1 6a1 1 0 1 0-2 0 1 1 0 0 0 2 0Z" />
+          </svg>
+        ) : isBusy ? (
           <span className="w-2.5 h-2.5 border-[1.5px] border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+        ) : hasDraft ? (
+          <svg className="w-2.5 h-2.5 text-blue-400" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.25.25 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z" />
+          </svg>
         ) : isAwaitingInput ? (
           <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
         ) : unread ? (
@@ -164,14 +172,6 @@ export default memo(function SessionTab({
         )}
         {!hideDirectory && session.directory && (() => {
           const isWorktree = session.directory.includes("/.worktrees/") || session.directory.includes("/.claude/worktrees/");
-          const shellLabel = shellCount ? (
-            <span className="pl-3 text-[var(--text-tertiary)] ml-4 inline-flex items-center gap-0.5">
-              {shellCount}
-              <svg className="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M0 2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25Zm1.75-.25a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25V2.75a.25.25 0 0 0-.25-.25ZM3.5 6.25a.75.75 0 0 1 .22-.53l2-2a.749.749 0 1 1 1.06 1.06L5.31 6.25l1.47 1.47a.749.749 0 1 1-1.06 1.06l-2-2a.75.75 0 0 1-.22-.53Zm5.5 3.5a.75.75 0 0 1 0-1.5h2a.75.75 0 0 1 0 1.5Z" />
-              </svg>
-            </span>
-          ) : null;
           if (isWorktree) {
             const short = shortenPath(session.directory);
             const slashIdx = short.indexOf("/");
@@ -181,7 +181,6 @@ export default memo(function SessionTab({
               <span className="text-[10px] truncate block mt-0.5">
                 <span style={{ color: repoColor(session.directory) }}>{repo}</span>
                 <span style={{ color: directoryColor(session.directory) }}>{wt}</span>
-                {shellLabel}
               </span>
             );
           }
@@ -191,7 +190,6 @@ export default memo(function SessionTab({
               style={{ color: repoColor(session.directory) }}
             >
               {shortenPath(session.directory)}
-              {shellLabel}
             </span>
           );
         })()}

@@ -5,25 +5,17 @@ import { worktreeName } from "../utils/workspaces";
 import SessionTab, { repoColor } from "./SessionTab";
 import { useWorktreeBranches } from "../hooks/useWorktreeBranches";
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
-  return String(n);
-}
 
 interface SidebarProps {
   workspaces: Workspace[];
   activeSessionId: string | null;
   activeWorktreePath: string | null;
   sessionUsage: Map<string, SessionUsage>;
-  todayCost: number;
-  todayTokens: number;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
   onCreateWorktree: (repoDir: string) => void;
   onRenameSession: (id: string, name: string) => void;
   onDeleteSession: (id: string) => void;
-  onShowUsage?: () => void;
   shellProcessDirs?: Map<string, number>;
   unreadSessions?: Set<string>;
 }
@@ -49,14 +41,11 @@ export default function Sidebar({
   activeSessionId,
   activeWorktreePath,
   sessionUsage,
-  todayCost,
-  todayTokens,
   onSelectSession,
   onCreateSession,
   onCreateWorktree,
   onRenameSession,
   onDeleteSession,
-  onShowUsage,
   shellProcessDirs,
   unreadSessions,
 }: SidebarProps) {
@@ -317,7 +306,6 @@ export default function Sidebar({
                           usage={sessionUsage.get(session.id)}
                           contentOnly={contentOnlyIds.has(session.id)}
                           unread={unreadSessions?.has(session.id)}
-                          shellCount={session.directory ? shellProcessDirs?.get(session.directory) : undefined}
                           onClick={() => onSelectSession(session.id)}
                           onRename={(name) => onRenameSession(session.id, name)}
                           onDelete={() => onDeleteSession(session.id)}
@@ -534,27 +522,20 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* Footer */}
-      <div className="px-2 py-2 border-t border-[var(--border-color)] flex items-center gap-1.5">
-        {shellProcessDirs && shellProcessDirs.size > 0 && (() => {
-          const total = [...shellProcessDirs.values()].reduce((a, b) => a + b, 0);
-          return (
-            <span className="flex items-center gap-1 text-[10px] text-green-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-              {total} shell{total !== 1 ? "s" : ""}
-            </span>
-          );
-        })()}
-        {(todayCost > 0 || todayTokens > 0) && (
-          <button
-            onClick={onShowUsage}
-            className="text-[10px] text-[var(--text-secondary)] ml-auto hover:text-[var(--accent)] transition-colors cursor-pointer"
-          >
-            {todayTokens > 0 && <>{formatTokens(todayTokens)} tokens · </>}
-            ${todayCost.toFixed(2)} today
-          </button>
-        )}
-      </div>
+      {/* Footer — shell indicators only */}
+      {shellProcessDirs && shellProcessDirs.size > 0 && (
+        <div className="px-3 py-1.5 border-t border-[var(--border-color)] flex items-center">
+          {(() => {
+            const total = [...shellProcessDirs.values()].reduce((a, b) => a + b, 0);
+            return (
+              <span className="flex items-center gap-1.5 text-[10px] text-green-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                {total} shell{total !== 1 ? "s" : ""}
+              </span>
+            );
+          })()}
+        </div>
+      )}
     </div>
   );
 }

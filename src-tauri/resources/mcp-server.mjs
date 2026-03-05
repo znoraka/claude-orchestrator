@@ -65,6 +65,94 @@ server.tool(
 );
 
 server.tool(
+  "create_worktree",
+  "Create a git worktree on a new branch and switch to it. Creates the worktree in .worktrees/<name> relative to the repo root, clones dependency directories (node_modules, .venv, etc.), and signals the orchestrator to switch workspace. Use this whenever you need to work on a new branch in an isolated worktree (bug fixes, features, experiments, etc.).",
+  {
+    directory: z.string().describe("Absolute path to the git repository root"),
+    branch: z.string().describe("Branch name to create (e.g. 'fix/my-bug' or 'feature/new-thing')"),
+    name: z.string().optional().describe("Worktree folder name (defaults to sanitized branch name). Will be placed in .worktrees/<name>"),
+    base: z.string().optional().describe("Base branch or commit to branch from (defaults to HEAD)"),
+  },
+  async ({ directory, branch, name, base }) => {
+    if (!existsSync(directory)) {
+      return {
+        content: [{ type: "text", text: `Error: directory does not exist: ${directory}` }],
+        isError: true,
+      };
+    }
+
+    // Derive worktree folder name from branch if not provided
+    const worktreeName = name || branch.replace(/[/\\]/g, "-").replace(/^-+|-+$/g, "");
+    const worktreePath = resolve(directory, ".worktrees", worktreeName);
+
+    // If the worktree already exists, just switch to it
+    if (existsSync(worktreePath)) {
+      const signal = {
+        action: "switch_workspace",
+        directory: worktreePath,
+        sessionId: SESSION_ID,
+        timestamp: Date.now(),
+      };
+      writeFileSync(join(SIGNAL_DIR, `${SESSION_ID}.json`), JSON.stringify(signal), "utf-8");
+
+      return {
+        content: [{
+          type: "text",
+          text: `Worktree already exists at ${worktreePath}. Signaled orchestrator to switch. The working directory has been updated automatically.`,
+        }],
+      };
+    }
+
+    try {
+      // Ensure .worktrees directory exists
+      mkdirSync(join(directory, ".worktrees"), { recursive: true });
+
+      // Create the worktree with a new branch
+      const baseRef = base || "HEAD";
+      execFileSync("git", ["worktree", "add", "-b", branch, worktreePath, baseRef], {
+        cwd: directory,
+        stdio: "pipe",
+      });
+
+      // Clone heavy dependency directories (node_modules, .venv, etc.) via APFS cp -Rc
+      const depDirs = ["node_modules", ".venv", "venv", "vendor"];
+      for (const dep of depDirs) {
+        const src = join(directory, dep);
+        const dst = join(worktreePath, dep);
+        if (existsSync(src) && statSync(src).isDirectory() && !existsSync(dst)) {
+          try {
+            execFileSync("cp", ["-Rc", src, dst], { stdio: "pipe" });
+          } catch {
+            // Best-effort
+          }
+        }
+      }
+
+      // Signal the orchestrator to switch workspace
+      const signal = {
+        action: "switch_workspace",
+        directory: worktreePath,
+        sessionId: SESSION_ID,
+        timestamp: Date.now(),
+      };
+      writeFileSync(join(SIGNAL_DIR, `${SESSION_ID}.json`), JSON.stringify(signal), "utf-8");
+
+      return {
+        content: [{
+          type: "text",
+          text: `Created worktree at ${worktreePath} on new branch ${branch} (from ${baseRef}). Signaled orchestrator to switch. The working directory has been updated automatically.`,
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error creating worktree: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
   "checkout_pr_worktree",
   "Create a git worktree for a PR branch and switch to it. Fetches the branch from origin, creates a worktree in .worktrees/pr-<number>, clones dependency directories (node_modules, .venv, etc.), and signals the orchestrator to switch workspace. Use this when you need to work on a PR's code in an isolated worktree.",
   {

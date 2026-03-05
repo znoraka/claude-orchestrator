@@ -10,6 +10,9 @@ export interface Session {
   dangerouslySkipPermissions?: boolean;
   activeTime?: number; // cumulative ms of running time
   hasTitleBeenGenerated?: boolean; // true if a smart title has been generated
+  pendingPrompt?: string; // auto-sent on bridge_ready (e.g. PR review)
+  exitCode?: number; // last process exit code (non-zero = error)
+  hasDraft?: boolean; // true when user has typed text in the input but not sent it
 }
 
 /** The directory where the session's JSONL was created (homeDirectory if the
@@ -24,6 +27,7 @@ export interface SessionUsage {
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
   costUsd: number;
+  contextTokens: number;
   isBusy: boolean;
 }
 

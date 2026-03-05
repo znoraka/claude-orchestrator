@@ -13,13 +13,23 @@ marked.setOptions({ breaks: true, gfm: true });
 interface AgentChatProps {
   sessionId: string;
   isActive: boolean;
-  onExit: () => void;
+  onExit: (exitCode?: number) => void;
   onActivity: () => void;
   onBusyChange?: (isBusy: boolean) => void;
+  onDraftChange?: (hasDraft: boolean) => void;
   onClaudeSessionId?: (claudeSessionId: string) => void;
   session?: Session;
   onResume?: () => Promise<void> | void;
+  onFork?: (systemPrompt: string) => void;
+  currentModel?: string;
+  onInputHeightChange?: (height: number) => void;
 }
+
+export const MODELS = [
+  { id: "claude-opus-4-6", name: "Opus 4.6", desc: "Most capable for complex work" },
+  { id: "claude-sonnet-4-6", name: "Sonnet 4.6", desc: "Best for everyday tasks" },
+  { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5", desc: "Fastest for quick answers" },
+];
 
 // ── Message types ────────────────────────────────────────────────────
 
@@ -92,6 +102,13 @@ function groupToolBlocks(blocks: ContentBlock[], messageId: string): GroupedBloc
 
 // ── Chunked history parser (avoids blocking main thread) ─────────────
 
+/** Normalize API content (can be a string or array of blocks) into ContentBlock[] */
+function normalizeContent(raw: unknown): ContentBlock[] | null {
+  if (Array.isArray(raw)) return raw as ContentBlock[];
+  if (typeof raw === "string") return [{ type: "text", text: raw }];
+  return null;
+}
+
 const PARSE_CHUNK_SIZE = 200;
 
 function parseHistoryLines(
@@ -114,7 +131,7 @@ function parseHistoryLines(
 
           if (msgType === "assistant") {
             const messageObj = msg.message as Record<string, unknown> | undefined;
-            const content = messageObj?.content as ContentBlock[] | undefined;
+            const content = normalizeContent(messageObj?.content);
             const apiMsgId = (messageObj?.id as string) || `anon-${messageOrder.length}`;
             if (content) {
               const existing = assistantAccum.get(apiMsgId) || [];
@@ -179,39 +196,69 @@ const AgentChat = memo(function AgentChat({
   onExit,
   onActivity,
   onBusyChange,
+  onDraftChange,
   onClaudeSessionId,
   session,
   onResume,
+  onFork,
+  currentModel = "claude-opus-4-6",
+  onInputHeightChange,
 }: AgentChatProps) {
   const isReadOnly = session?.status === "stopped";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [images, setImages] = useState<Array<{ id: string; data: string; mediaType: string; name: string }>>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const abortedRef = useRef(false);
   const [currentTodo, setCurrentTodo] = useState<string | null>(null);
   // Tool expansion state: single object to avoid double state updates
   // "expanded" = user manually expanded, "collapsed" = user manually collapsed, undefined = default
   const [toolStates, setToolStates] = useState<Record<string, "expanded" | "collapsed">>({});
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputAreaRef = useRef<HTMLDivElement>(null);
+
+  // Report input area height changes to parent (for activity bar positioning)
+  useEffect(() => {
+    const el = inputAreaRef.current;
+    if (!el || !onInputHeightChange) return;
+    const ro = new ResizeObserver(() => onInputHeightChange(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [onInputHeightChange]);
+
+  // Reset textarea height when text is cleared programmatically
+  useEffect(() => {
+    if (!inputText && inputRef.current) {
+      inputRef.current.style.height = "auto";
+    }
+  }, [inputText]);
+
+  // Auto-focus textarea when user starts typing anywhere
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (
+        e.metaKey || e.ctrlKey || e.altKey ||
+        e.key.length !== 1 ||
+        inputRef.current === document.activeElement ||
+        (e.target instanceof HTMLElement && (e.target.isContentEditable || e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA"))
+      ) return;
+      inputRef.current?.focus();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   // ── Slash command autocomplete ─────────────────────────────────────
   const [slashCommands, setSlashCommands] = useState<Array<{ name: string; description: string; source: string }>>([]);
   const [slashMenuIndex, setSlashMenuIndex] = useState(0);
   const slashMenuRef = useRef<HTMLDivElement>(null);
 
-  // ── Model picker ──────────────────────────────────────────────────
-  const [showModelPicker, setShowModelPicker] = useState(false);
-  const [currentModel, setCurrentModel] = useState("claude-opus-4-6");
-  const [modelPickerIndex, setModelPickerIndex] = useState(0);
-  const MODELS = [
-    { id: "claude-opus-4-6", name: "Opus 4.6", desc: "Most capable for complex work" },
-    { id: "claude-sonnet-4-6", name: "Sonnet 4.6", desc: "Best for everyday tasks" },
-    { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5", desc: "Fastest for quick answers" },
-  ];
   const partialRef = useRef<ContentBlock[]>([]);
   const currentBlockIndexRef = useRef(-1);
   const mountedRef = useRef(true);
+  const pendingPromptConsumedRef = useRef(false);
 
   // Stable refs for callback props to avoid dependency cascades.
   // These callbacks come from App as inline arrows (new ref every render),
@@ -223,15 +270,26 @@ const AgentChat = memo(function AgentChat({
   onActivityRef.current = onActivity;
   const onBusyChangeRef = useRef(onBusyChange);
   onBusyChangeRef.current = onBusyChange;
+  const onDraftChangeRef = useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
   const onClaudeSessionIdRef = useRef(onClaudeSessionId);
   onClaudeSessionIdRef.current = onClaudeSessionId;
   const onResumeRef = useRef(onResume);
   onResumeRef.current = onResume;
+  const onForkRef = useRef(onFork);
+  onForkRef.current = onFork;
+  const currentModelRef = useRef(currentModel);
+  currentModelRef.current = currentModel;
 
   // Sync busy state to parent
   useEffect(() => {
     onBusyChangeRef.current?.(isGenerating);
   }, [isGenerating]);
+
+  // Sync draft state to parent
+  useEffect(() => {
+    onDraftChangeRef.current?.(inputText.trim().length > 0);
+  }, [inputText]);
 
   // Fetch slash commands for the session's directory
   const sessionDir = session?.directory;
@@ -247,7 +305,6 @@ const AgentChat = memo(function AgentChat({
       const builtins: Cmd[] = [
         { name: "clear", description: "Clear conversation display", source: "built-in" },
         { name: "compact", description: "Compact conversation to save context", source: "built-in" },
-        { name: "model", description: "Switch Claude model", source: "built-in" },
       ];
 
       // Try the dedicated backend command first (fast, scans both project + user dirs)
@@ -482,7 +539,20 @@ const AgentChat = memo(function AgentChat({
           return replayed;
         }
         const newMessages = prev.filter((m) => {
-          return !replayed.some((r) => r.id === m.id);
+          // Match by ID first
+          if (replayed.some((r) => r.id === m.id)) return false;
+          // For user messages, also match by text content to deduplicate
+          // live-added messages (from sendMessage) vs replayed ones (from JSONL)
+          // which have different IDs
+          if (m.type === "user") {
+            const mText = m.content.find((b) => b.type === "text")?.text || "";
+            return !replayed.some((r) => {
+              if (r.type !== "user") return false;
+              const rText = r.content.find((b) => b.type === "text")?.text || "";
+              return rText === mText;
+            });
+          }
+          return true;
         });
         if (newMessages.length === 0) {
           return replayed;
@@ -514,6 +584,44 @@ const AgentChat = memo(function AgentChat({
     }
 
     if (msgType === "system" && msg.subtype === "bridge_ready") {
+      // Set the selected model on the new agent
+      if (currentModelRef.current !== "claude-opus-4-6") {
+        const setModelMsg = JSON.stringify({ type: "set_model", model: currentModelRef.current });
+        invoke("send_agent_message", { sessionId, message: setModelMsg }).catch(() => {});
+      }
+      // Auto-send pending prompt (e.g. from PR review) once the bridge is ready
+      if (session?.pendingPrompt && !pendingPromptConsumedRef.current) {
+        pendingPromptConsumedRef.current = true;
+        const prompt = session.pendingPrompt;
+        // Show user message in chat
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `user-${Date.now()}`,
+            type: "user",
+            content: [{ type: "text", text: prompt }],
+            timestamp: Date.now(),
+          },
+        ]);
+        abortedRef.current = false;
+        setIsGenerating(true);
+        const jsonLine = JSON.stringify({
+          type: "user",
+          message: { role: "user", content: prompt },
+        });
+        invoke("send_agent_message", { sessionId, message: jsonLine }).catch((err) => {
+          setIsGenerating(false);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `error-${Date.now()}`,
+              type: "error",
+              content: [{ type: "text", text: `Failed to send: ${err}` }],
+              timestamp: Date.now(),
+            },
+          ]);
+        });
+      }
       return;
     }
 
@@ -523,9 +631,12 @@ const AgentChat = memo(function AgentChat({
     if (msgType === "assistant") {
       // Ensure isGenerating is true when we receive streaming content
       // (handles cases where component mounts while agent is already running)
-      setIsGenerating(true);
+      // But skip if we've already aborted — late events shouldn't re-enable the indicator
+      if (!abortedRef.current) {
+        setIsGenerating(true);
+      }
       const messageObj = msg.message as Record<string, unknown> | undefined;
-      const content = messageObj?.content as ContentBlock[] | undefined;
+      const content = normalizeContent(messageObj?.content);
       const apiMsgId = messageObj?.id as string | undefined;
       if (content) {
         // Use a stable ID for this streaming message
@@ -673,10 +784,11 @@ const AgentChat = memo(function AgentChat({
 
     listen<string>(
       `agent-exit-${sessionId}`,
-      () => {
+      (event) => {
         if (cancelled || !mountedRef.current) return;
         setIsGenerating(false);
-        onExitRef.current();
+        const code = parseInt(event.payload, 10);
+        onExitRef.current(isNaN(code) ? undefined : code);
       }
     ).then((fn) => {
       if (cancelled) {
@@ -754,7 +866,7 @@ const AgentChat = memo(function AgentChat({
 
     if (msgType === "assistant") {
       const messageObj = msg.message as Record<string, unknown> | undefined;
-      const content = messageObj?.content as ContentBlock[] | undefined;
+      const content = normalizeContent(messageObj?.content);
       if (!content) return null;
       return {
         id: `assistant-${Date.now()}-${Math.random()}`,
@@ -793,6 +905,15 @@ const AgentChat = memo(function AgentChat({
     const text = (overrideText ?? inputText).trim();
     if (!text && images.length === 0) return;
 
+    // If editing a previous message, truncate history up to (not including) that message
+    if (editingMessageId) {
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === editingMessageId);
+        return idx >= 0 ? prev.slice(0, idx) : prev;
+      });
+      setEditingMessageId(null);
+    }
+
     // Handle local-only built-in commands (these don't work through the SDK)
     if (text === "/clear") {
       setMessages([]);
@@ -804,13 +925,6 @@ const AgentChat = memo(function AgentChat({
       sendMessage("Please provide a brief summary of our conversation so far, then we can continue from that context.");
       return;
     }
-    if (text === "/model") {
-      setInputText("");
-      setShowModelPicker(true);
-      setModelPickerIndex(MODELS.findIndex((m) => m.id === currentModel));
-      return;
-    }
-
     // Build content blocks
     let content: unknown;
     if (images.length > 0) {
@@ -849,6 +963,7 @@ const AgentChat = memo(function AgentChat({
     setMessages((prev) => [...prev, userMsg]);
     setInputText("");
     setImages([]);
+    abortedRef.current = false;
     setIsGenerating(true);
     onActivityRef.current(); // Update session timestamp when user sends a message
 
@@ -890,10 +1005,16 @@ const AgentChat = memo(function AgentChat({
         },
       ]);
     }
-  }, [inputText, images, sessionId, isReadOnly]);
+  }, [inputText, images, sessionId, isReadOnly, editingMessageId]);
 
   const handleAbort = useCallback(() => {
     invoke("abort_agent", { sessionId }).catch(() => {});
+    // Immediately clear generating state — don't rely on bridge "aborted" event
+    // which may not arrive if the SDK hangs or the abort doesn't propagate cleanly
+    abortedRef.current = true;
+    setIsGenerating(false);
+    setCurrentTodo(null);
+    accumulatedBlocksRef.current.clear();
   }, [sessionId]);
 
   // Answer an AskUserQuestion by sending the answer to the bridge
@@ -918,6 +1039,72 @@ const AgentChat = memo(function AgentChat({
       },
     ]);
   }, [sessionId]);
+
+  // ── Edit / resend a user message ──────────────────────────────────
+
+  const editMessage = useCallback((messageId: string) => {
+    const msg = messages.find((m) => m.id === messageId);
+    if (!msg || msg.type !== "user") return;
+    // Extract text from the message content blocks
+    const text = (Array.isArray(msg.content)
+      ? msg.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")
+      : typeof msg.content === "string" ? msg.content : ""
+    );
+    setEditingMessageId(messageId);
+    setInputText(text);
+    inputRef.current?.focus();
+  }, [messages]);
+
+  // ── Fork conversation from a message ───────────────────────────────
+
+  const forkFromMessage = useCallback((messageId: string) => {
+    if (!onForkRef.current) return;
+    const idx = messages.findIndex((m) => m.id === messageId);
+    if (idx < 0) return;
+    // Build a transcript of messages up to and including the target
+    const transcript = messages.slice(0, idx + 1);
+    const lines = transcript.map((m) => {
+      const text = Array.isArray(m.content)
+        ? m.content
+            .filter((b) => b.type === "text")
+            .map((b) => b.text)
+            .join("\n")
+        : "";
+      if (m.type === "user") return `Human: ${text}`;
+      if (m.type === "assistant") return `Assistant: ${text}`;
+      return "";
+    }).filter(Boolean);
+    const systemPrompt = `This conversation was forked from a previous session. Here is the conversation context up to the fork point:\n\n<fork-context>\n${lines.join("\n\n")}\n</fork-context>\n\nContinue from this context. The user will now send their next message.`;
+    onForkRef.current(systemPrompt);
+  }, [messages]);
+
+  // ── Retry a user message (resend the same text from that point) ───
+
+  const retryMessage = useCallback((messageId: string) => {
+    const msg = messages.find((m) => m.id === messageId);
+    if (!msg || msg.type !== "user") return;
+    const text = Array.isArray(msg.content)
+      ? msg.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")
+      : typeof msg.content === "string" ? msg.content : "";
+    // Truncate from this message onward, then resend the same text
+    setMessages((prev) => {
+      const idx = prev.findIndex((m) => m.id === messageId);
+      return idx >= 0 ? prev.slice(0, idx) : prev;
+    });
+    // Use setTimeout to let the state update before sending
+    setTimeout(() => sendMessage(text), 0);
+  }, [messages, sendMessage]);
+
+  // ── Copy a message's text content to clipboard ────────────────────
+
+  const copyMessage = useCallback((messageId: string) => {
+    const msg = messages.find((m) => m.id === messageId);
+    if (!msg) return;
+    const text = Array.isArray(msg.content)
+      ? msg.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")
+      : typeof msg.content === "string" ? msg.content : "";
+    if (text) navigator.clipboard.writeText(text);
+  }, [messages]);
 
   // ── Image paste ──────────────────────────────────────────────────
 
@@ -966,47 +1153,8 @@ const AgentChat = memo(function AgentChat({
     inputRef.current?.focus();
   }, []);
 
-  const selectModel = useCallback((model: typeof MODELS[number]) => {
-    setCurrentModel(model.id);
-    setShowModelPicker(false);
-    // Send set_model to the agent bridge
-    const msg = JSON.stringify({ type: "set_model", model: model.id });
-    invoke("send_agent_message", { sessionId, message: msg }).catch(() => {});
-    setMessages((prev) => [...prev, {
-      id: `system-${Date.now()}`,
-      type: "system" as const,
-      content: [{ type: "text", text: `Model switched to ${model.name}` }],
-      timestamp: Date.now(),
-    }]);
-    inputRef.current?.focus();
-  }, [sessionId]);
-
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      // Model picker navigation
-      if (showModelPicker) {
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          setModelPickerIndex((i) => Math.min(i + 1, MODELS.length - 1));
-          return;
-        }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          setModelPickerIndex((i) => Math.max(i - 1, 0));
-          return;
-        }
-        if (e.key === "Enter" || e.key === "Tab") {
-          e.preventDefault();
-          selectModel(MODELS[modelPickerIndex]);
-          return;
-        }
-        if (e.key === "Escape") {
-          e.preventDefault();
-          setShowModelPicker(false);
-          return;
-        }
-        return; // consume all keys while picker is open
-      }
       // Slash menu navigation
       if (showSlashMenu && filteredSlashCommands.length > 0) {
         if (e.key === "ArrowDown") {
@@ -1036,6 +1184,10 @@ const AgentChat = memo(function AgentChat({
           return;
         }
       }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        return;
+      }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         if (!isGenerating) {
@@ -1047,7 +1199,7 @@ const AgentChat = memo(function AgentChat({
         handleAbort();
       }
     },
-    [sendMessage, isGenerating, handleAbort, showSlashMenu, filteredSlashCommands, slashMenuIndex, selectSlashCommand, showModelPicker, modelPickerIndex, selectModel]
+    [sendMessage, isGenerating, handleAbort, showSlashMenu, filteredSlashCommands, slashMenuIndex, selectSlashCommand]
   );
 
   // ── Toggle tool card expansion ───────────────────────────────────
@@ -1083,7 +1235,7 @@ const AgentChat = memo(function AgentChat({
       {/* Messages area */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3"
+        className="flex-1 overflow-y-auto px-4 pr-14 py-3 flex flex-col gap-3"
       >
         {/* Skip rendering message DOM for inactive tabs to avoid layout thrash */}
         {isActive ? (
@@ -1113,6 +1265,10 @@ const AgentChat = memo(function AgentChat({
                 onToggleTool={toggleTool}
                 isLastMessage={idx === deferredMessages.length - 1}
                 onAnswerQuestion={answerQuestion}
+                onEdit={editMessage}
+                onFork={forkFromMessage}
+                onRetry={retryMessage}
+                onCopy={copyMessage}
               />
             ))}
 
@@ -1133,40 +1289,7 @@ const AgentChat = memo(function AgentChat({
       </div>
 
       {/* Input area */}
-      <div className="border-t border-[var(--border-color)] px-4 py-3 relative">
-        {/* Model picker */}
-        {showModelPicker && (
-          <div className="absolute bottom-full left-0 right-0 mx-4 mb-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50">
-            <div className="px-3 py-2 text-xs text-[var(--text-tertiary)] border-b border-[var(--border-color)]">
-              Select a model
-            </div>
-            {MODELS.map((model, i) => (
-              <button
-                key={model.id}
-                className={`w-full text-left px-3 py-2.5 flex items-center gap-3 text-sm transition-colors ${
-                  i === modelPickerIndex
-                    ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
-                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
-                }`}
-                onMouseEnter={() => setModelPickerIndex(i)}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  selectModel(model);
-                }}
-              >
-                <div className="flex-1">
-                  <div className="font-medium text-[var(--text-primary)]">{model.name}</div>
-                  <div className="text-xs text-[var(--text-tertiary)]">{model.desc}</div>
-                </div>
-                {currentModel === model.id && (
-                  <svg className="w-4 h-4 text-[var(--accent)] shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                  </svg>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
+      <div className="border-t border-[var(--border-color)] px-4 py-3 relative" ref={inputAreaRef}>
         {/* Slash command autocomplete */}
         {showSlashMenu && filteredSlashCommands.length > 0 && (
           <div
@@ -1196,6 +1319,23 @@ const AgentChat = memo(function AgentChat({
             ))}
           </div>
         )}
+        {/* Editing indicator */}
+        {editingMessageId && (
+          <div className="flex items-center gap-2 mb-2 px-1 py-1.5 text-xs text-[var(--accent)] bg-[var(--accent)]/10 rounded-lg">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+            </svg>
+            <span className="flex-1">Editing message — send to replace</span>
+            <button
+              onClick={() => { setEditingMessageId(null); setInputText(""); }}
+              className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
         {/* Image thumbnails */}
         {images.length > 0 && (
           <div className="flex gap-2 mb-2 flex-wrap">
@@ -1228,7 +1368,7 @@ const AgentChat = memo(function AgentChat({
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder="Message Claude…"
+            placeholder={`Message ${MODELS.find((m) => m.id === currentModel)?.name ?? "Claude"}…`}
             rows={1}
             className="flex-1 resize-none bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none focus:border-[var(--accent)] transition-colors max-h-32 overflow-y-auto"
             style={{ minHeight: "38px" }}
@@ -1264,7 +1404,8 @@ const AgentChat = memo(function AgentChat({
   return (
     prev.sessionId === next.sessionId &&
     prev.isActive === next.isActive &&
-    prev.session === next.session
+    prev.session === next.session &&
+    prev.currentModel === next.currentModel
   );
 });
 
@@ -1278,19 +1419,93 @@ const MessageBubble = memo(function MessageBubble({
   onToggleTool,
   isLastMessage,
   onAnswerQuestion,
+  onEdit,
+  onFork,
+  onRetry,
+  onCopy,
 }: {
   message: ChatMessage;
   toolStates: Record<string, "expanded" | "collapsed">;
   onToggleTool: (id: string, isCurrentlyExpanded: boolean) => void;
   isLastMessage: boolean;
   onAnswerQuestion?: (answer: string) => void;
+  onEdit?: (messageId: string) => void;
+  onFork?: (messageId: string) => void;
+  onRetry?: (messageId: string) => void;
+  onCopy?: (messageId: string) => void;
 }) {
+  // Defensive: ensure content is always an array (API can return string)
+  const content = Array.isArray(message.content)
+    ? message.content
+    : typeof message.content === "string"
+    ? [{ type: "text", text: message.content } as ContentBlock]
+    : (() => {
+        console.error("[MessageBubble] message.content is not array or string:", typeof message.content, message);
+        return [];
+      })();
+
   if (message.type === "user") {
     // Filter out tool_result blocks (tool plumbing, not user content)
-    const visible = message.content.filter((b) => b.type !== "tool_result");
+    const visible = content.filter((b) => b.type !== "tool_result");
     if (visible.length === 0) return null;
     return (
-      <div className="flex justify-end">
+      <div className="group flex justify-end items-end gap-1">
+        <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-0.5 mb-1">
+          {/* Retry */}
+          {onRetry && (
+            <button
+              onClick={() => onRetry(message.id)}
+              className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+              title="Retry from here"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 2v6h-6" />
+                <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+                <path d="M3 22v-6h6" />
+                <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+              </svg>
+            </button>
+          )}
+          {/* Fork */}
+          {onFork && (
+            <button
+              onClick={() => onFork(message.id)}
+              className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+              title="Fork conversation from here"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M7 17L17 7" />
+                <path d="M7 7h10v10" />
+              </svg>
+            </button>
+          )}
+          {/* Edit */}
+          {onEdit && (
+            <button
+              onClick={() => onEdit(message.id)}
+              className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+              title="Edit & resend"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+              </svg>
+            </button>
+          )}
+          {/* Copy */}
+          {onCopy && (
+            <button
+              onClick={() => onCopy(message.id)}
+              className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+              title="Copy message"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
+          )}
+        </div>
         <div className="max-w-[80%] border border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--text-primary)] rounded-2xl rounded-br-md px-5 py-3">
           {visible.map((block, i) => (
             <ContentBlockView key={i} block={block} isUser />
@@ -1303,7 +1518,7 @@ const MessageBubble = memo(function MessageBubble({
   if (message.type === "system") {
     return (
       <div className="px-3 py-1.5 text-xs text-[var(--text-tertiary)] italic text-center">
-        {message.content[0]?.text}
+        {content[0]?.text}
       </div>
     );
   }
@@ -1311,7 +1526,7 @@ const MessageBubble = memo(function MessageBubble({
   if (message.type === "error") {
     return (
       <div className="px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
-        {message.content[0]?.text || "Unknown error"}
+        {content[0]?.text || "Unknown error"}
       </div>
     );
   }
@@ -1336,8 +1551,8 @@ const MessageBubble = memo(function MessageBubble({
 
   // Assistant message - group tool blocks for consolidated display
   const grouped = useMemo(
-    () => groupToolBlocks(message.content, message.id),
-    [message.content, message.id]
+    () => groupToolBlocks(content, message.id),
+    [content, message.id]
   );
 
   // Find the last tool group to determine which should be expanded
@@ -1352,37 +1567,38 @@ const MessageBubble = memo(function MessageBubble({
       : null;
 
   return (
-    <div className="max-w-[95%] flex flex-col gap-3">
-      {grouped.items.map((item, i) => {
-        if (item.type === "toolGroup") {
-          const { group } = item;
-          if (group.toolUse.name === "AskUserQuestion") {
+    <div className="max-w-[95%]">
+      <div className="flex flex-col gap-3">
+        {grouped.items.map((item, i) => {
+          if (item.type === "toolGroup") {
+            const { group } = item;
+            if (group.toolUse.name === "AskUserQuestion") {
+              return (
+                <AskUserQuestionBlock
+                  key={group.blockId}
+                  group={group}
+                  onAnswer={onAnswerQuestion}
+                />
+              );
+            }
+            const isLast = group.blockId === lastToolGroupId;
             return (
-              <AskUserQuestionBlock
+              <ConsolidatedToolGroup
                 key={group.blockId}
                 group={group}
+                isLast={isLast}
                 isLastMessage={isLastMessage}
-                onAnswer={onAnswerQuestion}
+                expanded={toolStates[group.blockId] === "expanded"}
+                collapsed={toolStates[group.blockId] === "collapsed"}
+                onToggle={(isCurrentlyExpanded) =>
+                  onToggleTool(group.blockId, isCurrentlyExpanded)
+                }
               />
             );
           }
-          const isLast = group.blockId === lastToolGroupId;
-          return (
-            <ConsolidatedToolGroup
-              key={group.blockId}
-              group={group}
-              isLast={isLast}
-              isLastMessage={isLastMessage}
-              expanded={toolStates[group.blockId] === "expanded"}
-              collapsed={toolStates[group.blockId] === "collapsed"}
-              onToggle={(isCurrentlyExpanded) =>
-                onToggleTool(group.blockId, isCurrentlyExpanded)
-              }
-            />
-          );
-        }
-        return <ContentBlockView key={i} block={item.block} />;
-      })}
+          return <ContentBlockView key={i} block={item.block} />;
+        })}
+      </div>
     </div>
   );
 });
@@ -1811,19 +2027,20 @@ interface AskQuestion {
 
 function AskUserQuestionBlock({
   group,
-  isLastMessage,
   onAnswer,
 }: {
   group: ToolGroup;
-  isLastMessage: boolean;
   onAnswer?: (answer: string) => void;
 }) {
   const input = group.toolUse.input || {};
-  const questions = (input.questions as AskQuestion[]) || [];
+  const questions = Array.isArray(input.questions) ? (input.questions as AskQuestion[]) : [];
   // Only disable buttons when there's an explicit tool_result for this AskUserQuestion.
   // Unlike other tools, don't infer "has result" from !isLastMessage — the bridge
   // interrupts the query at AskUserQuestion to wait for user input.
   const hasResult = !!group.toolResult;
+
+  // Track selected answer per question index (for multi-question accumulation)
+  const [selected, setSelected] = useState<Record<number, string>>({});
 
   // Fallback: if no structured questions, try to show a simple question string
   if (questions.length === 0) {
@@ -1835,6 +2052,27 @@ function AskUserQuestionBlock({
       </div>
     );
   }
+
+  // Single question: send answer immediately on click
+  const isSingle = questions.length === 1;
+
+  const handleSelect = (qi: number, label: string) => {
+    if (isSingle) {
+      onAnswer?.(label);
+    } else {
+      setSelected((prev) => ({ ...prev, [qi]: label }));
+    }
+  };
+
+  const allAnswered = !isSingle && questions.every((_, qi) => selected[qi] != null);
+
+  const handleSubmit = () => {
+    if (!allAnswered) return;
+    const combined = questions
+      .map((_, qi) => `${qi + 1}. ${selected[qi]}`)
+      .join("\n");
+    onAnswer?.(combined);
+  };
 
   return (
     <div className="flex flex-col gap-3">
@@ -1853,29 +2091,47 @@ function AskUserQuestionBlock({
           </div>
           {q.options && q.options.length > 0 && (
             <div className="px-3 pb-3 flex flex-col gap-1.5">
-              {q.options.map((opt, oi) => (
-                <button
-                  key={oi}
-                  disabled={hasResult}
-                  onClick={() => onAnswer?.(opt.label)}
-                  className={`text-left px-3 py-2 rounded-md border text-sm transition-colors ${
-                    hasResult
-                      ? "border-[var(--border-color)] bg-[var(--bg-secondary)] text-[var(--text-tertiary)] cursor-default"
-                      : "border-[var(--border-color)] bg-[var(--bg-secondary)] hover:bg-[var(--accent)]/10 hover:border-[var(--accent)]/40 text-[var(--text-primary)] cursor-pointer"
-                  }`}
-                >
-                  <div className="font-medium">{opt.label}</div>
-                  {opt.description && (
-                    <div className="text-xs text-[var(--text-tertiary)] mt-0.5">
-                      {opt.description}
-                    </div>
-                  )}
-                </button>
-              ))}
+              {q.options.map((opt, oi) => {
+                const isSelected = selected[qi] === opt.label;
+                return (
+                  <button
+                    key={oi}
+                    disabled={hasResult}
+                    onClick={() => handleSelect(qi, opt.label)}
+                    className={`text-left px-3 py-2 rounded-md border text-sm transition-colors ${
+                      hasResult
+                        ? "border-[var(--border-color)] bg-[var(--bg-secondary)] text-[var(--text-tertiary)] cursor-default"
+                        : isSelected
+                          ? "border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--text-primary)] cursor-pointer"
+                          : "border-[var(--border-color)] bg-[var(--bg-secondary)] hover:bg-[var(--accent)]/10 hover:border-[var(--accent)]/40 text-[var(--text-primary)] cursor-pointer"
+                    }`}
+                  >
+                    <div className="font-medium">{opt.label}</div>
+                    {opt.description && (
+                      <div className="text-xs text-[var(--text-tertiary)] mt-0.5">
+                        {opt.description}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
       ))}
+      {!isSingle && !hasResult && (
+        <button
+          disabled={!allAnswered}
+          onClick={handleSubmit}
+          className={`self-end px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            allAnswered
+              ? "bg-[var(--accent)] text-white hover:bg-[var(--accent)]/90 cursor-pointer"
+              : "bg-[var(--bg-secondary)] text-[var(--text-tertiary)] border border-[var(--border-color)] cursor-not-allowed"
+          }`}
+        >
+          Submit answers
+        </button>
+      )}
     </div>
   );
 }
@@ -2038,7 +2294,7 @@ function ConsolidatedToolGroup({
         )}
       </button>
       {shouldExpand && (
-        <div className="border-t border-[var(--border-color)] bg-[var(--bg-secondary)]">
+        <div className="border-t border-[var(--border-color)] bg-[var(--bg-secondary)] max-h-48 overflow-y-auto">
           {toolName === "Edit" && input.file_path && input.old_string != null && input.new_string != null ? (
             <div className="py-1">
               <EditDiffView

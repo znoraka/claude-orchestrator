@@ -80,17 +80,19 @@ interface SessionContextValue {
     name: string | undefined,
     directory: string,
     dangerouslySkipPermissions?: boolean,
-    extraSystemPrompt?: string
+    extraSystemPrompt?: string,
+    pendingPrompt?: string
   ) => Promise<string>;
   createWorktree: (repoDir: string, branchName: string, worktreeName?: string) => Promise<string>;
   removeWorktree: (path: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   renameSession: (id: string, name: string) => void;
-  markStopped: (id: string) => void;
+  markStopped: (id: string, exitCode?: number) => void;
   restartSession: (id: string) => Promise<void>;
   touchSession: (id: string) => void;
   updateClaudeSessionId: (id: string, claudeSessionId: string) => void;
   setAgentBusy: (sessionId: string, isBusy: boolean) => void;
+  setSessionDraft: (sessionId: string, hasDraft: boolean) => void;
   unreadSessions: Set<string>;
 }
 
@@ -311,7 +313,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       name: string | undefined,
       directory: string,
       dangerouslySkipPermissions = false,
-      extraSystemPrompt?: string
+      extraSystemPrompt?: string,
+      pendingPrompt?: string
     ) => {
       const dir = normalizeDir(directory);
       const id = uuidv4();
@@ -327,6 +330,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         directory: dir,
         claudeSessionId,
         dangerouslySkipPermissions,
+        pendingPrompt,
       };
 
       dispatch({ type: "ADD", session });
@@ -390,8 +394,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "UPDATE", id, patch: { hasTitleBeenGenerated: true } });
   }, []);
 
-  const markStopped = useCallback((id: string) => {
-    dispatch({ type: "UPDATE", id, patch: { status: "stopped" } });
+  const markStopped = useCallback((id: string, exitCode?: number) => {
+    dispatch({ type: "UPDATE", id, patch: { status: "stopped", exitCode } });
   }, []);
 
   const restartSession = useCallback(
@@ -413,6 +417,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         patch: {
           status: "starting",
           lastActiveAt: Date.now(),
+          exitCode: undefined,
           ...(!session.claudeSessionId ? { claudeSessionId } : {}),
         },
       });
@@ -635,6 +640,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  // ── Draft state (user has typed but not sent) ───────────────────
+  const setSessionDraft = useCallback((sessionId: string, hasDraft: boolean) => {
+    dispatch({ type: "UPDATE", id: sessionId, patch: { hasDraft } });
+  }, []);
+
   // Merge JSONL usage with agent busy state
   const sessionUsage = useMemo(() => {
     const merged = new Map<string, SessionUsage>();
@@ -655,6 +665,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           cacheCreationInputTokens: 0,
           cacheReadInputTokens: 0,
           costUsd: 0,
+          contextTokens: 0,
           isBusy,
         });
       }
@@ -667,15 +678,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // ── Unread badge: tracks sessions that finished computing while not active ──
   const [unreadSessions, setUnreadSessions] = useState<Set<string>>(new Set());
   const prevBusyForUnreadRef = useRef<Map<string, boolean>>(new Map());
+  const prevActiveSessionIdRef = useRef<string | null>(null);
+  // Tracks sessions the user has viewed while awaiting input, so they don't re-badge
+  const dismissedAwaitingRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     for (const session of sessions) {
       const usage = sessionUsage.get(session.id);
       const wasBusy = prevBusyForUnreadRef.current.get(session.id) ?? false;
       const isBusy = usage?.isBusy ?? false;
+      const wasActive = prevActiveSessionIdRef.current === session.id;
 
       // busy → idle on a non-active session → mark unread
-      if (wasBusy && !isBusy && session.id !== activeSessionId) {
+      if (wasBusy && !isBusy && !wasActive) {
         setUnreadSessions((prev) => {
           if (prev.has(session.id)) return prev;
           const next = new Set(prev);
@@ -684,11 +699,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         });
       }
 
+      // When a session becomes busy again, reset its dismissed state
+      // so it can re-badge when it finishes the new work
+      if (isBusy && !wasBusy) {
+        dismissedAwaitingRef.current.delete(session.id);
+      }
+
       prevBusyForUnreadRef.current.set(session.id, isBusy);
     }
+    prevActiveSessionIdRef.current = activeSessionId;
   }, [sessions, sessionUsage, activeSessionId]);
 
-  // Clear unread when session becomes active
+  // Clear unread when session becomes active, and dismiss awaiting-input badge
   useEffect(() => {
     if (activeSessionId) {
       setUnreadSessions((prev) => {
@@ -697,8 +719,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         next.delete(activeSessionId);
         return next;
       });
+      // Mark as dismissed so it won't re-badge as "awaiting input"
+      dismissedAwaitingRef.current.add(activeSessionId);
     }
   }, [activeSessionId]);
+
+  // ── Dock badge: show count of sessions needing attention ─────────
+  useEffect(() => {
+    let count = unreadSessions.size;
+    // Also count running sessions awaiting input (not busy, not active, not already counted as unread)
+    for (const session of sessions) {
+      if (session.id === activeSessionId) continue; // active session doesn't need attention
+      if (session.status !== "running" && session.status !== "starting") continue;
+      if (unreadSessions.has(session.id)) continue; // already counted
+      if (dismissedAwaitingRef.current.has(session.id)) continue; // user already saw it
+      const usage = sessionUsage.get(session.id);
+      if (usage && !usage.isBusy) count++;
+    }
+    invoke("set_dock_badge", { label: count > 0 ? String(count) : null }).catch(() => {});
+  }, [sessions, sessionUsage, unreadSessions, activeSessionId]);
 
   const sortedSessions = useMemo(
     () => [...sessions].sort((a, b) => b.lastActiveAt - a.lastActiveAt),
@@ -766,6 +805,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       touchSession,
       updateClaudeSessionId,
       setAgentBusy,
+      setSessionDraft,
       unreadSessions,
     }),
     [
@@ -791,6 +831,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       touchSession,
       updateClaudeSessionId,
       setAgentBusy,
+      setSessionDraft,
       unreadSessions,
     ]
   );

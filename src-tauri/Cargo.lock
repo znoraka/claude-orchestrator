@@ -462,6 +462,8 @@ dependencies = [
  "grep-searcher",
  "notify",
  "notify-debouncer-mini",
+ "objc2-app-kit",
+ "objc2-foundation",
  "portable-pty",
  "regex",
  "reqwest 0.12.28",

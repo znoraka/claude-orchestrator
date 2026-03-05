@@ -138,12 +138,18 @@ impl AgentManager {
                 let _ = app_handle_clone.emit(&event_name, &line);
             }
 
-            // Process exited — remove session so we don't try to write to a dead pipe
+            // Process exited — remove session and capture exit code
+            let mut exit_code: Option<i32> = None;
             if let Ok(mut sessions) = sessions_clone.lock() {
-                sessions.remove(&sid_clone);
+                if let Some(mut session) = sessions.remove(&sid_clone) {
+                    if let Ok(status) = session.child.wait() {
+                        exit_code = status.code();
+                    }
+                }
             }
             let exit_event = format!("agent-exit-{}", sid_clone);
-            let _ = app_handle_clone.emit(&exit_event, "exited");
+            let code = exit_code.unwrap_or(-1);
+            let _ = app_handle_clone.emit(&exit_event, code.to_string());
         });
 
         // Stderr reader thread: log to eprintln

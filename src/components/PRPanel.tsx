@@ -289,15 +289,8 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
       `If the user asks you to make changes or implement something, you MUST first ask if they want to continue in a new worktree for this PR branch. ` +
       `Do NOT skip this question even if you have dangerous permissions. ` +
       `If they say yes, use the checkout_pr_worktree MCP tool with directory="${sessionDir}", pr_number=${prNumber}, branch="${headRefName}", then cd into the resulting path.`;
-    const sessionId = await createSession(`Review PR #${prNumber}`, sessionDir, skipPerms, prSystemPrompt);
-    // Send the review command as a user message via the agent bridge
-    const jsonLine = JSON.stringify({
-      type: "user",
-      message: { role: "user", content: `Review PR #${prNumber}` },
-    });
-    // Small delay to ensure the bridge is ready
-    await new Promise((r) => setTimeout(r, 500));
-    await invoke("send_agent_message", { sessionId, message: jsonLine });
+    // pendingPrompt will be auto-sent by AgentChat once the bridge is ready
+    await createSession(`Review PR #${prNumber}`, sessionDir, skipPerms, prSystemPrompt, `Review PR #${prNumber}`);
     onSwitchToClaude?.();
   }, [createSession, directory, sessions, onSwitchToClaude]);
 
