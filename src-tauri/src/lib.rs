@@ -134,6 +134,8 @@ struct SessionMeta {
     claude_session_id: Option<String>,
     #[serde(default, rename = "dangerouslySkipPermissions")]
     dangerously_skip_permissions: bool,
+    #[serde(default, rename = "permissionMode", skip_serializing_if = "Option::is_none")]
+    permission_mode: Option<String>,
     #[serde(default, rename = "activeTime")]
     active_time: f64,
     #[serde(default, rename = "hasTitleBeenGenerated")]
@@ -245,6 +247,7 @@ fn create_agent_session(
     system_prompt: Option<String>,
     provider: Option<String>,
     model: Option<String>,
+    permission_mode: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -298,6 +301,7 @@ fn create_agent_session(
             "mcpServers": mcp_servers,
             "systemPrompt": system_prompt,
             "claudeCliPath": claude_cli,
+            "permissionMode": permission_mode,
         })
     } else {
         // Generic config for other providers (opencode, etc.)
@@ -1479,29 +1483,8 @@ fn get_message_count_sync(claude_session_id: String, directory: String) -> Resul
 }
 
 #[tauri::command]
-async fn generate_smart_title(
-    claude_session_id: String,
-    directory: String,
-    state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
-    let port = state.title_server_port.load(std::sync::atomic::Ordering::Relaxed);
-    if port == 0 {
-        return Err("Title server not running".to_string());
-    }
-
-    // Extract user message from JSONL in a blocking task
-    let user_msg = tauri::async_runtime::spawn_blocking(move || {
-        extract_first_user_message(&claude_session_id, &directory)
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))??;
-
-    let user_msg = match user_msg {
-        Some(m) => m,
-        None => return Ok(None),
-    };
-
-    // Send request to the warm title server
+/// Call the warm title server with a user message and return the generated title.
+async fn call_title_server(port: u16, user_msg: String) -> Result<Option<String>, String> {
     let body = serde_json::json!({ "message": user_msg }).to_string();
 
     let response = tauri::async_runtime::spawn_blocking(move || {
@@ -1548,6 +1531,46 @@ async fn generate_smart_title(
     }
 
     Ok(None)
+}
+
+#[tauri::command]
+async fn generate_smart_title(
+    claude_session_id: String,
+    directory: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let port = state.title_server_port.load(std::sync::atomic::Ordering::Relaxed);
+    if port == 0 {
+        return Err("Title server not running".to_string());
+    }
+
+    // Extract user message from JSONL in a blocking task
+    let user_msg = tauri::async_runtime::spawn_blocking(move || {
+        extract_first_user_message(&claude_session_id, &directory)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))??;
+
+    let user_msg = match user_msg {
+        Some(m) => m,
+        None => return Ok(None),
+    };
+
+    call_title_server(port, user_msg).await
+}
+
+#[tauri::command]
+async fn generate_title_from_text(
+    message: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let port = state.title_server_port.load(std::sync::atomic::Ordering::Relaxed);
+    if port == 0 {
+        return Err("Title server not running".to_string());
+    }
+
+    let truncated: String = message.chars().take(500).collect();
+    call_title_server(port, truncated).await
 }
 
 fn extract_first_user_message(claude_session_id: &str, directory: &str) -> Result<Option<String>, String> {
@@ -3323,6 +3346,7 @@ pub fn run() {
             get_usage_dashboard,
             get_message_count,
             generate_smart_title,
+            generate_title_from_text,
             get_conversation_jsonl,
             search_session_content,
             watch_jsonl,

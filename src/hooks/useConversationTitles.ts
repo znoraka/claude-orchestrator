@@ -38,7 +38,7 @@ export function useConversationTitles(
   // Stable key: only changes when the set of running sessions changes (not on activeTime/name updates)
   const runningKey = sessions.filter((s) => s.status === "running").map((s) => `${s.id}:${s.claudeSessionId ?? ""}`).join(",");
   const runningSessions = useMemo(
-    () => sessions.filter((s) => s.claudeSessionId && s.directory && s.status === "running"),
+    () => sessions.filter((s) => s.claudeSessionId && s.directory && s.status === "running" && s.provider !== "opencode"),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [runningKey]
   );

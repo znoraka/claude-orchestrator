@@ -83,17 +83,20 @@ interface SessionContextValue {
     extraSystemPrompt?: string,
     pendingPrompt?: string,
     provider?: AgentProvider,
-    model?: string
+    model?: string,
+    permissionMode?: "bypassPermissions" | "plan"
   ) => Promise<string>;
   createWorktree: (repoDir: string, branchName: string, worktreeName?: string) => Promise<string>;
   removeWorktree: (path: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   renameSession: (id: string, name: string) => void;
+  markTitleGenerated: (id: string) => void;
   markStopped: (id: string, exitCode?: number) => void;
   restartSession: (id: string) => Promise<void>;
   touchSession: (id: string) => void;
   updateClaudeSessionId: (id: string, claudeSessionId: string) => void;
   setAgentBusy: (sessionId: string, isBusy: boolean) => void;
+  setAgentUsage: (sessionId: string, usage: SessionUsage) => void;
   setSessionDraft: (sessionId: string, hasDraft: boolean) => void;
   setSessionQuestion: (sessionId: string, hasQuestion: boolean) => void;
   unreadSessions: Set<string>;
@@ -131,6 +134,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         homeDirectory?: string;
         claudeSessionId?: string;
         dangerouslySkipPermissions?: boolean;
+        permissionMode?: string;
         activeTime?: number;
         hasTitleBeenGenerated?: boolean;
       }>
@@ -149,6 +153,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             homeDirectory: s.homeDirectory ? normalizeDir(s.homeDirectory) : undefined,
             claudeSessionId: s.claudeSessionId,
             dangerouslySkipPermissions: s.dangerouslySkipPermissions,
+            permissionMode: s.permissionMode as Session["permissionMode"],
             activeTime: s.activeTime || 0,
             hasTitleBeenGenerated: s.hasTitleBeenGenerated,
           }));
@@ -180,6 +185,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       homeDirectory: s.homeDirectory,
       claudeSessionId: s.claudeSessionId,
       dangerouslySkipPermissions: s.dangerouslySkipPermissions,
+      permissionMode: s.permissionMode,
       activeTime: s.activeTime || 0,
       hasTitleBeenGenerated: s.hasTitleBeenGenerated,
     }));
@@ -325,7 +331,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       extraSystemPrompt?: string,
       pendingPrompt?: string,
       provider: AgentProvider = "claude-code",
-      model?: string
+      model?: string,
+      permissionMode?: "bypassPermissions" | "plan"
     ) => {
       const dir = normalizeDir(directory);
       const id = uuidv4();
@@ -343,6 +350,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         model: model || undefined,
         claudeSessionId,
         dangerouslySkipPermissions,
+        permissionMode,
         pendingPrompt,
       };
 
@@ -362,6 +370,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           systemPrompt: extraSystemPrompt || null,
           provider,
           model: model || null,
+          permissionMode: permissionMode || null,
         });
         dispatch({ type: "UPDATE", id, patch: { status: "running" } });
         await enforceMaxSessions(id);
@@ -451,6 +460,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           systemPrompt: null,
           provider: session.provider || "claude-code",
           model: session.model || null,
+          permissionMode: session.permissionMode || null,
         });
         dispatch({ type: "UPDATE", id, patch: { status: "running" } });
         await enforceMaxSessions(id);
@@ -657,6 +667,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  // ── Agent usage state (for bridge-based sessions without JSONL) ───
+  const [agentUsageMap, setAgentUsageMap] = useState<Map<string, SessionUsage>>(new Map());
+  const setAgentUsage = useCallback((sessionId: string, usage: SessionUsage) => {
+    setAgentUsageMap((prev) => {
+      const next = new Map(prev);
+      next.set(sessionId, usage);
+      return next;
+    });
+  }, []);
+
   // ── Draft state (user has typed but not sent) ───────────────────
   const setSessionDraft = useCallback((sessionId: string, hasDraft: boolean) => {
     dispatch({ type: "UPDATE", id: sessionId, patch: { hasDraft } });
@@ -666,12 +686,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "UPDATE", id: sessionId, patch: { hasQuestion } });
   }, []);
 
-  // Merge JSONL usage with agent busy state
+  // Merge JSONL usage with agent busy state and agent-reported usage
   const sessionUsage = useMemo(() => {
     const merged = new Map<string, SessionUsage>();
     // Copy all JSONL usage entries
     for (const [id, usage] of jsonlUsage) {
       merged.set(id, usage);
+    }
+    // Apply agent-reported usage (for bridge-based sessions without JSONL)
+    for (const [id, usage] of agentUsageMap) {
+      const existing = merged.get(id);
+      if (!existing || existing.inputTokens === 0) {
+        merged.set(id, usage);
+      }
     }
     // Override isBusy for agent-based sessions
     for (const [id, isBusy] of agentBusyMap) {
@@ -679,7 +706,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (existing) {
         merged.set(id, { ...existing, isBusy });
       } else {
-        // Create a minimal usage entry for agent sessions without JSONL data yet
         merged.set(id, {
           inputTokens: 0,
           outputTokens: 0,
@@ -692,7 +718,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
     }
     return merged;
-  }, [jsonlUsage, agentBusyMap]);
+  }, [jsonlUsage, agentBusyMap, agentUsageMap]);
 
   useBackgroundNotifications(sessions, sessionUsage, activeSessionId);
 
@@ -821,11 +847,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       removeWorktree,
       deleteSession,
       renameSession,
+      markTitleGenerated,
       markStopped,
       restartSession,
       touchSession,
       updateClaudeSessionId,
       setAgentBusy,
+      setAgentUsage,
       setSessionDraft,
       setSessionQuestion,
       unreadSessions,
@@ -848,11 +876,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       removeWorktree,
       deleteSession,
       renameSession,
+      markTitleGenerated,
       markStopped,
       restartSession,
       touchSession,
       updateClaudeSessionId,
       setAgentBusy,
+      setAgentUsage,
       setSessionDraft,
       setSessionQuestion,
       unreadSessions,

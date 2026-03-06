@@ -18,6 +18,7 @@ interface AgentChatProps {
   onExit: (exitCode?: number) => void;
   onActivity: () => void;
   onBusyChange?: (isBusy: boolean) => void;
+  onUsageUpdate?: (usage: import("../types").SessionUsage) => void;
   onDraftChange?: (hasDraft: boolean) => void;
   onQuestionChange?: (hasQuestion: boolean) => void;
   onClaudeSessionId?: (claudeSessionId: string) => void;
@@ -28,6 +29,8 @@ interface AgentChatProps {
   onInputHeightChange?: (height: number) => void;
   onEditFile?: (filePath: string, line?: number) => void;
   onAvailableModels?: (models: Array<{ id: string; providerID: string; name: string; free: boolean; costIn: number; costOut: number }>) => void;
+  onRename?: (name: string) => void;
+  onMarkTitleGenerated?: () => void;
 }
 
 /** @deprecated Use modelsForProvider(provider) from types.ts instead */
@@ -191,6 +194,74 @@ function parseHistoryLines(
   });
 }
 
+// ── OpenCode Usage Indicator ──────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function OpenCodeUsageIndicator({ data }: { data: Record<string, any> }) {
+  // session.status() returns varied shapes — extract what we can
+  const input = data?.input ?? data?.tokens?.input ?? data?.usage?.input_tokens;
+  const output = data?.output ?? data?.tokens?.output ?? data?.usage?.output_tokens;
+  const limit = data?.limit ?? data?.rateLimit?.remaining ?? data?.remaining;
+  const used = data?.used ?? data?.rateLimit?.used;
+  const total = data?.total ?? data?.rateLimit?.limit;
+  const percent = data?.percent ?? data?.rateLimit?.percent;
+
+  // Format token count
+  const fmt = (n: number) => {
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+    if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+    return String(n);
+  };
+
+  const parts: string[] = [];
+
+  if (typeof limit === "number") {
+    parts.push(`${fmt(limit)} remaining`);
+  }
+  if (typeof used === "number" && typeof total === "number") {
+    parts.push(`${fmt(used)}/${fmt(total)} used`);
+  }
+  if (typeof percent === "number") {
+    parts.push(`${percent.toFixed(0)}% used`);
+  }
+  if (typeof input === "number" || typeof output === "number") {
+    const tok = (input || 0) + (output || 0);
+    if (tok > 0) parts.push(`${fmt(tok)} tokens`);
+  }
+
+  // If we got data but nothing recognizable, show raw JSON keys for debugging
+  if (parts.length === 0 && data) {
+    const keys = Object.keys(data);
+    if (keys.length > 0) {
+      // Show a compact summary of what the server returned
+      return (
+        <span
+          className="flex items-center gap-1 cursor-help"
+          title={JSON.stringify(data, null, 2)}
+        >
+          OC: {keys.slice(0, 3).join(", ")}{keys.length > 3 ? "…" : ""}
+        </span>
+      );
+    }
+    return null;
+  }
+
+  if (parts.length === 0) return null;
+
+  // Color: green if plenty remaining, yellow if getting low, red if critical
+  let color = "text-[var(--text-tertiary)]";
+  if (typeof percent === "number") {
+    if (percent > 80) color = "text-red-400";
+    else if (percent > 60) color = "text-yellow-400";
+  }
+
+  return (
+    <span className={`flex items-center gap-1 ${color}`} title={JSON.stringify(data, null, 2)}>
+      OC: {parts.join(" · ")}
+    </span>
+  );
+}
+
 // ── Component ────────────────────────────────────────────────────────
 
 const AgentChat = memo(function AgentChat({
@@ -199,6 +270,7 @@ const AgentChat = memo(function AgentChat({
   onExit,
   onActivity,
   onBusyChange,
+  onUsageUpdate,
   onDraftChange,
   onQuestionChange,
   onClaudeSessionId,
@@ -208,6 +280,8 @@ const AgentChat = memo(function AgentChat({
   currentModel = "claude-opus-4-6",
   onInputHeightChange,
   onAvailableModels,
+  onRename,
+  onMarkTitleGenerated,
 }: AgentChatProps) {
   const isReadOnly = session?.status === "stopped";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -217,6 +291,7 @@ const AgentChat = memo(function AgentChat({
   const abortedRef = useRef(false);
   const generationStartRef = useRef<number>(0);
   const [currentTodo, setCurrentTodo] = useState<string | null>(null);
+  const [pendingPermission, setPendingPermission] = useState<{ toolName: string; input: Record<string, unknown> } | null>(null);
   // Tool expansion state: single object to avoid double state updates
   // "expanded" = user manually expanded, "collapsed" = user manually collapsed, undefined = default
   const [toolStates, setToolStates] = useState<Record<string, "expanded" | "collapsed">>({});
@@ -224,6 +299,12 @@ const AgentChat = memo(function AgentChat({
   const [fileReferences, setFileReferences] = useState<FileReference[]>([]);
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [viewingFileRef, setViewingFileRef] = useState<FileReference | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [opencodeUsage, setOpencodeUsage] = useState<Record<string, any> | null>(null);
+  // Accumulated usage for bridge-based sessions (OpenCode) — reported to parent for context bar
+  const accumulatedUsageRef = useRef({ inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, costUsd: 0, contextTokens: 0 });
+  const onUsageUpdateRef = useRef(onUsageUpdate);
+  onUsageUpdateRef.current = onUsageUpdate;
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const inputAreaRef = useRef<HTMLDivElement>(null);
@@ -396,8 +477,13 @@ const AgentChat = memo(function AgentChat({
   onForkRef.current = onFork;
   const onAvailableModelsRef = useRef(onAvailableModels);
   onAvailableModelsRef.current = onAvailableModels;
+  const onRenameRef = useRef(onRename);
+  onRenameRef.current = onRename;
+  const onMarkTitleGeneratedRef = useRef(onMarkTitleGenerated);
+  onMarkTitleGeneratedRef.current = onMarkTitleGenerated;
   const currentModelRef = useRef(currentModel);
   currentModelRef.current = currentModel;
+  const titleGeneratedRef = useRef(!!session?.hasTitleBeenGenerated);
 
   // Sync busy state to parent
   useEffect(() => {
@@ -728,6 +814,12 @@ const AgentChat = memo(function AgentChat({
       return;
     }
 
+    if (msgType === "opencode_usage") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setOpencodeUsage(msg.data as any);
+      return;
+    }
+
     if (msgType === "system" && msg.subtype === "bridge_ready") {
       // Set the selected model on the new agent
       if (currentModelRef.current !== "claude-opus-4-6") {
@@ -755,7 +847,20 @@ const AgentChat = memo(function AgentChat({
           type: "user",
           message: { role: "user", content: prompt },
         });
-        invoke("send_agent_message", { sessionId, message: jsonLine }).catch((err) => {
+        invoke("send_agent_message", { sessionId, message: jsonLine }).then(() => {
+          // Generate smart title for OpenCode sessions (no JSONL to watch)
+          if (session?.provider === "opencode" && !titleGeneratedRef.current) {
+            titleGeneratedRef.current = true;
+            invoke<string | null>("generate_title_from_text", { message: prompt.substring(0, 500) })
+              .then((title) => {
+                if (title) {
+                  onRenameRef.current?.(title);
+                  onMarkTitleGeneratedRef.current?.();
+                }
+              })
+              .catch(() => {});
+          }
+        }).catch((err) => {
           setIsGenerating(false);
           setMessages((prev) => [
             ...prev,
@@ -852,6 +957,24 @@ const AgentChat = memo(function AgentChat({
       accumulatedBlocksRef.current.clear();
       const result = msg as Record<string, unknown>;
       const durationMs = generationStartRef.current ? Date.now() - generationStartRef.current : undefined;
+
+      // Accumulate usage for context bar (bridge-based sessions)
+      const resultUsage = result.usage as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
+      if (resultUsage) {
+        const inp = resultUsage.input_tokens || 0;
+        const out = resultUsage.output_tokens || 0;
+        const cr = resultUsage.cache_read_input_tokens || 0;
+        const cc = resultUsage.cache_creation_input_tokens || 0;
+        const acc = accumulatedUsageRef.current;
+        acc.inputTokens += inp;
+        acc.outputTokens += out;
+        acc.cacheReadInputTokens += cr;
+        acc.cacheCreationInputTokens += cc;
+        acc.contextTokens = inp + cr + cc; // latest turn's context window usage
+        acc.costUsd += (result.cost_usd as number) || 0;
+        onUsageUpdateRef.current?.({ ...acc, isBusy: false });
+      }
+
       setMessages((prev) => {
         const filtered = prev.filter((m) => !m.isStreaming);
         return [
@@ -862,7 +985,7 @@ const AgentChat = memo(function AgentChat({
             content: [{ type: "text", text: (result.result as string) || "" }],
             timestamp: Date.now(),
             costUsd: result.cost_usd as number | undefined,
-            usage: result.usage as { input_tokens?: number; output_tokens?: number } | undefined,
+            usage: resultUsage as { input_tokens?: number; output_tokens?: number } | undefined,
             durationMs,
           },
         ];
@@ -902,6 +1025,15 @@ const AgentChat = memo(function AgentChat({
           timestamp: Date.now(),
         },
       ]);
+      return;
+    }
+
+    // Permission request (plan mode)
+    if (msgType === "permission_request") {
+      setPendingPermission({
+        toolName: msg.toolName as string,
+        input: msg.input as Record<string, unknown>,
+      });
       return;
     }
 
@@ -959,6 +1091,24 @@ const AgentChat = memo(function AgentChat({
       unlistenExitFn?.();
     };
   }, [sessionId, handleAgentMessage]);
+
+  // ── Poll OpenCode usage ─────────────────────────────────────────
+  useEffect(() => {
+    if (session?.provider !== "opencode") return;
+    if (session?.status !== "running" && session?.status !== "starting") return;
+
+    const fetchUsage = () => {
+      invoke("send_agent_message", {
+        sessionId,
+        message: JSON.stringify({ type: "get_usage" }),
+      }).catch(() => {});
+    };
+
+    // Fetch immediately, then every 30s
+    fetchUsage();
+    const interval = setInterval(fetchUsage, 30_000);
+    return () => clearInterval(interval);
+  }, [sessionId, session?.provider, session?.status]);
 
   // ── Convert SDK messages to ChatMessage ──────────────────────────
 
@@ -1181,6 +1331,19 @@ const AgentChat = memo(function AgentChat({
     });
     try {
       await invoke("send_agent_message", { sessionId, message: jsonLine });
+
+      // Generate smart title for OpenCode sessions (no JSONL to watch)
+      if (session?.provider === "opencode" && !titleGeneratedRef.current && text) {
+        titleGeneratedRef.current = true;
+        invoke<string | null>("generate_title_from_text", { message: text })
+          .then((title) => {
+            if (title) {
+              onRenameRef.current?.(title);
+              onMarkTitleGeneratedRef.current?.();
+            }
+          })
+          .catch(() => {});
+      }
     } catch (err) {
       setIsGenerating(false);
       setMessages((prev) => [
@@ -1225,6 +1388,13 @@ const AgentChat = memo(function AgentChat({
         timestamp: Date.now(),
       },
     ]);
+  }, [sessionId]);
+
+  // Respond to a permission request (plan mode)
+  const respondPermission = useCallback((allowed: boolean) => {
+    setPendingPermission(null);
+    const msg = JSON.stringify({ type: "permission_response", allowed });
+    invoke("send_agent_message", { sessionId, message: msg }).catch(() => {});
   }, [sessionId]);
 
   // ── Edit / resend a user message ──────────────────────────────────
@@ -1533,7 +1703,7 @@ const AgentChat = memo(function AgentChat({
               />
             ))}
 
-            {isGenerating && (
+            {isGenerating && !pendingPermission && (
               <div className="flex items-center gap-2 px-3 py-2">
                 <div className="flex gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
@@ -1543,6 +1713,39 @@ const AgentChat = memo(function AgentChat({
                 <span className="text-xs text-[var(--text-tertiary)]">
                   {currentTodo || "Thinking…"}
                 </span>
+              </div>
+            )}
+
+            {pendingPermission && (
+              <div className="mx-3 my-2 p-3 rounded-lg border border-[var(--warning-border,var(--border-color))] bg-[var(--bg-secondary)]">
+                <div className="text-xs text-[var(--text-secondary)] mb-1">Permission requested</div>
+                <div className="text-sm text-[var(--text-primary)] font-mono mb-2">
+                  {pendingPermission.toolName}
+                  {pendingPermission.input?.command != null && (
+                    <span className="text-[var(--text-tertiary)] ml-1">
+                      {String(pendingPermission.input.command).substring(0, 200)}
+                    </span>
+                  )}
+                  {pendingPermission.input?.file_path != null && (
+                    <span className="text-[var(--text-tertiary)] ml-1">
+                      {String(pendingPermission.input.file_path)}
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => respondPermission(true)}
+                    className="px-3 py-1 text-xs rounded bg-[var(--accent)] text-white hover:opacity-90"
+                  >
+                    Allow
+                  </button>
+                  <button
+                    onClick={() => respondPermission(false)}
+                    className="px-3 py-1 text-xs rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+                  >
+                    Deny
+                  </button>
+                </div>
               </div>
             )}
           </>
@@ -1698,7 +1901,7 @@ const AgentChat = memo(function AgentChat({
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder={`Message ${modelsForProvider(session?.provider || "claude-code").find((m) => m.id === currentModel)?.name ?? "Agent"}…`}
+            placeholder={`Message ${modelsForProvider(session?.provider || "claude-code").find((m) => m.id === currentModel)?.name ?? currentModel.split("/").pop() ?? "Agent"}…`}
             rows={1}
             className="flex-1 resize-none bg-transparent border-none px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none max-h-32 overflow-y-auto"
             style={{ minHeight: "38px" }}
@@ -1726,14 +1929,17 @@ const AgentChat = memo(function AgentChat({
             </button>
           )}
         </div>
-        {currentBranch && (
+        {(currentBranch || opencodeUsage) && (
           <div className="flex items-center gap-2 mt-1 px-1 text-[10px] text-[var(--text-tertiary)]">
-            <span className="flex items-center gap-1">
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
-              </svg>
-              {currentBranch}
-            </span>
+            {currentBranch && (
+              <span className="flex items-center gap-1">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
+                </svg>
+                {currentBranch}
+              </span>
+            )}
+            {opencodeUsage && <OpenCodeUsageIndicator data={opencodeUsage} />}
           </div>
         )}
       </div>

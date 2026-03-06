@@ -46,6 +46,7 @@ export interface Session {
   homeDirectory?: string; // original directory before switching to a worktree
   claudeSessionId?: string;
   dangerouslySkipPermissions?: boolean;
+  permissionMode?: "bypassPermissions" | "plan";
   activeTime?: number; // cumulative ms of running time
   hasTitleBeenGenerated?: boolean; // true if a smart title has been generated
   pendingPrompt?: string; // auto-sent on bridge_ready (e.g. PR review)

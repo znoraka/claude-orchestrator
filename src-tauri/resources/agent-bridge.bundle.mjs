@@ -16561,7 +16561,8 @@ var {
   mcpServers,
   systemPrompt,
   allowedTools,
-  claudeCliPath
+  claudeCliPath,
+  permissionMode: configPermissionMode
 } = config2;
 var currentCwd = initialCwd;
 var currentModel = config2.model || null;
@@ -16578,6 +16579,8 @@ var claudeSessionId = resume || null;
 var abortController = null;
 var queryInProgress = false;
 var askUserResolve = null;
+var permissionResolve = null;
+var currentPermissionMode = configPermissionMode || "bypassPermissions";
 var stdinBuf = "";
 process.stdin.setEncoding("utf-8");
 process.stdin.on("data", (chunk) => {
@@ -16608,6 +16611,10 @@ async function handleStdinMessage(msg) {
       askUserResolve(null);
       askUserResolve = null;
     }
+    if (permissionResolve) {
+      permissionResolve(false);
+      permissionResolve = null;
+    }
     return;
   }
   if (msg.type === "set_cwd") {
@@ -16630,6 +16637,22 @@ async function handleStdinMessage(msg) {
     } else {
       log("ask_user_answer received but no pending askUserResolve \u2014 ignoring");
     }
+    return;
+  }
+  if (msg.type === "permission_response") {
+    if (permissionResolve) {
+      log(`Resolving permission: ${msg.allowed ? "allow" : "deny"}`);
+      permissionResolve(msg.allowed);
+      permissionResolve = null;
+    } else {
+      log("permission_response received but no pending permissionResolve \u2014 ignoring");
+    }
+    return;
+  }
+  if (msg.type === "set_permission_mode") {
+    currentPermissionMode = msg.permissionMode || "bypassPermissions";
+    log(`permissionMode updated to: ${currentPermissionMode}`);
+    emit({ type: "permission_mode_updated", permissionMode: currentPermissionMode });
     return;
   }
   if (msg.type === "user") {
@@ -16673,35 +16696,52 @@ async function runQuery(userMessage) {
   } else {
     prompt = String(userMessage);
   }
+  const isBypass = currentPermissionMode === "bypassPermissions";
   const options = {
     cwd: currentCwd || process.cwd(),
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
+    permissionMode: currentPermissionMode,
+    allowDangerouslySkipPermissions: isBypass,
     abortController,
     settingSources: ["project"],
-    // Handle AskUserQuestion via the SDK's permission protocol.
-    // The CLI sends a can_use_tool control request for tools that
-    // requiresUserInteraction (like AskUserQuestion) even in
-    // bypassPermissions mode.  For all other tools, auto-allow.
+    // Handle AskUserQuestion and permission prompts via the SDK's canUseTool protocol.
+    // In bypassPermissions mode, only AskUserQuestion triggers this callback.
+    // In plan mode, write/execute tools also trigger it — we forward to the frontend.
     canUseTool: async (toolName, input, { signal }) => {
-      if (toolName !== "AskUserQuestion") {
+      if (toolName === "AskUserQuestion") {
+        log(`canUseTool: AskUserQuestion \u2014 waiting for user answer`);
+        emit({ type: "ask_user_question", questions: input.questions });
+        const answer = await new Promise((resolve) => {
+          askUserResolve = resolve;
+          const onAbort = () => {
+            resolve(null);
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+        });
+        if (answer === null) {
+          log("canUseTool: AskUserQuestion cancelled");
+          return { behavior: "deny", message: "User cancelled." };
+        }
+        log(`canUseTool: AskUserQuestion answered: ${JSON.stringify(answer).substring(0, 200)}`);
+        return { behavior: "allow", updatedInput: { ...input, answers: answer } };
+      }
+      if (isBypass) {
         return { behavior: "allow", updatedInput: input };
       }
-      log(`canUseTool: AskUserQuestion \u2014 waiting for user answer`);
-      emit({ type: "ask_user_question", questions: input.questions });
-      const answer = await new Promise((resolve, reject) => {
-        askUserResolve = resolve;
+      log(`canUseTool: permission request for ${toolName}`);
+      emit({ type: "permission_request", toolName, input });
+      const allowed = await new Promise((resolve) => {
+        permissionResolve = resolve;
         const onAbort = () => {
-          resolve(null);
+          resolve(false);
         };
         signal.addEventListener("abort", onAbort, { once: true });
       });
-      if (answer === null) {
-        log("canUseTool: AskUserQuestion cancelled");
-        return { behavior: "deny", message: "User cancelled." };
+      if (!allowed) {
+        log(`canUseTool: ${toolName} denied`);
+        return { behavior: "deny", message: "User denied permission." };
       }
-      log(`canUseTool: AskUserQuestion answered: ${JSON.stringify(answer).substring(0, 200)}`);
-      return { behavior: "allow", updatedInput: { ...input, answers: answer } };
+      log(`canUseTool: ${toolName} allowed`);
+      return { behavior: "allow", updatedInput: input };
     }
   };
   if (claudeCliPath) {

@@ -1735,6 +1735,10 @@ if (config.mode === "list-models") {
       case "message.updated": {
         const info = props.info;
         if (!info) break;
+        if (info.role === "user") {
+          userMessageIds.add(info.id);
+          break;
+        }
         if (info.role === "assistant") {
           currentMessageId = info.id;
           if (info.time?.completed) {
@@ -1759,6 +1763,7 @@ if (config.mode === "list-models") {
         const part = props.part;
         const delta = props.delta;
         if (!part) break;
+        if (part.messageID && userMessageIds.has(part.messageID)) break;
         if (currentMessageId && part.messageID !== currentMessageId) {
           currentMessageId = part.messageID;
         }
@@ -1939,6 +1944,7 @@ if (config.mode === "list-models") {
   let bootPromise;
   let ocSessionId = null;
   let currentMessageId = null;
+  const userMessageIds = /* @__PURE__ */ new Set();
   const partsById = /* @__PURE__ */ new Map();
   async function boot() {
     log(`Booting OpenCode server (cwd=${currentCwd})`);
@@ -2063,6 +2069,17 @@ if (config.mode === "list-models") {
       config.model = msg.model || null;
       log(`model updated to: ${config.model}`);
       emit({ type: "model_updated", model: config.model });
+      return;
+    }
+    if (msg.type === "get_usage") {
+      try {
+        await bootPromise;
+        const status = await client2.session.status();
+        emit({ type: "opencode_usage", data: status.data || status });
+      } catch (err) {
+        log(`Failed to get usage: ${err.message}`);
+        emit({ type: "opencode_usage", data: null, error: err.message });
+      }
       return;
     }
     if (msg.type === "ask_user_answer") {

@@ -33,9 +33,12 @@ const SessionPanel = memo(function SessionPanel({
   markStopped,
   touchSession,
   setAgentBusy,
+  setAgentUsage,
   setSessionDraft,
   setSessionQuestion,
   updateClaudeSessionId,
+  renameSession,
+  markTitleGenerated,
   restartSession,
   createSession,
   currentModel,
@@ -49,9 +52,12 @@ const SessionPanel = memo(function SessionPanel({
   markStopped: (id: string, exitCode?: number) => void;
   touchSession: (id: string) => void;
   setAgentBusy: (id: string, isBusy: boolean) => void;
+  setAgentUsage: (id: string, usage: import("./types").SessionUsage) => void;
   setSessionDraft: (id: string, hasDraft: boolean) => void;
   setSessionQuestion: (id: string, hasQuestion: boolean) => void;
   updateClaudeSessionId: (id: string, claudeSessionId: string) => void;
+  renameSession: (id: string, name: string) => void;
+  markTitleGenerated: (id: string) => void;
   restartSession: (id: string) => Promise<void>;
   createSession: (name: string | undefined, directory: string, skip?: boolean, systemPrompt?: string, pendingPrompt?: string, provider?: AgentProvider) => Promise<string>;
   currentModel: string;
@@ -64,11 +70,14 @@ const SessionPanel = memo(function SessionPanel({
   const handleExit = useCallback((exitCode?: number) => markStopped(session.id, exitCode), [session.id, markStopped]);
   const handleActivity = useCallback(() => touchSession(session.id), [session.id, touchSession]);
   const handleBusyChange = useCallback((isBusy: boolean) => setAgentBusy(session.id, isBusy), [session.id, setAgentBusy]);
+  const handleUsageUpdate = useCallback((usage: import("./types").SessionUsage) => setAgentUsage(session.id, usage), [session.id, setAgentUsage]);
   const handleDraftChange = useCallback((hasDraft: boolean) => setSessionDraft(session.id, hasDraft), [session.id, setSessionDraft]);
   const handleQuestionChange = useCallback((hasQuestion: boolean) => setSessionQuestion(session.id, hasQuestion), [session.id, setSessionQuestion]);
   const handleClaudeSessionId = useCallback((claudeSessionId: string) => updateClaudeSessionId(session.id, claudeSessionId), [session.id, updateClaudeSessionId]);
   const handleResume = useCallback(() => restartSession(session.id), [session.id, restartSession]);
   const handleFork = useCallback((systemPrompt: string) => createSession(`Fork of ${session.name}`, session.directory, session.dangerouslySkipPermissions, systemPrompt), [session.name, session.directory, session.dangerouslySkipPermissions, createSession]);
+  const handleRename = useCallback((name: string) => renameSession(session.id, name), [session.id, renameSession]);
+  const handleMarkTitleGenerated = useCallback(() => markTitleGenerated(session.id), [session.id, markTitleGenerated]);
 
   return (
     <div
@@ -86,6 +95,7 @@ const SessionPanel = memo(function SessionPanel({
           onExit={handleExit}
           onActivity={handleActivity}
           onBusyChange={handleBusyChange}
+          onUsageUpdate={handleUsageUpdate}
           onDraftChange={handleDraftChange}
           onQuestionChange={handleQuestionChange}
           onClaudeSessionId={handleClaudeSessionId}
@@ -96,6 +106,8 @@ const SessionPanel = memo(function SessionPanel({
           onInputHeightChange={isVisible ? setChatInputHeight : undefined}
           onEditFile={onEditFile}
           onAvailableModels={onAvailableModels}
+          onRename={handleRename}
+          onMarkTitleGenerated={handleMarkTitleGenerated}
         />
       </ErrorBoundary>
     </div>
@@ -114,11 +126,13 @@ export default function App() {
     createWorktree,
     deleteSession,
     renameSession,
+    markTitleGenerated,
     markStopped,
     restartSession,
     touchSession,
     updateClaudeSessionId,
     setAgentBusy,
+    setAgentUsage,
     setSessionDraft,
     setSessionQuestion,
     unreadSessions,
@@ -155,6 +169,7 @@ export default function App() {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [skipPermissions, setSkipPermissions] = useState(true);
+  const [permissionMode, setPermissionMode] = useState<"bypassPermissions" | "plan">("bypassPermissions");
   const [creating, setCreating] = useState(false);
   const [dirInputDirty, setDirInputDirty] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<AgentProvider>("claude-code");
@@ -398,7 +413,7 @@ export default function App() {
       setShowWorktreeDialog(false);
       localStorage.setItem("claude-orchestrator-last-session-dir", path);
       // Create a session in the new worktree
-      await createSession(undefined, path, skipPermissions);
+      await createSession(undefined, path, skipPermissions, undefined, undefined, undefined, undefined, permissionMode);
       setActivePanel(null);
     } catch (err) {
       console.error("Failed to create worktree:", err);
@@ -468,7 +483,7 @@ export default function App() {
     saveRecentDir(rootDir);
     setShowDirDialog(false);
     try {
-      await createSession(undefined, dir, skipPermissions, undefined, undefined, selectedProvider, selectedModel);
+      await createSession(undefined, dir, skipPermissions, undefined, undefined, selectedProvider, selectedModel, permissionMode);
       setActivePanel(null);
     } finally {
       setCreating(false);
@@ -521,7 +536,7 @@ export default function App() {
     saveRecentDir(rootDir);
     setShowDirDialog(false);
     try {
-      await createSession(undefined, dir, skipPermissions, undefined, undefined, selectedProvider, selectedModel);
+      await createSession(undefined, dir, skipPermissions, undefined, undefined, selectedProvider, selectedModel, permissionMode);
       setActivePanel(null);
     } finally {
       setCreating(false);
@@ -616,9 +631,12 @@ export default function App() {
                   markStopped={markStopped}
                   touchSession={touchSession}
                   setAgentBusy={setAgentBusy}
+                  setAgentUsage={setAgentUsage}
                   setSessionDraft={setSessionDraft}
                   setSessionQuestion={setSessionQuestion}
                   updateClaudeSessionId={updateClaudeSessionId}
+                  renameSession={renameSession}
+                  markTitleGenerated={markTitleGenerated}
                   restartSession={restartSession}
                   createSession={createSession}
                   currentModel={selectedModel}
@@ -1223,17 +1241,28 @@ export default function App() {
 
             {/* Footer */}
             <div className="flex items-center justify-between px-4 py-3 border-t border-[var(--border-color)]">
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={skipPermissions}
-                  onChange={(e) => setSkipPermissions(e.target.checked)}
-                  className="accent-[var(--accent)] w-3.5 h-3.5"
-                />
-                <span className="text-[11px] text-[var(--text-tertiary)]">
-                  Skip permissions
-                </span>
-              </label>
+              <div className="flex items-center gap-1 bg-[var(--bg-tertiary)] rounded-md p-0.5">
+                <button
+                  onClick={() => { setPermissionMode("bypassPermissions"); setSkipPermissions(true); }}
+                  className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
+                    permissionMode === "bypassPermissions"
+                      ? "bg-[var(--bg-primary)] text-[var(--text-primary)] shadow-sm"
+                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                  }`}
+                >
+                  Auto
+                </button>
+                <button
+                  onClick={() => { setPermissionMode("plan"); setSkipPermissions(false); }}
+                  className={`px-2 py-0.5 text-[11px] rounded transition-colors ${
+                    permissionMode === "plan"
+                      ? "bg-[var(--bg-primary)] text-[var(--text-primary)] shadow-sm"
+                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                  }`}
+                >
+                  Plan
+                </button>
+              </div>
               <div className="flex gap-2">
                 <button
                   onClick={handleDirCancel}

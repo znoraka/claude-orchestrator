@@ -40,9 +40,16 @@ const log = (msg) => {
 
 // ── Config ───────────────────────────────────────────────────────────
 const config = JSON.parse(process.argv[2] || "{}");
-const { sessionId, cwd: initialCwd } = config;
+const { sessionId, cwd: initialCwd, permissionMode: configPermissionMode } = config;
 
 let currentCwd = initialCwd;
+
+// Mutable permission mode — can be toggled at runtime via set_permission_mode
+let currentPermissionMode = configPermissionMode || "bypassPermissions";
+
+// Permission prompt interception (for plan mode): when set, we're waiting
+// for the user to approve/deny a tool use.
+let permissionResolve = null;
 
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
@@ -91,6 +98,9 @@ let server;
 let bootPromise; // resolves when boot() completes successfully
 let ocSessionId = null; // OpenCode session ID
 let currentMessageId = null; // assistant message being streamed
+
+// Track user message IDs so we don't emit their parts as assistant content
+const userMessageIds = new Set();
 
 // Parts accumulator: partId → last known state
 const partsById = new Map();
@@ -225,6 +235,10 @@ function handleEvent(event) {
     case "message.updated": {
       const info = props.info;
       if (!info) break;
+      if (info.role === "user") {
+        userMessageIds.add(info.id);
+        break;
+      }
       if (info.role === "assistant") {
         currentMessageId = info.id;
         // Emit cost/usage info if the message has completed
@@ -252,6 +266,9 @@ function handleEvent(event) {
       const delta = props.delta;
       if (!part) break;
 
+      // Skip parts belonging to user messages (already shown as user bubbles)
+      if (part.messageID && userMessageIds.has(part.messageID)) break;
+
       // Only handle parts for our current assistant message
       if (currentMessageId && part.messageID !== currentMessageId) {
         // Could be a new message — update tracking
@@ -264,17 +281,38 @@ function handleEvent(event) {
     }
 
     case "permission.updated": {
-      // OpenCode is requesting permission — auto-approve or translate to AskUserQuestion
       const permission = props;
-      log(`Permission requested: ${permission.type} — ${permission.title}`);
-      // Auto-approve all permissions (matching claude-code's bypassPermissions behavior)
-      client.postSessionIdPermissionsPermissionId({
-        path: {
-          id: permission.sessionID,
-          permissionId: permission.id,
-        },
-        body: { allow: true },
-      }).catch((err) => log(`Failed to approve permission: ${err.message}`));
+      log(`Permission requested: ${permission.type} — ${permission.title} (mode=${currentPermissionMode})`);
+
+      if (currentPermissionMode === "bypassPermissions") {
+        // Auto-approve all permissions
+        client.postSessionIdPermissionsPermissionId({
+          path: {
+            id: permission.sessionID,
+            permissionId: permission.id,
+          },
+          body: { allow: true },
+        }).catch((err) => log(`Failed to approve permission: ${err.message}`));
+      } else {
+        // Plan mode — forward to the frontend and wait for user response
+        emit({
+          type: "permission_request",
+          toolName: permission.title || permission.type || "unknown",
+          input: permission.metadata || {},
+        });
+        // Wait for the user to approve/deny, then respond to OpenCode
+        const sid = permission.sessionID;
+        const pid = permission.id;
+        new Promise((resolve) => {
+          permissionResolve = resolve;
+        }).then((allowed) => {
+          log(`Permission ${pid}: ${allowed ? "allow" : "deny"}`);
+          client.postSessionIdPermissionsPermissionId({
+            path: { id: sid, permissionId: pid },
+            body: { allow: !!allowed },
+          }).catch((err) => log(`Failed to respond to permission: ${err.message}`));
+        });
+      }
       break;
     }
 
@@ -485,6 +523,11 @@ process.stdin.on("end", () => {
 
 async function handleStdinMessage(msg) {
   if (msg.type === "abort") {
+    // Unblock any pending permission wait
+    if (permissionResolve) {
+      permissionResolve(false);
+      permissionResolve = null;
+    }
     if (ocSessionId) {
       try {
         await client.session.abort({ path: { id: ocSessionId } });
@@ -503,11 +546,44 @@ async function handleStdinMessage(msg) {
     return;
   }
 
+  // User approved or denied a permission prompt (plan mode)
+  if (msg.type === "permission_response") {
+    if (permissionResolve) {
+      log(`Resolving permission: ${msg.allowed ? "allow" : "deny"}`);
+      permissionResolve(msg.allowed);
+      permissionResolve = null;
+    } else {
+      log("permission_response received but no pending permissionResolve — ignoring");
+    }
+    return;
+  }
+
+  // Toggle permission mode at runtime
+  if (msg.type === "set_permission_mode") {
+    currentPermissionMode = msg.permissionMode || "bypassPermissions";
+    log(`permissionMode updated to: ${currentPermissionMode}`);
+    emit({ type: "permission_mode_updated", permissionMode: currentPermissionMode });
+    return;
+  }
+
   if (msg.type === "set_model") {
     // OpenCode model is set per-prompt, not globally — we'll store it
     config.model = msg.model || null;
     log(`model updated to: ${config.model}`);
     emit({ type: "model_updated", model: config.model });
+    return;
+  }
+
+  if (msg.type === "get_usage") {
+    // Query the OpenCode server for usage/session status info
+    try {
+      await bootPromise;
+      const status = await client.session.status();
+      emit({ type: "opencode_usage", data: status.data || status });
+    } catch (err) {
+      log(`Failed to get usage: ${err.message}`);
+      emit({ type: "opencode_usage", data: null, error: err.message });
+    }
     return;
   }
 

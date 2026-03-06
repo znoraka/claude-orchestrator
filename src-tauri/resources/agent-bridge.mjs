@@ -33,6 +33,7 @@ const {
   systemPrompt,
   allowedTools,
   claudeCliPath,
+  permissionMode: configPermissionMode,
 } = config;
 
 // Mutable working directory — updated by set_cwd messages (e.g. after switch_workspace)
@@ -64,6 +65,13 @@ let queryInProgress = false;
 // via the canUseTool callback (SDK permission prompt protocol).
 let askUserResolve = null;
 
+// Permission prompt interception (for plan mode): when set, we're waiting
+// for the user to approve/deny a tool use via canUseTool.
+let permissionResolve = null;
+
+// Mutable permission mode — can be toggled at runtime via set_permission_mode
+let currentPermissionMode = configPermissionMode || "bypassPermissions";
+
 // ── Stdin handling ──────────────────────────────────────────────────
 
 let stdinBuf = "";
@@ -94,10 +102,14 @@ async function handleStdinMessage(msg) {
       abortController.abort();
       abortController = null;
     }
-    // Also unblock any pending AskUserQuestion wait
+    // Also unblock any pending AskUserQuestion / permission wait
     if (askUserResolve) {
       askUserResolve(null);
       askUserResolve = null;
+    }
+    if (permissionResolve) {
+      permissionResolve(false);
+      permissionResolve = null;
     }
     return;
   }
@@ -125,6 +137,26 @@ async function handleStdinMessage(msg) {
     } else {
       log("ask_user_answer received but no pending askUserResolve — ignoring");
     }
+    return;
+  }
+
+  // User approved or denied a permission prompt (plan mode)
+  if (msg.type === "permission_response") {
+    if (permissionResolve) {
+      log(`Resolving permission: ${msg.allowed ? "allow" : "deny"}`);
+      permissionResolve(msg.allowed);
+      permissionResolve = null;
+    } else {
+      log("permission_response received but no pending permissionResolve — ignoring");
+    }
+    return;
+  }
+
+  // Toggle permission mode at runtime
+  if (msg.type === "set_permission_mode") {
+    currentPermissionMode = msg.permissionMode || "bypassPermissions";
+    log(`permissionMode updated to: ${currentPermissionMode}`);
+    emit({ type: "permission_mode_updated", permissionMode: currentPermissionMode });
     return;
   }
 
@@ -177,37 +209,53 @@ async function runQuery(userMessage) {
     prompt = String(userMessage);
   }
 
+  const isBypass = currentPermissionMode === "bypassPermissions";
   const options = {
     cwd: currentCwd || process.cwd(),
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
+    permissionMode: currentPermissionMode,
+    allowDangerouslySkipPermissions: isBypass,
     abortController,
     settingSources: ["project"],
-    // Handle AskUserQuestion via the SDK's permission protocol.
-    // The CLI sends a can_use_tool control request for tools that
-    // requiresUserInteraction (like AskUserQuestion) even in
-    // bypassPermissions mode.  For all other tools, auto-allow.
+    // Handle AskUserQuestion and permission prompts via the SDK's canUseTool protocol.
+    // In bypassPermissions mode, only AskUserQuestion triggers this callback.
+    // In plan mode, write/execute tools also trigger it — we forward to the frontend.
     canUseTool: async (toolName, input, { signal }) => {
-      if (toolName !== "AskUserQuestion") {
+      // AskUserQuestion — always ask the user regardless of permission mode
+      if (toolName === "AskUserQuestion") {
+        log(`canUseTool: AskUserQuestion — waiting for user answer`);
+        emit({ type: "ask_user_question", questions: input.questions });
+        const answer = await new Promise((resolve) => {
+          askUserResolve = resolve;
+          const onAbort = () => { resolve(null); };
+          signal.addEventListener("abort", onAbort, { once: true });
+        });
+        if (answer === null) {
+          log("canUseTool: AskUserQuestion cancelled");
+          return { behavior: "deny", message: "User cancelled." };
+        }
+        log(`canUseTool: AskUserQuestion answered: ${JSON.stringify(answer).substring(0, 200)}`);
+        return { behavior: "allow", updatedInput: { ...input, answers: answer } };
+      }
+
+      // In bypass mode, auto-allow everything else
+      if (isBypass) {
         return { behavior: "allow", updatedInput: input };
       }
-      log(`canUseTool: AskUserQuestion — waiting for user answer`);
-      // Signal frontend that we're paused waiting for user input
-      emit({ type: "ask_user_question", questions: input.questions });
-      // Wait for the user's answer via stdin (ask_user_answer message)
-      const answer = await new Promise((resolve, reject) => {
-        askUserResolve = resolve;
-        // If aborted while waiting, reject so the SDK can handle it
-        const onAbort = () => { resolve(null); };
+
+      // Plan/default mode — ask user for permission
+      log(`canUseTool: permission request for ${toolName}`);
+      emit({ type: "permission_request", toolName, input });
+      const allowed = await new Promise((resolve) => {
+        permissionResolve = resolve;
+        const onAbort = () => { resolve(false); };
         signal.addEventListener("abort", onAbort, { once: true });
       });
-      if (answer === null) {
-        log("canUseTool: AskUserQuestion cancelled");
-        return { behavior: "deny", message: "User cancelled." };
+      if (!allowed) {
+        log(`canUseTool: ${toolName} denied`);
+        return { behavior: "deny", message: "User denied permission." };
       }
-      log(`canUseTool: AskUserQuestion answered: ${JSON.stringify(answer).substring(0, 200)}`);
-      // answer is a Record<questionText, answerString> from the frontend
-      return { behavior: "allow", updatedInput: { ...input, answers: answer } };
+      log(`canUseTool: ${toolName} allowed`);
+      return { behavior: "allow", updatedInput: input };
     },
   };
 
