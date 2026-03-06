@@ -7283,12 +7283,12 @@ var ProcessTransport = class {
         allowDangerouslySkipPermissions,
         permissionPromptToolName,
         continueConversation,
-        resume: resume2,
+        resume,
         settingSources,
-        allowedTools: allowedTools2 = [],
+        allowedTools = [],
         disallowedTools = [],
         tools,
-        mcpServers: mcpServers2,
+        mcpServers,
         strictMcpConfig,
         canUseTool,
         includePartialMessages,
@@ -7331,10 +7331,10 @@ var ProcessTransport = class {
       }
       if (continueConversation)
         args.push("--continue");
-      if (resume2)
-        args.push("--resume", resume2);
-      if (allowedTools2.length > 0) {
-        args.push("--allowedTools", allowedTools2.join(","));
+      if (resume)
+        args.push("--resume", resume);
+      if (allowedTools.length > 0) {
+        args.push("--allowedTools", allowedTools.join(","));
       }
       if (disallowedTools.length > 0) {
         args.push("--disallowedTools", disallowedTools.join(","));
@@ -7350,8 +7350,8 @@ var ProcessTransport = class {
           args.push("--tools", "default");
         }
       }
-      if (mcpServers2 && Object.keys(mcpServers2).length > 0) {
-        args.push("--mcp-config", jsonStringify({ mcpServers: mcpServers2 }));
+      if (mcpServers && Object.keys(mcpServers).length > 0) {
+        args.push("--mcp-config", jsonStringify({ mcpServers }));
       }
       if (settingSources) {
         args.push("--setting-sources", settingSources.join(","));
@@ -7744,16 +7744,16 @@ var Query = class {
   hasBidirectionalNeeds() {
     return this.sdkMcpTransports.size > 0 || this.hooks !== void 0 && Object.keys(this.hooks).length > 0 || this.canUseTool !== void 0;
   }
-  constructor(transport, isSingleUserTurn, canUseTool, hooks, abortController2, sdkMcpServers = /* @__PURE__ */ new Map(), jsonSchema, initConfig) {
+  constructor(transport, isSingleUserTurn, canUseTool, hooks, abortController, sdkMcpServers = /* @__PURE__ */ new Map(), jsonSchema, initConfig) {
     this.transport = transport;
     this.isSingleUserTurn = isSingleUserTurn;
     this.canUseTool = canUseTool;
     this.hooks = hooks;
-    this.abortController = abortController2;
+    this.abortController = abortController;
     this.jsonSchema = jsonSchema;
     this.initConfig = initConfig;
-    for (const [name, server] of sdkMcpServers) {
-      this.connectSdkMcpServer(name, server);
+    for (const [name, server2] of sdkMcpServers) {
+      this.connectSdkMcpServer(name, server2);
     }
     this.sdkMessages = this.readSdkMessages();
     this.readMessages();
@@ -8053,9 +8053,9 @@ var Query = class {
         await this.disconnectSdkMcpServer(name);
       }
     }
-    for (const [name, server] of Object.entries(sdkServers)) {
+    for (const [name, server2] of Object.entries(sdkServers)) {
       if (!currentSdkNames.has(name)) {
-        this.connectSdkMcpServer(name, server);
+        this.connectSdkMcpServer(name, server2);
       }
     }
     const sdkServerConfigs = {};
@@ -8121,11 +8121,11 @@ var Query = class {
       signal: abortSignal
     });
   }
-  connectSdkMcpServer(name, server) {
+  connectSdkMcpServer(name, server2) {
     const sdkTransport = new SdkControlServerTransport((message) => this.sendMcpServerMessageToCli(name, message));
     this.sdkMcpTransports.set(name, sdkTransport);
-    this.sdkMcpServerInstances.set(name, server);
-    server.connect(sdkTransport);
+    this.sdkMcpServerInstances.set(name, server2);
+    server2.connect(sdkTransport);
   }
   async disconnectSdkMcpServer(name) {
     const transport = this.sdkMcpTransports.get(name);
@@ -16394,15 +16394,15 @@ function query({
   prompt,
   options
 }) {
-  const { systemPrompt: systemPrompt2, settingSources, sandbox, ...rest } = options ?? {};
+  const { systemPrompt, settingSources, sandbox, ...rest } = options ?? {};
   let customSystemPrompt;
   let appendSystemPrompt;
-  if (systemPrompt2 === void 0) {
+  if (systemPrompt === void 0) {
     customSystemPrompt = "";
-  } else if (typeof systemPrompt2 === "string") {
-    customSystemPrompt = systemPrompt2;
-  } else if (systemPrompt2.type === "preset") {
-    appendSystemPrompt = systemPrompt2.append;
+  } else if (typeof systemPrompt === "string") {
+    customSystemPrompt = systemPrompt;
+  } else if (systemPrompt.type === "preset") {
+    appendSystemPrompt = systemPrompt.append;
   }
   let pathToClaudeCodeExecutable = rest.pathToClaudeCodeExecutable;
   if (!pathToClaudeCodeExecutable) {
@@ -16412,10 +16412,10 @@ function query({
   }
   process.env.CLAUDE_AGENT_SDK_VERSION = "0.1.77";
   const {
-    abortController: abortController2 = createAbortController(),
+    abortController = createAbortController(),
     additionalDirectories = [],
     agents,
-    allowedTools: allowedTools2 = [],
+    allowedTools = [],
     betas,
     canUseTool,
     continue: continueConversation,
@@ -16435,14 +16435,14 @@ function query({
     maxThinkingTokens,
     maxTurns,
     maxBudgetUsd,
-    mcpServers: mcpServers2,
+    mcpServers,
     model,
     outputFormat,
     permissionMode = "default",
     allowDangerouslySkipPermissions = false,
     permissionPromptToolName,
     plugins,
-    resume: resume2,
+    resume,
     resumeSessionAt,
     stderr,
     strictMcpConfig
@@ -16463,8 +16463,8 @@ function query({
   }
   const allMcpServers = {};
   const sdkMcpServers = /* @__PURE__ */ new Map();
-  if (mcpServers2) {
-    for (const [name, config22] of Object.entries(mcpServers2)) {
+  if (mcpServers) {
+    for (const [name, config22] of Object.entries(mcpServers)) {
       if (config22.type === "sdk" && "instance" in config22) {
         sdkMcpServers.set(name, config22.instance);
         allMcpServers[name] = {
@@ -16478,7 +16478,7 @@ function query({
   }
   const isSingleUserTurn = typeof prompt === "string";
   const transport = new ProcessTransport({
-    abortController: abortController2,
+    abortController,
     additionalDirectories,
     betas,
     cwd: cwd2,
@@ -16499,10 +16499,10 @@ function query({
     allowDangerouslySkipPermissions,
     permissionPromptToolName,
     continueConversation,
-    resume: resume2,
+    resume,
     resumeSessionAt,
     settingSources: settingSources ?? [],
-    allowedTools: allowedTools2,
+    allowedTools,
     disallowedTools,
     tools,
     mcpServers: allMcpServers,
@@ -16520,7 +16520,7 @@ function query({
     appendSystemPrompt,
     agents
   };
-  const queryInstance = new Query(transport, isSingleUserTurn, canUseTool, hooks, abortController2, sdkMcpServers, jsonSchema, initConfig);
+  const queryInstance = new Query(transport, isSingleUserTurn, canUseTool, hooks, abortController, sdkMcpServers, jsonSchema, initConfig);
   if (typeof prompt === "string") {
     transport.write(jsonStringify({
       type: "user",
@@ -16538,12 +16538,13 @@ function query({
   return queryInstance;
 }
 
-// src-tauri/resources/agent-bridge.mjs
-import { existsSync as existsSync3, appendFileSync as appendFileSync3, writeFileSync, mkdirSync as mkdirSync3 } from "fs";
-import { join as join4 } from "path";
-import { tmpdir } from "os";
-import { randomUUID as randomUUID4 } from "crypto";
-var logFile = "/tmp/agent-bridge-debug.log";
+// src-tauri/resources/title-server.mjs
+import { createServer } from "http";
+import { appendFileSync as appendFileSync3 } from "fs";
+delete process.env.CLAUDECODE;
+var config2 = JSON.parse(process.argv[2] || "{}");
+var claudeCliPath = config2.claudeCliPath || void 0;
+var logFile = "/tmp/title-server-debug.log";
 var log = (msg) => {
   const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
 `;
@@ -16553,209 +16554,75 @@ var log = (msg) => {
   } catch {
   }
 };
-var config2 = JSON.parse(process.argv[2] || "{}");
-var {
-  sessionId,
-  cwd: initialCwd,
-  resume,
-  mcpServers,
-  systemPrompt,
-  allowedTools,
-  claudeCliPath
-} = config2;
-var currentCwd = initialCwd;
-var currentModel = config2.model || null;
-function emit(obj) {
-  process.stdout.write(JSON.stringify(obj) + "\n");
-}
-log(`PATH: ${process.env.PATH}`);
-log(`HOME: ${process.env.HOME}`);
-log(`node: ${process.execPath}`);
-log(`cwd config: ${initialCwd}`);
-log(`cwd actual: ${process.cwd()}`);
-log(`cwd exists: ${existsSync3(initialCwd || process.cwd())}`);
-var claudeSessionId = resume || null;
-var abortController = null;
-var queryInProgress = false;
-var askUserResolve = null;
-var stdinBuf = "";
-process.stdin.setEncoding("utf-8");
-process.stdin.on("data", (chunk) => {
-  stdinBuf += chunk;
-  let newlineIdx;
-  while ((newlineIdx = stdinBuf.indexOf("\n")) !== -1) {
-    const line = stdinBuf.slice(0, newlineIdx).trim();
-    stdinBuf = stdinBuf.slice(newlineIdx + 1);
-    if (!line) continue;
-    try {
-      const msg = JSON.parse(line);
-      handleStdinMessage(msg);
-    } catch (err) {
-      emit({ type: "error", error: `Invalid JSON on stdin: ${err.message}` });
-    }
-  }
-});
-process.stdin.on("end", () => {
-  process.exit(0);
-});
-async function handleStdinMessage(msg) {
-  if (msg.type === "abort") {
-    if (abortController) {
-      abortController.abort();
-      abortController = null;
-    }
-    if (askUserResolve) {
-      askUserResolve(null);
-      askUserResolve = null;
-    }
-    return;
-  }
-  if (msg.type === "set_cwd") {
-    currentCwd = msg.cwd;
-    log(`cwd updated to: ${currentCwd}`);
-    emit({ type: "cwd_updated", cwd: currentCwd });
-    return;
-  }
-  if (msg.type === "set_model") {
-    currentModel = msg.model || null;
-    log(`model updated to: ${currentModel}`);
-    emit({ type: "model_updated", model: currentModel });
-    return;
-  }
-  if (msg.type === "ask_user_answer") {
-    if (askUserResolve) {
-      log(`Resolving AskUserQuestion with: ${String(msg.answer).substring(0, 100)}`);
-      askUserResolve(msg.answer);
-      askUserResolve = null;
-    } else {
-      log("ask_user_answer received but no pending askUserResolve \u2014 ignoring");
-    }
-    return;
-  }
-  if (msg.type === "user") {
-    await runQuery(msg.message);
-    return;
-  }
-  emit({ type: "error", error: `Unknown stdin message type: ${msg.type}` });
-}
-async function runQuery(userMessage) {
-  if (queryInProgress) {
-    emit({ type: "error", error: "A query is already in progress" });
-    return;
-  }
-  abortController = new AbortController();
-  queryInProgress = true;
-  let prompt;
-  if (typeof userMessage === "string") {
-    prompt = userMessage;
-  } else if (Array.isArray(userMessage.content)) {
-    const textParts = [];
-    for (const block of userMessage.content) {
-      if (block.type === "text" && block.text) {
-        textParts.push(block.text);
-      } else if (block.type === "image" && block.source?.data) {
-        try {
-          const imgDir = join4(tmpdir(), "claude-orchestrator-images");
-          mkdirSync3(imgDir, { recursive: true });
-          const ext = (block.source.media_type || "image/png").split("/")[1] || "png";
-          const filePath = join4(imgDir, `${randomUUID4()}.${ext}`);
-          writeFileSync(filePath, Buffer.from(block.source.data, "base64"));
-          textParts.push(filePath);
-          log(`Saved image to ${filePath}`);
-        } catch (imgErr) {
-          log(`Failed to save image: ${imgErr.message}`);
-        }
-      }
-    }
-    prompt = textParts.join("\n") || "";
-  } else if (typeof userMessage.content === "string") {
-    prompt = userMessage.content;
-  } else {
-    prompt = String(userMessage);
-  }
+var PROMPT_TEMPLATE = (userMsg) => `Summarize this request in 4-5 words as a short title. Reply with ONLY the title, nothing else.
+
+User: ${userMsg}`;
+async function generateTitle(userMessage) {
+  const prompt = PROMPT_TEMPLATE(userMessage);
   const options = {
-    cwd: currentCwd || process.cwd(),
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
-    abortController,
-    settingSources: ["project"],
-    // Handle AskUserQuestion via the SDK's permission protocol.
-    // The CLI sends a can_use_tool control request for tools that
-    // requiresUserInteraction (like AskUserQuestion) even in
-    // bypassPermissions mode.  For all other tools, auto-allow.
-    canUseTool: async (toolName, input, { signal }) => {
-      if (toolName !== "AskUserQuestion") {
-        return { behavior: "allow", updatedInput: input };
-      }
-      log(`canUseTool: AskUserQuestion \u2014 waiting for user answer`);
-      emit({ type: "ask_user_question", questions: input.questions });
-      const answer = await new Promise((resolve, reject) => {
-        askUserResolve = resolve;
-        const onAbort = () => {
-          resolve(null);
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-      });
-      if (answer === null) {
-        log("canUseTool: AskUserQuestion cancelled");
-        return { behavior: "deny", message: "User cancelled." };
-      }
-      log(`canUseTool: AskUserQuestion answered: ${JSON.stringify(answer).substring(0, 200)}`);
-      return { behavior: "allow", updatedInput: { ...input, answers: answer } };
-    }
+    model: "haiku",
+    maxTurns: 1,
+    maxThinkingTokens: 0,
+    allowedTools: [],
+    systemPrompt: "You generate short titles. Reply with ONLY the title.",
+    cwd: process.cwd(),
+    ...claudeCliPath ? { pathToClaudeCodeExecutable: claudeCliPath } : {}
   };
-  if (claudeCliPath) {
-    options.pathToClaudeCodeExecutable = claudeCliPath;
-  }
-  if (claudeSessionId) {
-    options.resume = claudeSessionId;
-  }
-  if (systemPrompt) {
-    options.systemPrompt = { type: "preset", preset: "claude_code", append: systemPrompt };
-  } else {
-    options.systemPrompt = { type: "preset", preset: "claude_code" };
-  }
-  if (mcpServers && Object.keys(mcpServers).length > 0) options.mcpServers = mcpServers;
-  if (allowedTools) options.allowedTools = allowedTools;
-  if (currentModel) options.model = currentModel;
-  try {
-    log(`query() starting \u2014 cwd=${options.cwd}, resume=${claudeSessionId || "(new)"}`);
-    const q = query({ prompt, options });
-    for await (const message of q) {
-      if (message.type === "system" && message.subtype === "init" && message.session_id) {
-        claudeSessionId = message.session_id;
-        log(`Session ID captured: ${claudeSessionId}`);
-      }
-      emit(message);
-      if (message.type === "assistant") {
-        const content = message.message?.content;
-        if (Array.isArray(content)) {
-          const toolUses = content.filter((b) => b.type === "tool_use");
-          if (toolUses.length > 0) {
-            log(`assistant event: tools=[${toolUses.map((t) => t.name).join(",")}] stop_reason=${message.message?.stop_reason}`);
-          }
-        } else {
-          log(`assistant event: content type=${typeof content}, stop_reason=${message.message?.stop_reason}, keys=${Object.keys(message).join(",")}`);
+  log(`query() options: model=${options.model}, cwd=${options.cwd}, cli=${claudeCliPath || "(auto)"}`);
+  let result = "";
+  const q = query({ prompt, options });
+  for await (const message of q) {
+    if (message.type === "assistant" && message.message?.content) {
+      const content = message.message.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block.type === "text") result += block.text;
         }
+      } else if (typeof content === "string") {
+        result += content;
       }
     }
-    emit({ type: "query_complete" });
-  } catch (err) {
-    log(`query() error: ${err.message}
-${err.stack}`);
-    if (err.name === "AbortError") {
-      emit({ type: "aborted" });
-    } else {
-      emit({ type: "error", error: err.message, stack: err.stack });
-    }
-  } finally {
-    abortController = null;
-    queryInProgress = false;
   }
+  return result.trim();
 }
-emit({
-  type: "system",
-  subtype: "bridge_ready",
-  sessionId,
-  cwd: currentCwd || process.cwd()
+var server = createServer(async (req, res) => {
+  if (req.method !== "POST") {
+    res.writeHead(405);
+    res.end();
+    return;
+  }
+  let body = "";
+  for await (const chunk of req) body += chunk;
+  try {
+    const { message } = JSON.parse(body);
+    if (!message) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "missing message" }));
+      return;
+    }
+    log(`Generating title for: ${message.slice(0, 80)}...`);
+    const title = await generateTitle(message);
+    log(`Generated title: ${title}`);
+    const responseBody = JSON.stringify({ title });
+    res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(responseBody) });
+    res.end(responseBody);
+  } catch (err) {
+    log(`Error: ${err.message}`);
+    const errorBody = JSON.stringify({ error: err.message });
+    res.writeHead(500, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(errorBody) });
+    res.end(errorBody);
+  }
+});
+server.listen(0, "127.0.0.1", () => {
+  const port = server.address().port;
+  log(`Title server listening on port ${port}`);
+  process.stdout.write(JSON.stringify({ port }) + "\n");
+});
+process.on("SIGTERM", () => {
+  log("Received SIGTERM, shutting down");
+  server.close(() => process.exit(0));
+});
+process.on("SIGINT", () => {
+  log("Received SIGINT, shutting down");
+  server.close(() => process.exit(0));
 });

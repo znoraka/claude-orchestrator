@@ -522,20 +522,6 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* Footer — shell indicators only */}
-      {shellProcessDirs && shellProcessDirs.size > 0 && (
-        <div className="px-3 py-1.5 border-t border-[var(--border-color)] flex items-center">
-          {(() => {
-            const total = [...shellProcessDirs.values()].reduce((a, b) => a + b, 0);
-            return (
-              <span className="flex items-center gap-1.5 text-[10px] text-green-400">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                {total} shell{total !== 1 ? "s" : ""}
-              </span>
-            );
-          })()}
-        </div>
-      )}
     </div>
   );
 }

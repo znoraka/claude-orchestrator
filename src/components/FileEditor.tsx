@@ -6,7 +6,8 @@ import { EditorState } from "@codemirror/state";
 import { Vim, vim } from "@replit/codemirror-vim";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
-import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from "@codemirror/language";
+import { syntaxHighlighting, bracketMatching } from "@codemirror/language";
+import { oneDarkHighlightStyle } from "../utils/oneDarkHighlight";
 
 interface Props {
   baseDirectory?: string;
@@ -177,7 +178,7 @@ export default function FileEditor({ baseDirectory, initialFilePath, onClose }: 
           history(),
           bracketMatching(),
           highlightSelectionMatches(),
-          syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+          syntaxHighlighting(oneDarkHighlightStyle, { fallback: true }),
           keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
           langExt,
           EditorView.updateListener.of((update) => {

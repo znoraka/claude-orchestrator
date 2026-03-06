@@ -1,9 +1,9 @@
-import { useRef, useState, useEffect, useMemo, useCallback } from "react";
+import { useRef, useState, useEffect, useMemo, useCallback, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionContext } from "./contexts/SessionContext";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
-import AgentChat, { MODELS } from "./components/AgentChat";
+import AgentChat from "./components/AgentChat";
 import GitPanel from "./components/GitPanel";
 import PRPanel from "./components/PRPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -13,8 +13,82 @@ import { repoColor } from "./components/SessionTab";
 import { repoRootDir } from "./utils/workspaces";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
-import type { Session } from "./types";
+import { AGENT_PROVIDERS, defaultModelForProvider, modelsForProvider, type AgentProvider, type Session } from "./types";
 
+// Memoized wrapper to prevent all AgentChat instances from re-rendering
+// when the sessions array changes (e.g. new session added).
+const SessionPanel = memo(function SessionPanel({
+  session,
+  isActive,
+  activePanel,
+  markStopped,
+  touchSession,
+  setAgentBusy,
+  setSessionDraft,
+  setSessionQuestion,
+  updateClaudeSessionId,
+  restartSession,
+  createSession,
+  currentModel,
+  setChatInputHeight,
+  onEditFile,
+}: {
+  session: Session;
+  isActive: boolean;
+  activePanel: string | null;
+  markStopped: (id: string, exitCode?: number) => void;
+  touchSession: (id: string) => void;
+  setAgentBusy: (id: string, isBusy: boolean) => void;
+  setSessionDraft: (id: string, hasDraft: boolean) => void;
+  setSessionQuestion: (id: string, hasQuestion: boolean) => void;
+  updateClaudeSessionId: (id: string, claudeSessionId: string) => void;
+  restartSession: (id: string) => Promise<void>;
+  createSession: (name: string | undefined, directory: string, skip?: boolean, systemPrompt?: string, pendingPrompt?: string, provider?: AgentProvider) => Promise<string>;
+  currentModel: string;
+  setChatInputHeight: ((h: number) => void) | undefined;
+  onEditFile?: (filePath: string, line?: number) => void;
+}) {
+  const isVisible = isActive && activePanel === null;
+
+  const handleExit = useCallback((exitCode?: number) => markStopped(session.id, exitCode), [session.id, markStopped]);
+  const handleActivity = useCallback(() => touchSession(session.id), [session.id, touchSession]);
+  const handleBusyChange = useCallback((isBusy: boolean) => setAgentBusy(session.id, isBusy), [session.id, setAgentBusy]);
+  const handleDraftChange = useCallback((hasDraft: boolean) => setSessionDraft(session.id, hasDraft), [session.id, setSessionDraft]);
+  const handleQuestionChange = useCallback((hasQuestion: boolean) => setSessionQuestion(session.id, hasQuestion), [session.id, setSessionQuestion]);
+  const handleClaudeSessionId = useCallback((claudeSessionId: string) => updateClaudeSessionId(session.id, claudeSessionId), [session.id, updateClaudeSessionId]);
+  const handleResume = useCallback(() => restartSession(session.id), [session.id, restartSession]);
+  const handleFork = useCallback((systemPrompt: string) => createSession(`Fork of ${session.name}`, session.directory, session.dangerouslySkipPermissions, systemPrompt), [session.name, session.directory, session.dangerouslySkipPermissions, createSession]);
+
+  return (
+    <div
+      className="absolute inset-0 bg-[var(--bg-primary)]"
+      style={{
+        zIndex: isVisible ? 2 : 0,
+        pointerEvents: isVisible ? "auto" : "none",
+        visibility: (isVisible || isActive) ? "visible" : "hidden",
+      }}
+    >
+      <ErrorBoundary key={`eb-${session.id}`}>
+        <AgentChat
+          sessionId={session.id}
+          isActive={isVisible}
+          onExit={handleExit}
+          onActivity={handleActivity}
+          onBusyChange={handleBusyChange}
+          onDraftChange={handleDraftChange}
+          onQuestionChange={handleQuestionChange}
+          onClaudeSessionId={handleClaudeSessionId}
+          session={session}
+          onResume={handleResume}
+          onFork={handleFork}
+          currentModel={currentModel}
+          onInputHeightChange={isVisible ? setChatInputHeight : undefined}
+          onEditFile={onEditFile}
+        />
+      </ErrorBoundary>
+    </div>
+  );
+});
 
 export default function App() {
   const {
@@ -34,6 +108,7 @@ export default function App() {
     updateClaudeSessionId,
     setAgentBusy,
     setSessionDraft,
+    setSessionQuestion,
     unreadSessions,
   } = useSessionContext();
 
@@ -70,6 +145,7 @@ export default function App() {
   const [skipPermissions, setSkipPermissions] = useState(true);
   const [creating, setCreating] = useState(false);
   const [dirInputDirty, setDirInputDirty] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<AgentProvider>("claude-code");
   // Track exact last-used session directory (including worktree paths)
   const [preselectedDir, setPreselectedDir] = useState<string | null>(null);
 
@@ -77,23 +153,29 @@ export default function App() {
   const [activePanel, setActivePanel] = useState<"git" | "prs" | "shell" | null>(null);
   const [chatInputHeight, setChatInputHeight] = useState(0);
 
-  // ── Model picker (persisted across sessions) ──────────────────
-  const [selectedModel, setSelectedModel] = useState(() =>
-    localStorage.getItem("claude-orchestrator-model") || "claude-opus-4-6"
-  );
+  // ── Model picker (per-provider, persisted) ──────────────────
+  const [modelByProvider, setModelByProvider] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("claude-orchestrator-models") || "{}");
+    } catch { return {}; }
+  });
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
 
   const handleModelChange = useCallback((modelId: string) => {
-    setSelectedModel(modelId);
-    localStorage.setItem("claude-orchestrator-model", modelId);
+    const provider: AgentProvider = sessions.find((s) => s.id === activeSessionId)?.provider || "claude-code";
+    setModelByProvider((prev) => {
+      const next = { ...prev, [provider]: modelId };
+      localStorage.setItem("claude-orchestrator-models", JSON.stringify(next));
+      return next;
+    });
     setShowModelDropdown(false);
     // Send set_model to the active session's agent
     if (activeSessionId) {
       const msg = JSON.stringify({ type: "set_model", model: modelId });
       invoke("send_agent_message", { sessionId: activeSessionId, message: msg }).catch(() => {});
     }
-  }, [activeSessionId]);
+  }, [activeSessionId, sessions]);
 
   // Close model dropdown on outside click
   useEffect(() => {
@@ -111,6 +193,10 @@ export default function App() {
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
     [sessions, activeSessionId]
   );
+
+  const activeProvider: AgentProvider = activeSession?.provider || "claude-code";
+  const activeModels = modelsForProvider(activeProvider);
+  const selectedModel = modelByProvider[activeProvider] || defaultModelForProvider(activeProvider);
 
   const panelDirectory = activeSession?.directory ?? "~";
   const activeUsage = activeSessionId ? sessionUsage.get(activeSessionId) : undefined;
@@ -299,7 +385,7 @@ export default function App() {
     saveRecentDir(rootDir);
     setShowDirDialog(false);
     try {
-      await createSession(undefined, dir, skipPermissions);
+      await createSession(undefined, dir, skipPermissions, undefined, undefined, selectedProvider);
       setActivePanel(null);
     } finally {
       setCreating(false);
@@ -352,7 +438,7 @@ export default function App() {
     saveRecentDir(rootDir);
     setShowDirDialog(false);
     try {
-      await createSession(undefined, dir, skipPermissions);
+      await createSession(undefined, dir, skipPermissions, undefined, undefined, selectedProvider);
       setActivePanel(null);
     } finally {
       setCreating(false);
@@ -437,37 +523,29 @@ export default function App() {
               )}
 
               {/* Session panels — one per session, visibility-toggled */}
-              {sessions.map((session) => {
-                const isVisible = session.id === activeSessionId && activePanel === null;
-                return (
-                  <div
-                    key={session.id}
-                    className="absolute inset-0 bg-[var(--bg-primary)]"
-                    style={{
-                      zIndex: isVisible ? 2 : 0,
-                      pointerEvents: isVisible ? "auto" : "none",
-                      visibility: (isVisible || session.id === activeSessionId) ? "visible" : "hidden",
-                    }}
-                  >
-                    <ErrorBoundary key={`eb-${session.id}`}>
-                      <AgentChat
-                        sessionId={session.id}
-                        isActive={isVisible}
-                        onExit={(exitCode) => markStopped(session.id, exitCode)}
-                        onActivity={() => touchSession(session.id)}
-                        onBusyChange={(isBusy) => setAgentBusy(session.id, isBusy)}
-                        onDraftChange={(hasDraft) => setSessionDraft(session.id, hasDraft)}
-                        onClaudeSessionId={(claudeSessionId) => updateClaudeSessionId(session.id, claudeSessionId)}
-                        session={session}
-                        onResume={() => restartSession(session.id)}
-                        onFork={(systemPrompt) => createSession(`Fork of ${session.name}`, session.directory, session.dangerouslySkipPermissions, systemPrompt)}
-                        currentModel={selectedModel}
-                        onInputHeightChange={isVisible ? setChatInputHeight : undefined}
-                      />
-                    </ErrorBoundary>
-                  </div>
-                );
-              })}
+              {sessions.map((session) => (
+                <SessionPanel
+                  key={session.id}
+                  session={session}
+                  isActive={session.id === activeSessionId}
+                  activePanel={activePanel}
+                  markStopped={markStopped}
+                  touchSession={touchSession}
+                  setAgentBusy={setAgentBusy}
+                  setSessionDraft={setSessionDraft}
+                  setSessionQuestion={setSessionQuestion}
+                  updateClaudeSessionId={updateClaudeSessionId}
+                  restartSession={restartSession}
+                  createSession={createSession}
+                  currentModel={selectedModel}
+                  setChatInputHeight={session.id === activeSessionId ? setChatInputHeight : undefined}
+                  onEditFile={(filePath) => {
+                    const dir = session.directory.endsWith("/") ? session.directory : session.directory + "/";
+                    setEditorFilePath(dir + filePath);
+                    setShowFileEditor(true);
+                  }}
+                />
+              ))}
 
               {/* Git panel — always mounted to preserve state */}
               <div
@@ -657,7 +735,7 @@ export default function App() {
                 onClick={() => setActivePanel(null)}
                 className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
                   activePanel === null
-                    ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                    ? "bg-orange-500/20 text-orange-400"
                     : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
                 }`}
                 title="Claude (⌘J)"
@@ -670,7 +748,7 @@ export default function App() {
                 onClick={() => togglePanel("git")}
                 className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
                   activePanel === "git"
-                    ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                    ? "bg-orange-500/20 text-orange-400"
                     : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
                 }`}
                 title="Git (⌘G)"
@@ -683,7 +761,7 @@ export default function App() {
                 onClick={() => togglePanel("prs")}
                 className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
                   activePanel === "prs"
-                    ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                    ? "bg-orange-500/20 text-orange-400"
                     : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
                 }`}
                 title="Pull Requests (⌘P)"
@@ -696,7 +774,7 @@ export default function App() {
                 onClick={() => togglePanel("shell")}
                 className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
                   activePanel === "shell"
-                    ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                    ? "bg-orange-500/20 text-orange-400"
                     : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
                 }`}
                 title="Shell (⌘T)"
@@ -722,7 +800,7 @@ export default function App() {
                 <button
                   onClick={() => setShowModelDropdown((v) => !v)}
                   className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50 transition-colors"
-                  title={MODELS.find((m) => m.id === selectedModel)?.name ?? "Model"}
+                  title={activeModels.find((m) => m.id === selectedModel)?.name ?? "Model"}
                 >
                   <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z" />
@@ -730,7 +808,7 @@ export default function App() {
                 </button>
                 {showModelDropdown && (
                   <div className="absolute bottom-0 right-full mr-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 min-w-[180px]">
-                    {MODELS.map((model) => (
+                    {activeModels.map((model) => (
                       <button
                         key={model.id}
                         className={`w-full text-left px-3 py-2 flex items-center gap-3 text-sm transition-colors ${
@@ -861,6 +939,23 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {/* Provider picker */}
+            <div className="px-4 pb-2 flex items-center gap-1.5">
+              {AGENT_PROVIDERS.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => setSelectedProvider(p.id)}
+                  className={`px-2.5 py-1 text-[10px] font-medium rounded-md transition-colors ${
+                    selectedProvider === p.id
+                      ? "bg-[var(--accent)] text-white"
+                      : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
 
             {/* Workspace tree + recent dirs */}
             {(workspaces.length > 0 || extraRecentDirs.length > 0) && (

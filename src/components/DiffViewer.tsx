@@ -49,7 +49,7 @@ const loadedLangs = new Set<string>();
 export async function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighter({
-      themes: ["github-dark"],
+      themes: ["one-dark-pro"],
       langs: [],
     });
   }
@@ -87,7 +87,7 @@ async function highlightLines(
   }
 
   const code = lines.join("\n");
-  const result = hl.codeToTokens(code, { lang, theme: "github-dark" });
+  const result = hl.codeToTokens(code, { lang, theme: "one-dark-pro" });
   return result.tokens.map((lineTokens) =>
     lineTokens.map((t) => ({ content: t.content, color: t.color }))
   );

@@ -61,6 +61,7 @@ let abortController = null;
 let queryInProgress = false;
 
 // AskUserQuestion interception: when set, we're waiting for user input
+// via the canUseTool callback (SDK permission prompt protocol).
 let askUserResolve = null;
 
 // ── Stdin handling ──────────────────────────────────────────────────
@@ -118,8 +119,11 @@ async function handleStdinMessage(msg) {
   // User answered an AskUserQuestion prompt
   if (msg.type === "ask_user_answer") {
     if (askUserResolve) {
+      log(`Resolving AskUserQuestion with: ${String(msg.answer).substring(0, 100)}`);
       askUserResolve(msg.answer);
       askUserResolve = null;
+    } else {
+      log("ask_user_answer received but no pending askUserResolve — ignoring");
     }
     return;
   }
@@ -179,6 +183,32 @@ async function runQuery(userMessage) {
     allowDangerouslySkipPermissions: true,
     abortController,
     settingSources: ["project"],
+    // Handle AskUserQuestion via the SDK's permission protocol.
+    // The CLI sends a can_use_tool control request for tools that
+    // requiresUserInteraction (like AskUserQuestion) even in
+    // bypassPermissions mode.  For all other tools, auto-allow.
+    canUseTool: async (toolName, input, { signal }) => {
+      if (toolName !== "AskUserQuestion") {
+        return { behavior: "allow", updatedInput: input };
+      }
+      log(`canUseTool: AskUserQuestion — waiting for user answer`);
+      // Signal frontend that we're paused waiting for user input
+      emit({ type: "ask_user_question", questions: input.questions });
+      // Wait for the user's answer via stdin (ask_user_answer message)
+      const answer = await new Promise((resolve, reject) => {
+        askUserResolve = resolve;
+        // If aborted while waiting, reject so the SDK can handle it
+        const onAbort = () => { resolve(null); };
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+      if (answer === null) {
+        log("canUseTool: AskUserQuestion cancelled");
+        return { behavior: "deny", message: "User cancelled." };
+      }
+      log(`canUseTool: AskUserQuestion answered: ${JSON.stringify(answer).substring(0, 200)}`);
+      // answer is a Record<questionText, answerString> from the frontend
+      return { behavior: "allow", updatedInput: { ...input, answers: answer } };
+    },
   };
 
   // Point the SDK to the real `claude` CLI binary (required in production builds
@@ -213,37 +243,21 @@ async function runQuery(userMessage) {
       }
       emit(message);
 
-      // Intercept AskUserQuestion: interrupt the query and wait for user input
-      if (
-        message.type === "assistant" &&
-        message.message?.content?.some(
-          (b) => b.type === "tool_use" && b.name === "AskUserQuestion"
-        ) &&
-        message.message?.stop_reason === "tool_use"
-      ) {
-        log("AskUserQuestion detected — interrupting query to wait for user input");
-        try { await q.interrupt(); } catch (e) { log(`interrupt error: ${e.message}`); }
-
-        // Signal that the query paused (so frontend hides "Thinking..." indicator)
-        emit({ type: "query_complete" });
-
-        // Wait for the user's answer via stdin (ask_user_answer message)
-        const answer = await new Promise((resolve) => {
-          askUserResolve = resolve;
-        });
-
-        if (answer !== null) {
-          log(`User answered AskUserQuestion: ${answer.substring(0, 100)}`);
-          // Resume the conversation with the user's answer
-          abortController = null;
-          queryInProgress = false;
-          await runQuery(answer);
+      // Debug: log assistant messages that contain tool_use blocks
+      if (message.type === "assistant") {
+        const content = message.message?.content;
+        if (Array.isArray(content)) {
+          const toolUses = content.filter((b) => b.type === "tool_use");
+          if (toolUses.length > 0) {
+            log(`assistant event: tools=[${toolUses.map((t) => t.name).join(",")}] stop_reason=${message.message?.stop_reason}`);
+          }
         } else {
-          log("AskUserQuestion cancelled (abort)");
-          emit({ type: "aborted" });
+          log(`assistant event: content type=${typeof content}, stop_reason=${message.message?.stop_reason}, keys=${Object.keys(message).join(",")}`);
         }
-        return; // Don't emit query_complete — runQuery handles it
       }
+
+      // AskUserQuestion is now handled via the canUseTool callback above,
+      // which uses the SDK's permission protocol (--permission-prompt-tool stdio).
     }
     emit({ type: "query_complete" });
   } catch (err) {

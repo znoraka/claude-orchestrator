@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue, memo } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { jsonlDirectory, type Session } from "../types";
+import { jsonlDirectory, modelsForProvider, type Session } from "../types";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getHighlighter, ensureLang, langFromPath } from "./DiffViewer";
+import FilePickerModal, { type FileReference } from "./FilePickerModal";
 
 // Configure marked once
 marked.setOptions({ breaks: true, gfm: true });
@@ -17,19 +19,18 @@ interface AgentChatProps {
   onActivity: () => void;
   onBusyChange?: (isBusy: boolean) => void;
   onDraftChange?: (hasDraft: boolean) => void;
+  onQuestionChange?: (hasQuestion: boolean) => void;
   onClaudeSessionId?: (claudeSessionId: string) => void;
   session?: Session;
   onResume?: () => Promise<void> | void;
   onFork?: (systemPrompt: string) => void;
   currentModel?: string;
   onInputHeightChange?: (height: number) => void;
+  onEditFile?: (filePath: string, line?: number) => void;
 }
 
-export const MODELS = [
-  { id: "claude-opus-4-6", name: "Opus 4.6", desc: "Most capable for complex work" },
-  { id: "claude-sonnet-4-6", name: "Sonnet 4.6", desc: "Best for everyday tasks" },
-  { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5", desc: "Fastest for quick answers" },
-];
+/** @deprecated Use modelsForProvider(provider) from types.ts instead */
+export const MODELS = modelsForProvider("claude-code");
 
 // ── Message types ────────────────────────────────────────────────────
 
@@ -56,6 +57,7 @@ interface ChatMessage {
   // For result messages
   costUsd?: number;
   usage?: { input_tokens?: number; output_tokens?: number };
+  durationMs?: number;
 }
 
 interface ToolGroup {
@@ -197,6 +199,7 @@ const AgentChat = memo(function AgentChat({
   onActivity,
   onBusyChange,
   onDraftChange,
+  onQuestionChange,
   onClaudeSessionId,
   session,
   onResume,
@@ -210,11 +213,15 @@ const AgentChat = memo(function AgentChat({
   const [images, setImages] = useState<Array<{ id: string; data: string; mediaType: string; name: string }>>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const abortedRef = useRef(false);
+  const generationStartRef = useRef<number>(0);
   const [currentTodo, setCurrentTodo] = useState<string | null>(null);
   // Tool expansion state: single object to avoid double state updates
   // "expanded" = user manually expanded, "collapsed" = user manually collapsed, undefined = default
   const [toolStates, setToolStates] = useState<Record<string, "expanded" | "collapsed">>({});
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [fileReferences, setFileReferences] = useState<FileReference[]>([]);
+  const [showFilePicker, setShowFilePicker] = useState(false);
+  const [viewingFileRef, setViewingFileRef] = useState<FileReference | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const inputAreaRef = useRef<HTMLDivElement>(null);
@@ -250,6 +257,116 @@ const AgentChat = memo(function AgentChat({
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+  const sessionDir = session?.directory;
+
+  // ── Cmd+O to open file picker ────────────────────────────────────
+  useEffect(() => {
+    if (!isActive) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.metaKey && e.key === "o") {
+        e.preventDefault();
+        setShowFilePicker(true);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [isActive]);
+
+  const addFileReference = useCallback((ref: FileReference) => {
+    setFileReferences((prev) => {
+      // Replace if same file already referenced
+      const existing = prev.findIndex((r) => r.filePath === ref.filePath);
+      if (existing >= 0) {
+        const next = [...prev];
+        next[existing] = ref;
+        return next;
+      }
+      return [...prev, ref];
+    });
+    inputRef.current?.focus();
+  }, []);
+
+  const removeFileReference = useCallback((filePath: string) => {
+    setFileReferences((prev) => prev.filter((r) => r.filePath !== filePath));
+  }, []);
+
+  // ── Current git branch ────────────────────────────────────────────
+  const [currentBranch, setCurrentBranch] = useState("");
+  useEffect(() => {
+    if (!sessionDir) return;
+    let cancelled = false;
+    const fetchBranch = async () => {
+      try {
+        const result = await invoke<{ branch: string; files: unknown[]; is_git_repo: boolean }>("get_git_status", { directory: sessionDir });
+        if (!cancelled && result.is_git_repo) setCurrentBranch(result.branch);
+      } catch {}
+    };
+    fetchBranch();
+    const interval = setInterval(fetchBranch, 10000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [sessionDir]);
+
+  // ── @ file autocomplete ────────────────────────────────────────────
+  const [fileSuggestions, setFileSuggestions] = useState<string[]>([]);
+  const [fileMenuIndex, setFileMenuIndex] = useState(0);
+  const fileMenuRef = useRef<HTMLDivElement>(null);
+  const fileSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Detect @query in inputText: find the last "@" that starts a mention
+  const atMention = useMemo(() => {
+    // Find the last "@" not preceded by a non-space character
+    const idx = inputText.lastIndexOf("@");
+    if (idx < 0) return null;
+    // "@" must be at start or preceded by whitespace
+    if (idx > 0 && inputText[idx - 1] !== " " && inputText[idx - 1] !== "\n") return null;
+    const query = inputText.slice(idx + 1);
+    // Close menu if there's a space after a completed path (user moved on)
+    if (query.includes(" ")) return null;
+    return { index: idx, query };
+  }, [inputText]);
+
+  const showFileMenu = atMention !== null && fileSuggestions.length > 0;
+
+  // Debounced search for project files when @query changes
+  useEffect(() => {
+    if (fileSearchTimerRef.current) clearTimeout(fileSearchTimerRef.current);
+    if (!atMention || !sessionDir) {
+      setFileSuggestions([]);
+      return;
+    }
+    fileSearchTimerRef.current = setTimeout(async () => {
+      try {
+        const results = await invoke<string[]>("search_project_files", {
+          directory: sessionDir,
+          query: atMention.query,
+        });
+        setFileSuggestions(results);
+        setFileMenuIndex(0);
+      } catch {
+        setFileSuggestions([]);
+      }
+    }, atMention.query.length === 0 ? 0 : 100);
+    return () => {
+      if (fileSearchTimerRef.current) clearTimeout(fileSearchTimerRef.current);
+    };
+  }, [atMention?.query, sessionDir]);
+
+  // Scroll active file menu item into view
+  useEffect(() => {
+    if (!fileMenuRef.current) return;
+    const active = fileMenuRef.current.children[fileMenuIndex] as HTMLElement | undefined;
+    active?.scrollIntoView({ block: "nearest" });
+  }, [fileMenuIndex]);
+
+  const selectFile = useCallback((filePath: string) => {
+    if (!atMention) return;
+    const before = inputText.slice(0, atMention.index);
+    const after = inputText.slice(atMention.index + 1 + atMention.query.length);
+    setInputText(before + "@" + filePath + " " + after);
+    setFileSuggestions([]);
+    inputRef.current?.focus();
+  }, [atMention, inputText]);
+
   // ── Slash command autocomplete ─────────────────────────────────────
   const [slashCommands, setSlashCommands] = useState<Array<{ name: string; description: string; source: string }>>([]);
   const [slashMenuIndex, setSlashMenuIndex] = useState(0);
@@ -272,6 +389,8 @@ const AgentChat = memo(function AgentChat({
   onBusyChangeRef.current = onBusyChange;
   const onDraftChangeRef = useRef(onDraftChange);
   onDraftChangeRef.current = onDraftChange;
+  const onQuestionChangeRef = useRef(onQuestionChange);
+  onQuestionChangeRef.current = onQuestionChange;
   const onClaudeSessionIdRef = useRef(onClaudeSessionId);
   onClaudeSessionIdRef.current = onClaudeSessionId;
   const onResumeRef = useRef(onResume);
@@ -284,6 +403,10 @@ const AgentChat = memo(function AgentChat({
   // Sync busy state to parent
   useEffect(() => {
     onBusyChangeRef.current?.(isGenerating);
+    // When generation starts again, clear any pending question
+    if (isGenerating) {
+      onQuestionChangeRef.current?.(false);
+    }
   }, [isGenerating]);
 
   // Sync draft state to parent
@@ -292,7 +415,6 @@ const AgentChat = memo(function AgentChat({
   }, [inputText]);
 
   // Fetch slash commands for the session's directory
-  const sessionDir = session?.directory;
   useEffect(() => {
     if (!sessionDir) return;
     let cancelled = false;
@@ -616,6 +738,7 @@ const AgentChat = memo(function AgentChat({
           },
         ]);
         abortedRef.current = false;
+        generationStartRef.current = Date.now();
         setIsGenerating(true);
         const jsonLine = JSON.stringify({
           type: "user",
@@ -678,6 +801,13 @@ const AgentChat = memo(function AgentChat({
         // Buffer the update for throttled flushing
         pendingStreamRef.current = { id: streamId, content: merged };
 
+        // Detect AskUserQuestion tool call
+        for (const block of content) {
+          if (block.type === "tool_use" && block.name === "AskUserQuestion") {
+            onQuestionChangeRef.current?.(true);
+          }
+        }
+
         // Extract current in-progress todo from TodoWrite tool calls
         for (const block of content) {
           if (block.type === "tool_use" && block.name === "TodoWrite" && block.input) {
@@ -710,6 +840,7 @@ const AgentChat = memo(function AgentChat({
       setCurrentTodo(null);
       accumulatedBlocksRef.current.clear();
       const result = msg as Record<string, unknown>;
+      const durationMs = generationStartRef.current ? Date.now() - generationStartRef.current : undefined;
       setMessages((prev) => {
         const filtered = prev.filter((m) => !m.isStreaming);
         return [
@@ -721,6 +852,7 @@ const AgentChat = memo(function AgentChat({
             timestamp: Date.now(),
             costUsd: result.cost_usd as number | undefined,
             usage: result.usage as { input_tokens?: number; output_tokens?: number } | undefined,
+            durationMs,
           },
         ];
       });
@@ -861,17 +993,25 @@ const AgentChat = memo(function AgentChat({
       } else {
         return null;
       }
-      // Skip tool-result-only messages (tool plumbing, not user input)
-      if (blocks.every((b) => b.type === "tool_result")) return null;
+      // If the message contains any tool_result blocks, it's tool plumbing — not user input.
+      // Accompanying text blocks are system-injected (e.g. "Tool loaded.", system-reminders).
+      const hasToolResults = blocks.some((b) => b.type === "tool_result");
+      if (hasToolResults) return null;
+      // Also filter out system-reminder-only messages
+      const visibleBlocks = blocks.filter((b) => {
+        if (b.type === "text" && typeof b.text === "string" && b.text.trimStart().startsWith("<system-reminder>")) return false;
+        return true;
+      });
+      if (visibleBlocks.length === 0) return null;
       // Skip messages that look like Task/Agent tool prompts
-      const textContent = blocks.find((b) => b.type === "text")?.text || "";
+      const textContent = visibleBlocks.find((b) => b.type === "text")?.text || "";
       if (looksLikeTaskPrompt(textContent)) {
         return null;
       }
       return {
         id: `user-${Date.now()}-${Math.random()}`,
         type: "user",
-        content: blocks,
+        content: visibleBlocks,
         timestamp: Date.now(),
       };
     }
@@ -937,7 +1077,20 @@ const AgentChat = memo(function AgentChat({
       sendMessage("Please provide a brief summary of our conversation so far, then we can continue from that context.");
       return;
     }
+    // Build file reference context prefix
+    const refs = fileReferences;
+    let fileContext = "";
+    if (refs.length > 0) {
+      fileContext = refs.map((ref) => {
+        const lineRange = ref.startLine === 1 && ref.endLine >= ref.content.split("\n").length
+          ? ""
+          : `:${ref.startLine}-${ref.endLine}`;
+        return `<file path="${ref.filePath}${lineRange}">\n${ref.content}\n</file>`;
+      }).join("\n\n") + "\n\n";
+    }
+
     // Build content blocks
+    const fullText = fileContext + text;
     let content: unknown;
     if (images.length > 0) {
       const blocks: unknown[] = [];
@@ -951,15 +1104,24 @@ const AgentChat = memo(function AgentChat({
           },
         });
       }
-      if (text) {
-        blocks.push({ type: "text", text });
+      if (fullText) {
+        blocks.push({ type: "text", text: fullText });
       }
       content = blocks;
     } else {
-      content = text;
+      content = fullText;
     }
 
-    // Add user message to UI
+    // Add user message to UI (show the display text, not the raw file context)
+    const displayParts: ContentBlock[] = [];
+    if (refs.length > 0) {
+      const refSummary = refs.map((ref) => {
+        const lineRange = ref.startLine === 1 && ref.endLine >= ref.content.split("\n").length
+          ? "" : `:${ref.startLine}-${ref.endLine}`;
+        return `📎 ${ref.filePath}${lineRange}`;
+      }).join("\n");
+      displayParts.push({ type: "text", text: refSummary });
+    }
     const userMsg: ChatMessage = {
       id: `user-${Date.now()}`,
       type: "user",
@@ -968,6 +1130,7 @@ const AgentChat = memo(function AgentChat({
           type: "image",
           source: { type: "base64", media_type: img.mediaType, data: img.data },
         })),
+        ...displayParts,
         ...(text ? [{ type: "text", text }] : []),
       ],
       timestamp: Date.now(),
@@ -975,7 +1138,9 @@ const AgentChat = memo(function AgentChat({
     setMessages((prev) => [...prev, userMsg]);
     setInputText("");
     setImages([]);
+    setFileReferences([]);
     abortedRef.current = false;
+    generationStartRef.current = Date.now();
     setIsGenerating(true);
     onActivityRef.current(); // Update session timestamp when user sends a message
 
@@ -1017,7 +1182,7 @@ const AgentChat = memo(function AgentChat({
         },
       ]);
     }
-  }, [inputText, images, sessionId, isReadOnly, editingMessageId]);
+  }, [inputText, images, sessionId, isReadOnly, editingMessageId, fileReferences]);
 
   const handleAbort = useCallback(() => {
     invoke("abort_agent", { sessionId }).catch(() => {});
@@ -1029,24 +1194,23 @@ const AgentChat = memo(function AgentChat({
     accumulatedBlocksRef.current.clear();
   }, [sessionId]);
 
-  // Answer an AskUserQuestion by sending the answer to the bridge
-  const answerQuestion = useCallback((answer: string) => {
-    // Send the answer via the ask_user_answer protocol to the bridge,
-    // which interrupted the query at the AskUserQuestion tool call.
+  // Answer an AskUserQuestion by sending the structured answers to the bridge.
+  // The bridge's canUseTool callback expects a Record<questionText, answerString>.
+  const answerQuestion = useCallback((answer: Record<string, string>) => {
+    onQuestionChangeRef.current?.(false);
     const msg = JSON.stringify({ type: "ask_user_answer", answer });
     invoke("send_agent_message", { sessionId, message: msg }).catch(() => {
-      // Fallback: if the bridge doesn't support ask_user_answer (older bridge),
-      // just put it in the input for the user to send manually
-      setInputText(answer);
+      setInputText(Object.values(answer).join(", "));
       inputRef.current?.focus();
     });
     // Show the answer as a user message in the chat
+    const displayText = Object.entries(answer).map(([q, a]) => `${q}: ${a}`).join("\n");
     setMessages((prev) => [
       ...prev,
       {
         id: `user-${Date.now()}`,
         type: "user",
-        content: [{ type: "text", text: answer }],
+        content: [{ type: "text", text: displayText }],
         timestamp: Date.now(),
       },
     ]);
@@ -1062,6 +1226,18 @@ const AgentChat = memo(function AgentChat({
       ? msg.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")
       : typeof msg.content === "string" ? msg.content : ""
     );
+    // Restore image blocks
+    if (Array.isArray(msg.content)) {
+      const imgs = msg.content
+        .filter((b) => b.type === "image" && b.source?.type === "base64")
+        .map((b, i) => ({
+          id: `edit-img-${Date.now()}-${i}`,
+          data: b.source!.data as string,
+          mediaType: b.source!.media_type as string,
+          name: "image",
+        }));
+      setImages(imgs);
+    }
     setEditingMessageId(messageId);
     setInputText(text);
     inputRef.current?.focus();
@@ -1120,39 +1296,64 @@ const AgentChat = memo(function AgentChat({
 
   // ── Image paste ──────────────────────────────────────────────────
 
+  const addImageFromFile = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const [header, data] = result.split(",");
+      const mediaType = header.match(/data:(.*);/)?.[1] || "image/png";
+      setImages((prev) => [
+        ...prev,
+        {
+          id: `img-${Date.now()}-${Math.random()}`,
+          data,
+          mediaType,
+          name: file.name || "pasted-image",
+        },
+      ]);
+    };
+    reader.readAsDataURL(file);
+  }, []);
+
   const handlePaste = useCallback(
-    async (e: React.ClipboardEvent) => {
+    (e: React.ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
-
       for (const item of items) {
         if (item.type.startsWith("image/")) {
           e.preventDefault();
           const file = item.getAsFile();
-          if (!file) continue;
-
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result as string;
-            // data:image/png;base64,xxxx
-            const [header, data] = result.split(",");
-            const mediaType = header.match(/data:(.*);/)?.[1] || "image/png";
-            setImages((prev) => [
-              ...prev,
-              {
-                id: `img-${Date.now()}-${Math.random()}`,
-                data,
-                mediaType,
-                name: file.name || "pasted-image",
-              },
-            ]);
-          };
-          reader.readAsDataURL(file);
+          if (file) addImageFromFile(file);
         }
       }
     },
-    []
+    [addImageFromFile]
   );
+
+  // Document-level paste listener for when the input is not focused
+  useEffect(() => {
+    if (!isActive) return;
+    const handler = (e: ClipboardEvent) => {
+      // Skip if the textarea already has focus (handlePaste on the element will handle it)
+      if (document.activeElement === inputRef.current) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      let hasImage = false;
+      for (const item of items) {
+        if (item.type.startsWith("image/")) {
+          hasImage = true;
+          const file = item.getAsFile();
+          if (file) addImageFromFile(file);
+        }
+      }
+      if (hasImage) {
+        e.preventDefault();
+        inputRef.current?.focus();
+      }
+    };
+    document.addEventListener("paste", handler);
+    return () => document.removeEventListener("paste", handler);
+  }, [addImageFromFile, isActive]);
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => prev.filter((img) => img.id !== id));
@@ -1167,14 +1368,37 @@ const AgentChat = memo(function AgentChat({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // File menu navigation (@mentions)
+      if (showFileMenu) {
+        if (e.key === "ArrowDown" || (e.ctrlKey && e.key === "n")) {
+          e.preventDefault();
+          setFileMenuIndex((i) => Math.min(i + 1, fileSuggestions.length - 1));
+          return;
+        }
+        if (e.key === "ArrowUp" || (e.ctrlKey && e.key === "p")) {
+          e.preventDefault();
+          setFileMenuIndex((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+          e.preventDefault();
+          selectFile(fileSuggestions[fileMenuIndex]);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setFileSuggestions([]);
+          return;
+        }
+      }
       // Slash menu navigation
       if (showSlashMenu && filteredSlashCommands.length > 0) {
-        if (e.key === "ArrowDown") {
+        if (e.key === "ArrowDown" || (e.ctrlKey && e.key === "n")) {
           e.preventDefault();
           setSlashMenuIndex((i) => Math.min(i + 1, filteredSlashCommands.length - 1));
           return;
         }
-        if (e.key === "ArrowUp") {
+        if (e.key === "ArrowUp" || (e.ctrlKey && e.key === "p")) {
           e.preventDefault();
           setSlashMenuIndex((i) => Math.max(i - 1, 0));
           return;
@@ -1211,7 +1435,7 @@ const AgentChat = memo(function AgentChat({
         handleAbort();
       }
     },
-    [sendMessage, isGenerating, handleAbort, showSlashMenu, filteredSlashCommands, slashMenuIndex, selectSlashCommand]
+    [sendMessage, isGenerating, handleAbort, showSlashMenu, filteredSlashCommands, slashMenuIndex, selectSlashCommand, showFileMenu, fileSuggestions, fileMenuIndex, selectFile]
   );
 
   // ── Toggle tool card expansion ───────────────────────────────────
@@ -1315,7 +1539,7 @@ const AgentChat = memo(function AgentChat({
       </div>
 
       {/* Input area */}
-      <div className="border-t border-[var(--border-color)] px-4 py-3 relative" ref={inputAreaRef}>
+      <div className="border-t border-[var(--border-color)] px-4 py-3 relative flex flex-col gap-2" ref={inputAreaRef}>
         {/* Slash command autocomplete */}
         {showSlashMenu && filteredSlashCommands.length > 0 && (
           <div
@@ -1345,6 +1569,39 @@ const AgentChat = memo(function AgentChat({
             ))}
           </div>
         )}
+        {/* @ file autocomplete */}
+        {showFileMenu && (
+          <div
+            ref={fileMenuRef}
+            className="absolute bottom-full left-0 right-0 mx-4 mb-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"
+          >
+            {fileSuggestions.map((filePath, i) => {
+              const parts = filePath.split("/");
+              const fileName = parts.pop()!;
+              const dirPath = parts.join("/");
+              return (
+                <button
+                  key={filePath}
+                  className={`w-full text-left px-3 py-1.5 flex items-center gap-2 text-sm transition-colors ${
+                    i === fileMenuIndex
+                      ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
+                      : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                  }`}
+                  onMouseEnter={() => setFileMenuIndex(i)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    selectFile(filePath);
+                  }}
+                >
+                  <span className="font-mono text-[var(--text-primary)] truncate">{fileName}</span>
+                  {dirPath && (
+                    <span className="text-[var(--text-tertiary)] text-xs truncate ml-auto">{dirPath}/</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
         {/* Editing indicator */}
         {editingMessageId && (
           <div className="flex items-center gap-2 mb-2 px-1 py-1.5 text-xs text-[var(--accent)] bg-[var(--accent)]/10 rounded-lg">
@@ -1362,18 +1619,42 @@ const AgentChat = memo(function AgentChat({
           </div>
         )}
 
-        {/* Image thumbnails */}
-        {images.length > 0 && (
-          <div className="flex gap-2 mb-2 flex-wrap">
+        {/* Attachments: file refs + images on one line */}
+        {(fileReferences.length > 0 || images.length > 0) && (
+          <div className="flex gap-2 flex-wrap items-center">
+            {fileReferences.map((ref) => {
+              const fileName = ref.filePath.split("/").pop()!;
+              const previewLines = ref.content.split("\n").slice(0, 8);
+              return (
+                <div
+                  key={ref.filePath}
+                  className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)] cursor-pointer hover:border-[var(--accent)] transition-colors"
+                  onClick={() => setViewingFileRef(ref)}
+                >
+                  <div className="w-full h-full bg-[var(--bg-tertiary)] p-1 overflow-hidden">
+                    <pre className="text-[3.5px] leading-[4.5px] text-[var(--text-tertiary)] font-mono whitespace-pre overflow-hidden pointer-events-none select-none">{previewLines.join("\n")}</pre>
+                  </div>
+                  <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent pt-3 pb-0.5 px-1">
+                    <span className="text-[8px] text-white/90 font-medium truncate block leading-tight">{fileName}</span>
+                    <span className="text-[7px] text-white/60 block leading-tight">L{ref.startLine}-{ref.endLine}</span>
+                  </div>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); removeFileReference(ref.filePath); }}
+                    className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              );
+            })}
             {images.map((img) => (
               <div
                 key={img.id}
                 className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)]"
               >
-                <img
-                  src={`data:${img.mediaType};base64,${img.data}`}
-                  className="w-full h-full object-cover"
-                />
+                <ImageWithLightbox src={`data:${img.mediaType};base64,${img.data}`} thumbnail />
                 <button
                   onClick={() => removeImage(img.id)}
                   className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl text-white opacity-0 group-hover:opacity-100 transition-opacity"
@@ -1388,15 +1669,27 @@ const AgentChat = memo(function AgentChat({
         )}
 
         <div className="flex gap-2 items-end">
+          <div className="flex-1 flex items-end bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg focus-within:border-[var(--accent)] transition-colors">
+          {sessionDir && (
+            <button
+              onClick={() => setShowFilePicker(true)}
+              className="p-2 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors shrink-0 self-center"
+              title="Attach file (⌘O)"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
+          )}
           <textarea
             ref={inputRef}
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder={`Message ${MODELS.find((m) => m.id === currentModel)?.name ?? "Claude"}…`}
+            placeholder={`Message ${modelsForProvider(session?.provider || "claude-code").find((m) => m.id === currentModel)?.name ?? "Agent"}…`}
             rows={1}
-            className="flex-1 resize-none bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none focus:border-[var(--accent)] transition-colors max-h-32 overflow-y-auto"
+            className="flex-1 resize-none bg-transparent border-none px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none max-h-32 overflow-y-auto"
             style={{ minHeight: "38px" }}
             onInput={(e) => {
               const target = e.target as HTMLTextAreaElement;
@@ -1404,6 +1697,7 @@ const AgentChat = memo(function AgentChat({
               target.style.height = `${Math.min(target.scrollHeight, 128)}px`;
             }}
           />
+          </div>
           {isGenerating ? (
             <button
               onClick={handleAbort}
@@ -1414,14 +1708,41 @@ const AgentChat = memo(function AgentChat({
           ) : (
             <button
               onClick={() => sendMessage()}
-              disabled={!inputText.trim() && images.length === 0}
+              disabled={!inputText.trim() && images.length === 0 && fileReferences.length === 0}
               className="px-3 py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors shrink-0"
             >
               Send
             </button>
           )}
         </div>
+        {currentBranch && (
+          <div className="flex items-center gap-2 mt-1 px-1 text-[10px] text-[var(--text-tertiary)]">
+            <span className="flex items-center gap-1">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
+              </svg>
+              {currentBranch}
+            </span>
+          </div>
+        )}
       </div>
+
+      {/* File picker modal */}
+      {showFilePicker && sessionDir && (
+        <FilePickerModal
+          directory={sessionDir}
+          onSelect={addFileReference}
+          onClose={() => setShowFilePicker(false)}
+        />
+      )}
+      {viewingFileRef && sessionDir && (
+        <FilePickerModal
+          directory={sessionDir}
+          initialFile={viewingFileRef}
+          onSelect={addFileReference}
+          onClose={() => setViewingFileRef(null)}
+        />
+      )}
     </div>
   );
 }, (prev, next) => {
@@ -1454,7 +1775,7 @@ const MessageBubble = memo(function MessageBubble({
   toolStates: Record<string, "expanded" | "collapsed">;
   onToggleTool: (id: string, isCurrentlyExpanded: boolean) => void;
   isLastMessage: boolean;
-  onAnswerQuestion?: (answer: string) => void;
+  onAnswerQuestion?: (answer: Record<string, string>) => void;
   onEdit?: (messageId: string) => void;
   onFork?: (messageId: string) => void;
   onRetry?: (messageId: string) => void;
@@ -1533,9 +1854,23 @@ const MessageBubble = memo(function MessageBubble({
           )}
         </div>
         <div className="max-w-[80%] border border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--text-primary)] rounded-2xl rounded-br-md px-5 py-3">
-          {visible.map((block, i) => (
-            <ContentBlockView key={i} block={block} isUser />
-          ))}
+          {visible.map((block, i) => {
+            if (block.type === "text" && block.text?.startsWith("\u{1F4CE} ")) {
+              return (
+                <div key={i} className="flex flex-wrap gap-1.5 mb-2">
+                  {block.text.split("\n").map((line, j) => (
+                    <span key={j} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-[var(--accent)]/15 text-[var(--text-secondary)] border border-[var(--accent)]/20">
+                      <svg className="w-3 h-3 shrink-0 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                      </svg>
+                      {line.replace(/^\u{1F4CE}\s*/u, "")}
+                    </span>
+                  ))}
+                </div>
+              );
+            }
+            return <ContentBlockView key={i} block={block} isUser />;
+          })}
         </div>
       </div>
     );
@@ -1560,13 +1895,25 @@ const MessageBubble = memo(function MessageBubble({
   if (message.type === "result") {
     const usage = message.usage;
     const cost = message.costUsd;
-    if (!usage && !cost) return null;
+    const durationMs = message.durationMs;
+    if (!usage && !cost && !durationMs) return null;
+    const formatDuration = (ms: number) => {
+      if (ms < 1000) return `${ms}ms`;
+      const seconds = ms / 1000;
+      if (seconds < 60) return `${seconds.toFixed(1)}s`;
+      const minutes = Math.floor(seconds / 60);
+      const remainingSeconds = Math.round(seconds % 60);
+      return `${minutes}m ${remainingSeconds}s`;
+    };
     return (
       <div className="flex items-center gap-3 px-3 py-1 text-[10px] text-[var(--text-tertiary)]">
         {usage && (
           <span>
             {((usage.input_tokens || 0) + (usage.output_tokens || 0)).toLocaleString()} tokens
           </span>
+        )}
+        {durationMs !== undefined && durationMs > 0 && (
+          <span>{formatDuration(durationMs)}</span>
         )}
         {cost !== undefined && cost > 0 && (
           <span>${cost.toFixed(4)}</span>
@@ -1697,6 +2044,50 @@ function MarkdownContent({ text }: { text: string }) {
   );
 }
 
+// ── Image lightbox ─────────────────────────────────────────────────
+
+function ImageWithLightbox({ src, thumbnail }: { src: string; thumbnail?: boolean }) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [open]);
+
+  return (
+    <>
+      <img
+        src={src}
+        className={thumbnail
+          ? "w-full h-full object-cover cursor-zoom-in"
+          : "max-w-full max-h-64 rounded-lg my-1 cursor-zoom-in"
+        }
+        alt="Attached image"
+        onClick={(e) => { e.stopPropagation(); setOpen(true); }}
+      />
+      {open &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 cursor-zoom-out"
+            onClick={() => setOpen(false)}
+          >
+            <img
+              src={src}
+              className="max-w-[90vw] max-h-[90vh] rounded-lg shadow-2xl"
+              alt="Attached image"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
+
 // ── Content block rendering ────────────────────────────────────────
 
 function ContentBlockView({ block, isUser }: { block: ContentBlock; isUser?: boolean }) {
@@ -1723,14 +2114,8 @@ function ContentBlockView({ block, isUser }: { block: ContentBlock; isUser?: boo
   if (block.type === "image" && block.source) {
     const src = block.source.type === "base64"
       ? `data:${block.source.media_type};base64,${block.source.data}`
-      : block.source.url;
-    return (
-      <img
-        src={src}
-        className="max-w-full max-h-64 rounded-lg my-1"
-        alt="Attached image"
-      />
-    );
+      : block.source.url ?? "";
+    return <ImageWithLightbox src={src} />;
   }
 
   return null;
@@ -1773,7 +2158,7 @@ function useShikiHighlight(code: string, filePath: string, containerRef: React.R
     schedule(async () => {
       const hl = await getHighlighter();
       await ensureLang(hl, lang);
-      const result = hl.codeToTokens(code, { lang, theme: "github-dark" });
+      const result = hl.codeToTokens(code, { lang, theme: "one-dark-pro" });
       if (id === idRef.current) {
         setTokens(result.tokens.map(lineTokens =>
           lineTokens.map(t => ({ content: t.content, color: t.color }))
@@ -2056,13 +2441,11 @@ function AskUserQuestionBlock({
   onAnswer,
 }: {
   group: ToolGroup;
-  onAnswer?: (answer: string) => void;
+  onAnswer?: (answer: Record<string, string>) => void;
 }) {
   const input = group.toolUse.input || {};
   const questions = Array.isArray(input.questions) ? (input.questions as AskQuestion[]) : [];
   // Only disable buttons when there's an explicit tool_result for this AskUserQuestion.
-  // Unlike other tools, don't infer "has result" from !isLastMessage — the bridge
-  // interrupts the query at AskUserQuestion to wait for user input.
   const hasResult = !!group.toolResult;
 
   // Track selected answer per question index (for multi-question accumulation)
@@ -2084,7 +2467,8 @@ function AskUserQuestionBlock({
 
   const handleSelect = (qi: number, label: string) => {
     if (isSingle) {
-      onAnswer?.(label);
+      // Send structured answer: { questionText: selectedLabel }
+      onAnswer?.({ [questions[0].question]: label });
     } else {
       setSelected((prev) => ({ ...prev, [qi]: label }));
     }
@@ -2094,10 +2478,10 @@ function AskUserQuestionBlock({
 
   const handleSubmit = () => {
     if (!allAnswered) return;
-    const combined = questions
-      .map((_, qi) => `${qi + 1}. ${selected[qi]}`)
-      .join("\n");
-    onAnswer?.(combined);
+    // Build answers record: { questionText: selectedLabel, ... }
+    const answers: Record<string, string> = {};
+    questions.forEach((q, qi) => { answers[q.question] = selected[qi]; });
+    onAnswer?.(answers);
   };
 
   return (

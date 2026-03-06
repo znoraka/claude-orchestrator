@@ -100,6 +100,10 @@ impl PricingConfig {
     }
 }
 
+struct FileListCache {
+    entries: HashMap<String, (std::time::Instant, Vec<String>)>,
+}
+
 struct AppState {
     pty_manager: Mutex<PtyManager>,
     agent_manager: Mutex<AgentManager>,
@@ -108,7 +112,10 @@ struct AppState {
     file_watcher: Mutex<JsonlWatcher>,
     _signal_watcher: SignalWatcher,
     mcp_script_path: Option<String>,
-    agent_script_path: Option<String>,
+    agent_script_paths: std::collections::HashMap<String, String>,
+    title_server_port: std::sync::atomic::AtomicU16,
+    _title_server_child: Mutex<Option<std::process::Child>>,
+    file_list_cache: Mutex<FileListCache>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -232,9 +239,12 @@ fn create_agent_session(
     claude_session_id: Option<String>,
     resume: bool,
     system_prompt: Option<String>,
+    provider: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let provider = provider.unwrap_or_else(|| "claude-code".to_string());
+
     // Expand leading ~ to $HOME (shells expand ~ but programmatic callers don't)
     let home = std::env::var("HOME")
         .unwrap_or_else(|_| format!("/Users/{}", std::env::var("USER").unwrap_or_default()));
@@ -246,43 +256,52 @@ fn create_agent_session(
         directory
     };
 
-    eprintln!("[create_agent_session] session_id={}, directory={:?}, claude_session_id={:?}, resume={}", session_id, directory, claude_session_id, resume);
+    eprintln!("[create_agent_session] session_id={}, directory={:?}, claude_session_id={:?}, resume={}, provider={}", session_id, directory, claude_session_id, resume, provider);
 
     let agent_script = state
-        .agent_script_path
-        .as_ref()
-        .ok_or_else(|| "Agent bridge script not found. Run `pnpm build:agent` to build it.".to_string())?
+        .agent_script_paths
+        .get(&provider)
+        .ok_or_else(|| format!("Agent bridge script not found for provider '{}'. Run `pnpm build` to build it.", provider))?
         .clone();
 
     let mcp_script = state.mcp_script_path.clone();
 
-    // Build MCP servers config for the agent SDK
-    let mcp_servers = if let Some(ref mcp_path) = mcp_script {
-        serde_json::json!({
-            "orchestrator": {
-                "command": "node",
-                "args": [mcp_path],
-                "env": {
-                    "ORCHESTRATOR_SESSION_ID": &session_id,
-                    "ORCHESTRATOR_SIGNAL_DIR": "/tmp/orchestrator-signals"
+    let config = if provider == "claude-code" {
+        // Build MCP servers config for the agent SDK
+        let mcp_servers = if let Some(ref mcp_path) = mcp_script {
+            serde_json::json!({
+                "orchestrator": {
+                    "command": "node",
+                    "args": [mcp_path],
+                    "env": {
+                        "ORCHESTRATOR_SESSION_ID": &session_id,
+                        "ORCHESTRATOR_SIGNAL_DIR": "/tmp/orchestrator-signals"
+                    }
                 }
-            }
+            })
+        } else {
+            serde_json::json!({})
+        };
+
+        // Resolve the `claude` CLI so the Agent SDK can find it inside the app bundle
+        let claude_cli = resolve_bin("claude");
+
+        serde_json::json!({
+            "sessionId": &session_id,
+            "cwd": &directory,
+            "resume": if resume { claude_session_id.as_deref() } else { None::<&str> },
+            "mcpServers": mcp_servers,
+            "systemPrompt": system_prompt,
+            "claudeCliPath": claude_cli,
         })
     } else {
-        serde_json::json!({})
+        // Generic config for other providers (opencode, etc.)
+        serde_json::json!({
+            "sessionId": &session_id,
+            "cwd": &directory,
+            "systemPrompt": system_prompt,
+        })
     };
-
-    // Resolve the `claude` CLI so the Agent SDK can find it inside the app bundle
-    let claude_cli = resolve_bin("claude");
-
-    let config = serde_json::json!({
-        "sessionId": &session_id,
-        "cwd": &directory,
-        "resume": if resume { claude_session_id.as_deref() } else { None::<&str> },
-        "mcpServers": mcp_servers,
-        "systemPrompt": system_prompt,
-        "claudeCliPath": claude_cli,
-    });
     let config_json = config.to_string();
 
     let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
@@ -1403,14 +1422,79 @@ fn get_message_count_sync(claude_session_id: String, directory: String) -> Resul
 }
 
 #[tauri::command]
-async fn generate_smart_title(claude_session_id: String, directory: String, include_recent: Option<bool>) -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || generate_smart_title_sync(claude_session_id, directory, include_recent))
-        .await
-        .map_err(|e| format!("Task join error: {}", e))?
+async fn generate_smart_title(
+    claude_session_id: String,
+    directory: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let port = state.title_server_port.load(std::sync::atomic::Ordering::Relaxed);
+    if port == 0 {
+        return Err("Title server not running".to_string());
+    }
+
+    // Extract user message from JSONL in a blocking task
+    let user_msg = tauri::async_runtime::spawn_blocking(move || {
+        extract_first_user_message(&claude_session_id, &directory)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))??;
+
+    let user_msg = match user_msg {
+        Some(m) => m,
+        None => return Ok(None),
+    };
+
+    // Send request to the warm title server
+    let body = serde_json::json!({ "message": user_msg }).to_string();
+
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        let client = std::net::TcpStream::connect_timeout(
+            &format!("127.0.0.1:{}", port).parse().unwrap(),
+            std::time::Duration::from_secs(5),
+        )
+        .map_err(|e| format!("Failed to connect to title server: {}", e))?;
+        client.set_read_timeout(Some(std::time::Duration::from_secs(30))).ok();
+        client.set_write_timeout(Some(std::time::Duration::from_secs(5))).ok();
+
+        use std::io::{Read, Write};
+        let mut stream = client;
+        let request = format!(
+            "POST / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            port,
+            body.len(),
+            body
+        );
+        stream.write_all(request.as_bytes())
+            .map_err(|e| format!("Failed to send request: {}", e))?;
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response)
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+
+        Ok::<String, String>(response)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))??;
+
+    // Parse HTTP response — extract body after \r\n\r\n
+    let body = response.split("\r\n\r\n").nth(1).unwrap_or("");
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(title) = parsed.get("title").and_then(|t| t.as_str()) {
+            let title = title.trim().to_string();
+            if !title.is_empty() {
+                return Ok(Some(title));
+            }
+        }
+        if let Some(error) = parsed.get("error").and_then(|e| e.as_str()) {
+            return Err(format!("Title server error: {}", error));
+        }
+    }
+
+    Ok(None)
 }
 
-fn generate_smart_title_sync(claude_session_id: String, directory: String, include_recent: Option<bool>) -> Result<Option<String>, String> {
-    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+fn extract_first_user_message(claude_session_id: &str, directory: &str) -> Result<Option<String>, String> {
+    let jsonl_path = jsonl_path_for(claude_session_id, directory)?;
 
     if !jsonl_path.exists() {
         return Ok(None);
@@ -1419,11 +1503,6 @@ fn generate_smart_title_sync(claude_session_id: String, directory: String, inclu
     let file = std::fs::File::open(&jsonl_path)
         .map_err(|e| format!("Failed to open conversation file: {}", e))?;
     let reader = std::io::BufReader::new(file);
-
-    let mut first_user_message: Option<String> = None;
-    let mut first_assistant_text: Option<String> = None;
-    // Collect all exchanges for recent context
-    let mut all_exchanges: Vec<(String, String)> = Vec::new(); // (role, text)
 
     use std::io::BufRead;
     for line in reader.lines() {
@@ -1444,141 +1523,14 @@ fn generate_smart_title_sync(claude_session_id: String, directory: String, inclu
                             continue;
                         }
                         let truncated: String = text.chars().take(500).collect();
-                        if first_user_message.is_none() {
-                            first_user_message = Some(truncated.clone());
-                        }
-                        all_exchanges.push(("user".to_string(), truncated));
+                        return Ok(Some(truncated));
                     }
                 }
-            }
-
-            if msg_type == Some("assistant") {
-                if let Some(content) = parsed.get("message").and_then(|m| m.get("content")) {
-                    let text = if let Some(s) = content.as_str() {
-                        Some(s.to_string())
-                    } else if let Some(arr) = content.as_array() {
-                        arr.iter().find_map(|block| {
-                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                block.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
-                            } else {
-                                None
-                            }
-                        })
-                    } else {
-                        None
-                    };
-                    if let Some(t) = text {
-                        let truncated: String = t.chars().take(500).collect();
-                        if first_user_message.is_some() && first_assistant_text.is_none() {
-                            first_assistant_text = Some(truncated.clone());
-                        }
-                        all_exchanges.push(("assistant".to_string(), truncated));
-                    }
-                }
-            }
-
-            // If not including recent, break early
-            if !include_recent.unwrap_or(false)
-                && first_user_message.is_some()
-                && first_assistant_text.is_some()
-            {
-                break;
             }
         }
     }
 
-    let user_msg = match first_user_message {
-        Some(u) => u,
-        None => return Ok(None),
-    };
-
-    let prompt = if include_recent.unwrap_or(false) && all_exchanges.len() > 2 {
-        // Include first exchange + last 2-3 exchanges
-        let recent_start = all_exchanges.len().saturating_sub(3);
-        let mut recent_text = String::new();
-        for (role, text) in &all_exchanges[recent_start..] {
-            let truncated: String = text.chars().take(200).collect();
-            recent_text.push_str(&format!("\n{}: {}", if role == "user" { "User" } else { "Assistant" }, truncated));
-        }
-        let first_exchange = if let Some(ref a) = first_assistant_text {
-            format!("User: {}\nAssistant: {}", user_msg, a)
-        } else {
-            format!("User: {}", user_msg)
-        };
-        format!(
-            "Summarize this conversation in 3-6 words as a short title. The conversation has evolved, so consider the recent messages too. Reply with ONLY the title, nothing else.\n\nFirst exchange:\n{}\n\nRecent messages:{}",
-            first_exchange, recent_text
-        )
-    } else if let Some(ref assistant_msg) = first_assistant_text {
-        format!(
-            "Summarize this conversation in 3-6 words as a short title. Reply with ONLY the title, nothing else.\n\nUser: {}\nAssistant: {}",
-            user_msg, assistant_msg
-        )
-    } else {
-        format!(
-            "Summarize this request in 3-6 words as a short title. Reply with ONLY the title, nothing else.\n\nUser: {}",
-            user_msg
-        )
-    };
-
-    // Get API key: try ANTHROPIC_API_KEY env var first, then macOS keychain as fallback
-    let access_token = if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        if !key.is_empty() { Some(key) } else { None }
-    } else {
-        None
-    }.or_else(|| {
-        // Fall back to macOS keychain (Claude Code OAuth credentials)
-        let token_output = std::process::Command::new("security")
-            .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
-            .output()
-            .ok()?;
-        if !token_output.status.success() {
-            return None;
-        }
-        let creds_json = String::from_utf8_lossy(&token_output.stdout).trim().to_string();
-        let creds: serde_json::Value = serde_json::from_str(&creds_json).ok()?;
-        creds
-            .get("claudeAiOauth")
-            .and_then(|o| o.get("accessToken"))
-            .and_then(|t| t.as_str())
-            .map(|s| s.to_string())
-    })
-    .ok_or("No API key found. Set ANTHROPIC_API_KEY env var or log in to Claude Code.")?;
-
-    // Call Anthropic API via reqwest
-    let body = serde_json::json!({
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 30,
-        "messages": [{"role": "user", "content": prompt}]
-    });
-
-    let client = reqwest::blocking::Client::new();
-    let response: serde_json::Value = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("content-type", "application/json")
-        .header("x-api-key", &access_token)
-        .header("anthropic-version", "2023-06-01")
-        .json(&body)
-        .send()
-        .map_err(|e| format!("Failed to call Anthropic API: {}", e))?
-        .json()
-        .map_err(|e| format!("Failed to parse API response: {}", e))?;
-
-    let title = response
-        .get("content")
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.first())
-        .and_then(|b| b.get("text"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
-    if title.is_empty() {
-        return Ok(None);
-    }
-
-    Ok(Some(title))
+    Ok(None)
 }
 
 /// Truncate large text fields in content blocks to keep IPC payloads small.
@@ -1757,15 +1709,31 @@ fn shell_path() -> &'static str {
 }
 
 /// Resolve the absolute path of a binary using the shell PATH.
+/// Results are cached so we only spawn a shell once per binary name.
 fn resolve_bin(name: &str) -> Option<String> {
+    use std::sync::OnceLock;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    let mut map = cache.lock().ok()?;
+    if let Some(cached) = map.get(name) {
+        return cached.clone();
+    }
+
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    std::process::Command::new(&shell)
+    let result = std::process::Command::new(&shell)
         .args(["-lc", &format!("which {}", name)])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty());
+
+    map.insert(name.to_string(), result.clone());
+    result
 }
 
 fn gh_command() -> std::process::Command {
@@ -2860,6 +2828,175 @@ fn list_files(partial: String) -> Result<Vec<(String, bool)>, String> {
 }
 
 #[tauri::command]
+async fn search_project_files(directory: String, query: String, state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    use std::time::Instant;
+
+    let directory = if directory.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            directory.replacen('~', &home, 1)
+        } else {
+            directory
+        }
+    } else {
+        directory
+    };
+
+    const CACHE_TTL_SECS: u64 = 30;
+
+    // Check cache first — clone what we need, then drop the lock before any blocking work
+    let cached = {
+        let cache = state.file_list_cache.lock().map_err(|e| e.to_string())?;
+        cache.entries.get(&directory).and_then(|(cached_at, cached_files)| {
+            if cached_at.elapsed().as_secs() < CACHE_TTL_SECS {
+                Some(cached_files.clone())
+            } else {
+                None
+            }
+        })
+    };
+
+    let files: Vec<String> = if let Some(files) = cached {
+        files
+    } else {
+        let dir = directory.clone();
+        let files = tauri::async_runtime::spawn_blocking(move || list_project_files(&dir))
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut cache = state.file_list_cache.lock().map_err(|e| e.to_string())?;
+        cache.entries.insert(directory.clone(), (Instant::now(), files.clone()));
+        files
+    };
+
+    let query_lower = query.to_lowercase();
+
+    if query_lower.is_empty() {
+        let mut results: Vec<String> = files.into_iter().take(20).collect();
+        results.sort();
+        return Ok(results);
+    }
+
+    let query_chars: Vec<char> = query_lower.chars().collect();
+    let mut results: Vec<(String, i32)> = Vec::new();
+
+    for line in files.iter() {
+        let line: &String = line;
+        if line.is_empty() {
+            continue;
+        }
+        let line_lower = line.to_lowercase();
+        let filename = line.rsplit('/').next().unwrap_or(line).to_lowercase();
+
+        // Fuzzy match: all query chars must appear in order
+        if let Some(score) = fuzzy_score(&query_chars, &query_lower, &line_lower, &filename) {
+            results.push((line.to_string(), score));
+        }
+    }
+
+    results.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    results.truncate(20);
+
+    Ok(results.into_iter().map(|(path, _)| path).collect())
+}
+
+fn list_project_files(directory: &str) -> Vec<String> {
+    use std::process::Command;
+
+    // Use just `git ls-files` (reads from index, nearly instant) instead of
+    // `--cached --others --exclude-standard` which scans the entire working tree.
+    let git_result = Command::new("git")
+        .args(["ls-files"])
+        .current_dir(directory)
+        .output();
+
+    match git_result {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect()
+        }
+        _ => {
+            let mut found = Vec::new();
+            let base = std::path::Path::new(directory);
+            walk_dir_recursive(base, base, &mut found, 0);
+            found
+        }
+    }
+}
+
+/// Fuzzy match query chars against a path. Returns Some(score) if all query chars
+/// appear in order in the haystack, None otherwise. Higher score = better match.
+fn fuzzy_score(query_chars: &[char], query: &str, path: &str, filename: &str) -> Option<i32> {
+    let path_chars: Vec<char> = path.chars().collect();
+    let mut qi = 0;
+    let mut pi = 0;
+    let mut score: i32 = 0;
+    let mut prev_match_idx: Option<usize> = None;
+
+    while qi < query_chars.len() && pi < path_chars.len() {
+        if query_chars[qi] == path_chars[pi] {
+            // Bonus for consecutive matches (characters appear adjacent)
+            if let Some(prev) = prev_match_idx {
+                if pi == prev + 1 {
+                    score += 4;
+                }
+            }
+            // Bonus for matching at word boundaries (after / . _ -)
+            if pi == 0 || matches!(path_chars[pi - 1], '/' | '.' | '_' | '-') {
+                score += 3;
+            }
+            prev_match_idx = Some(pi);
+            qi += 1;
+        }
+        pi += 1;
+    }
+
+    if qi < query_chars.len() {
+        return None; // not all query chars matched
+    }
+
+    // Exact substring match in filename is a big bonus
+    if filename.contains(query) {
+        score += 20;
+    }
+    // Filename starts with query
+    if filename.starts_with(query) {
+        score += 10;
+    }
+    // Prefer shorter paths
+    score -= (path.len() as i32) / 20;
+
+    Some(score)
+}
+
+fn walk_dir_recursive(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>, depth: u32) {
+    const SKIP_DIRS: &[&str] = &[
+        "node_modules", "target", ".git", ".hg", ".svn", "dist", "build",
+        "__pycache__", ".next", ".nuxt", "vendor", ".worktrees",
+    ];
+    if depth > 12 { return; }
+    let Ok(entries) = std::fs::read_dir(dir) else { return; };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') && depth == 0 && name_str != ".github" { continue; }
+        if let Ok(ft) = entry.file_type() {
+            if ft.is_dir() {
+                if SKIP_DIRS.contains(&name_str.as_ref()) { continue; }
+                if name_str.starts_with('.') { continue; }
+                walk_dir_recursive(base, &entry.path(), out, depth + 1);
+            } else if ft.is_file() {
+                if let Ok(rel) = entry.path().strip_prefix(base) {
+                    out.push(rel.to_string_lossy().to_string());
+                }
+            }
+        }
+        if out.len() > 5000 { return; } // safety limit
+    }
+}
+
+#[tauri::command]
 fn resolve_path(file_path: String) -> Result<String, String> {
     let expanded = if file_path.starts_with('~') {
         if let Ok(home) = std::env::var("HOME") {
@@ -2976,27 +3113,97 @@ pub fn run() {
                 eprintln!("[setup] MCP script not found, MCP injection disabled. Run `pnpm build:mcp` to build it.");
             }
 
-            // Resolve agent bridge script path (same pattern as MCP script)
-            let agent_script_path = {
-                let candidates = [
+            // Resolve agent bridge scripts for each provider
+            let agent_script_paths = {
+                let bridges = [
+                    ("claude-code", "agent-bridge.bundle.mjs"),
+                    ("opencode", "agent-bridge-opencode.bundle.mjs"),
+                ];
+                let mut map = std::collections::HashMap::new();
+                for (provider, filename) in bridges {
+                    let candidates = [
+                        app.handle()
+                            .path()
+                            .resource_dir()
+                            .ok()
+                            .map(|dir| dir.join("resources").join(filename)),
+                        Some(
+                            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                                .join("resources")
+                                .join(filename),
+                        ),
+                    ];
+                    if let Some(path) = candidates.into_iter().flatten().find(|p| p.exists()) {
+                        eprintln!("[setup] Agent bridge '{}' found at {:?}", provider, path);
+                        map.insert(provider.to_string(), path.to_string_lossy().to_string());
+                    } else {
+                        eprintln!("[setup] Agent bridge '{}' ({}) not found. Run `pnpm build` to build it.", provider, filename);
+                    }
+                }
+                map
+            };
+
+            // Spawn the title generation server (stays warm for fast title generation)
+            let title_server_port = std::sync::atomic::AtomicU16::new(0);
+            let mut title_server_child: Option<std::process::Child> = None;
+            {
+                let title_script_candidates = [
                     app.handle()
                         .path()
                         .resource_dir()
                         .ok()
-                        .map(|dir| dir.join("resources").join("agent-bridge.bundle.mjs")),
+                        .map(|dir| dir.join("resources").join("title-server.bundle.mjs")),
                     Some(
                         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                             .join("resources")
-                            .join("agent-bridge.bundle.mjs"),
+                            .join("title-server.bundle.mjs"),
                     ),
                 ];
-                candidates.into_iter().flatten().find(|p| p.exists()).map(|p| {
-                    eprintln!("[setup] Agent bridge script found at {:?}", p);
-                    p.to_string_lossy().to_string()
-                })
-            };
-            if agent_script_path.is_none() {
-                eprintln!("[setup] Agent bridge script not found. Run `pnpm build:agent` to build it.");
+                if let Some(title_script) = title_script_candidates.into_iter().flatten().find(|p| p.exists()) {
+                    eprintln!("[setup] Title server script found at {:?}", title_script);
+                    if let Some(node_bin) = resolve_bin("node") {
+                        let claude_cli = resolve_bin("claude");
+                        let title_config = serde_json::json!({
+                            "claudeCliPath": claude_cli,
+                        });
+                        match std::process::Command::new(&node_bin)
+                            .arg(title_script.to_string_lossy().as_ref())
+                            .arg(title_config.to_string())
+                            .env("PATH", shell_path())
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::inherit())
+                            .spawn()
+                        {
+                            Ok(mut child) => {
+                                // Read the port from stdout
+                                if let Some(ref mut stdout) = child.stdout {
+                                    use std::io::BufRead;
+                                    let mut reader = std::io::BufReader::new(stdout);
+                                    let mut line = String::new();
+                                    if reader.read_line(&mut line).is_ok() {
+                                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
+                                            if let Some(port) = parsed.get("port").and_then(|p| p.as_u64()) {
+                                                title_server_port.store(port as u16, std::sync::atomic::Ordering::Relaxed);
+                                                eprintln!("[setup] Title server started on port {}", port);
+                                            }
+                                        }
+                                    }
+                                }
+                                // Detach stdout so it doesn't block
+                                child.stdout.take();
+                                title_server_child = Some(child);
+                            }
+                            Err(e) => {
+                                eprintln!("[setup] Failed to spawn title server: {}", e);
+                            }
+                        }
+                    } else {
+                        eprintln!("[setup] Cannot start title server: node binary not found");
+                    }
+                } else {
+                    eprintln!("[setup] Title server script not found. Run `pnpm build:title-server` to build it.");
+                }
             }
 
             app.manage(AppState {
@@ -3007,7 +3214,10 @@ pub fn run() {
                 file_watcher: Mutex::new(watcher),
                 _signal_watcher: signal_watcher,
                 mcp_script_path,
-                agent_script_path,
+                agent_script_paths,
+                title_server_port,
+                _title_server_child: Mutex::new(title_server_child),
+                file_list_cache: Mutex::new(FileListCache { entries: HashMap::new() }),
             });
             Ok(())
         })
@@ -3050,6 +3260,7 @@ pub fn run() {
             write_file,
             resolve_path,
             list_files,
+            search_project_files,
             get_pull_requests,
             checkout_pr,
             checkout_pr_worktree,

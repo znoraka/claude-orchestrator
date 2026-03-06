@@ -17,7 +17,7 @@ import { useConversationTitles } from "../hooks/useConversationTitles";
 import { useSessionUsage } from "../hooks/useSessionUsage";
 import { useBackgroundNotifications } from "../hooks/useBackgroundNotifications";
 import { useToast } from "../components/Toast";
-import { jsonlDirectory, type Session, type SessionUsage, type Workspace } from "../types";
+import { jsonlDirectory, type AgentProvider, type Session, type SessionUsage, type Workspace } from "../types";
 import { deriveWorkspaces, workspaceForSession, normalizeDir, repoRootDir } from "../utils/workspaces";
 
 const MAX_RUNNING_SESSIONS = 8;
@@ -81,7 +81,8 @@ interface SessionContextValue {
     directory: string,
     dangerouslySkipPermissions?: boolean,
     extraSystemPrompt?: string,
-    pendingPrompt?: string
+    pendingPrompt?: string,
+    provider?: AgentProvider
   ) => Promise<string>;
   createWorktree: (repoDir: string, branchName: string, worktreeName?: string) => Promise<string>;
   removeWorktree: (path: string) => Promise<void>;
@@ -93,6 +94,7 @@ interface SessionContextValue {
   updateClaudeSessionId: (id: string, claudeSessionId: string) => void;
   setAgentBusy: (sessionId: string, isBusy: boolean) => void;
   setSessionDraft: (sessionId: string, hasDraft: boolean) => void;
+  setSessionQuestion: (sessionId: string, hasQuestion: boolean) => void;
   unreadSessions: Set<string>;
 }
 
@@ -139,6 +141,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             createdAt: s.createdAt,
             lastActiveAt: s.lastActiveAt,
             directory: normalizeDir(s.directory),
+            provider: ((s as Record<string, unknown>).provider as Session["provider"]) || "claude-code",
             homeDirectory: s.homeDirectory ? normalizeDir(s.homeDirectory) : undefined,
             claudeSessionId: s.claudeSessionId,
             dangerouslySkipPermissions: s.dangerouslySkipPermissions,
@@ -168,6 +171,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       createdAt: s.createdAt,
       lastActiveAt: s.lastActiveAt,
       directory: s.directory,
+      provider: s.provider || "claude-code",
       homeDirectory: s.homeDirectory,
       claudeSessionId: s.claudeSessionId,
       dangerouslySkipPermissions: s.dangerouslySkipPermissions,
@@ -198,7 +202,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const saveKey = useMemo(
     () =>
       sessions
-        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.dangerouslySkipPermissions}:${s.hasTitleBeenGenerated}`)
+        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.provider}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.dangerouslySkipPermissions}:${s.hasTitleBeenGenerated}`)
         .join("|"),
     [sessions]
   );
@@ -314,7 +318,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       directory: string,
       dangerouslySkipPermissions = false,
       extraSystemPrompt?: string,
-      pendingPrompt?: string
+      pendingPrompt?: string,
+      provider: AgentProvider = "claude-code"
     ) => {
       const dir = normalizeDir(directory);
       const id = uuidv4();
@@ -328,6 +333,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         createdAt: now,
         lastActiveAt: now,
         directory: dir,
+        provider,
         claudeSessionId,
         dangerouslySkipPermissions,
         pendingPrompt,
@@ -347,6 +353,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           claudeSessionId,
           resume: false,
           systemPrompt: extraSystemPrompt || null,
+          provider,
         });
         dispatch({ type: "UPDATE", id, patch: { status: "running" } });
         await enforceMaxSessions(id);
@@ -434,6 +441,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           claudeSessionId,
           resume: isResume,
           systemPrompt: null,
+          provider: session.provider || "claude-code",
         });
         dispatch({ type: "UPDATE", id, patch: { status: "running" } });
         await enforceMaxSessions(id);
@@ -645,6 +653,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "UPDATE", id: sessionId, patch: { hasDraft } });
   }, []);
 
+  const setSessionQuestion = useCallback((sessionId: string, hasQuestion: boolean) => {
+    dispatch({ type: "UPDATE", id: sessionId, patch: { hasQuestion } });
+  }, []);
+
   // Merge JSONL usage with agent busy state
   const sessionUsage = useMemo(() => {
     const merged = new Map<string, SessionUsage>();
@@ -727,14 +739,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // ── Dock badge: show count of sessions needing attention ─────────
   useEffect(() => {
     let count = unreadSessions.size;
-    // Also count running sessions awaiting input (not busy, not active, not already counted as unread)
+    // Also count running sessions with a pending AskUserQuestion
     for (const session of sessions) {
-      if (session.id === activeSessionId) continue; // active session doesn't need attention
+      if (session.id === activeSessionId) continue;
+      if (!session.hasQuestion) continue;
       if (session.status !== "running" && session.status !== "starting") continue;
       if (unreadSessions.has(session.id)) continue; // already counted
-      if (dismissedAwaitingRef.current.has(session.id)) continue; // user already saw it
-      const usage = sessionUsage.get(session.id);
-      if (usage && !usage.isBusy) count++;
+      if (dismissedAwaitingRef.current.has(session.id)) continue;
+      count++;
     }
     invoke("set_dock_badge", { label: count > 0 ? String(count) : null }).catch(() => {});
   }, [sessions, sessionUsage, unreadSessions, activeSessionId]);
@@ -806,6 +818,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       updateClaudeSessionId,
       setAgentBusy,
       setSessionDraft,
+      setSessionQuestion,
       unreadSessions,
     }),
     [
@@ -832,6 +845,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       updateClaudeSessionId,
       setAgentBusy,
       setSessionDraft,
+      setSessionQuestion,
       unreadSessions,
     ]
   );

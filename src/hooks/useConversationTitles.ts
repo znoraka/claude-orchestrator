@@ -8,9 +8,9 @@ interface TitleState {
 }
 
 /**
- * Generates a one-time AI title for sessions via `claude -p --model haiku`.
- * Waits for the first user+assistant exchange, then generates a 3-6 word title.
- * Uses file system events (notify crate) instead of polling timers.
+ * Generates a one-time AI title for sessions using Haiku.
+ * Triggers immediately on the first user message (4-5 word title).
+ * Once generated, the title is never changed.
  */
 export function useConversationTitles(
   sessions: Session[],
@@ -34,7 +34,7 @@ export function useConversationTitles(
   }, [sessions]);
 
   // Stable key: only changes when the set of running sessions changes (not on activeTime/name updates)
-  const runningKey = sessions.filter((s) => s.status === "running").map((s) => s.id).join(",");
+  const runningKey = sessions.filter((s) => s.status === "running").map((s) => `${s.id}:${s.claudeSessionId ?? ""}`).join(",");
   const runningSessions = useMemo(
     () => sessions.filter((s) => s.claudeSessionId && s.directory && s.status === "running"),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -68,7 +68,6 @@ export function useConversationTitles(
       invoke<string | null>("generate_smart_title", {
         claudeSessionId: session.claudeSessionId,
         directory: jsonlDirectory(session),
-        includeRecent: false,
       })
         .then((title) => {
           smartPendingRef.current.delete(session.id);

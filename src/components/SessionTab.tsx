@@ -107,7 +107,7 @@ export default memo(function SessionTab({
 
   const isRunning = session.status === "running" || session.status === "starting";
   const isBusy = usage?.isBusy && isRunning;
-  const isAwaitingInput = isRunning && !isBusy && !isActive && unread;
+  const hasQuestion = session.hasQuestion && isRunning && !isBusy; // AskUserQuestion pending
   const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
   const hasDraft = session.hasDraft && isRunning && !isBusy;
 
@@ -119,12 +119,14 @@ export default memo(function SessionTab({
         rounded-md
         ${
           isActive
-            ? "bg-[var(--accent)]/10 text-[var(--text-primary)] ring-1 ring-inset ring-[var(--accent)]/25"
+            ? hasQuestion
+              ? "bg-orange-500/10 text-[var(--text-primary)] ring-1 ring-inset ring-orange-500/40"
+              : "bg-[var(--accent)]/10 text-[var(--text-primary)] ring-1 ring-inset ring-[var(--accent)]/25"
             : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
         }
       `}
     >
-      {/* Status indicator: error > spinner (busy) > draft (pencil) > pulsing dot (awaiting input) > solid dot (unread) */}
+      {/* Status indicator: error > spinner (busy) > question (orange pulse) > draft (pencil) > solid dot (unread) */}
       <span className="shrink-0 w-3 h-3 flex items-center justify-center">
         {hasError ? (
           <svg className="w-3 h-3 text-red-400" viewBox="0 0 16 16" fill="currentColor">
@@ -132,12 +134,12 @@ export default memo(function SessionTab({
           </svg>
         ) : isBusy ? (
           <span className="w-2.5 h-2.5 border-[1.5px] border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+        ) : hasQuestion ? (
+          <span className="w-2.5 h-2.5 rounded-full bg-orange-400 animate-pulse" />
         ) : hasDraft ? (
           <svg className="w-2.5 h-2.5 text-blue-400" viewBox="0 0 16 16" fill="currentColor">
             <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.25.25 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z" />
           </svg>
-        ) : isAwaitingInput ? (
-          <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
         ) : unread ? (
           <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />
         ) : null}
@@ -168,6 +170,11 @@ export default memo(function SessionTab({
             }}
           >
             {session.name}
+            {session.provider && session.provider !== "claude-code" && (
+              <span className="ml-1.5 text-[9px] px-1 py-px rounded bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] uppercase tracking-wider font-semibold align-middle">
+                {session.provider === "opencode" ? "OC" : session.provider}
+              </span>
+            )}
           </span>
         )}
         {!hideDirectory && session.directory && (() => {

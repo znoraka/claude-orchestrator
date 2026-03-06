@@ -36,7 +36,9 @@
     ],
     "resources": [
       "resources/mcp-server.bundle.mjs",
-      "resources/agent-bridge.bundle.mjs"
+      "resources/agent-bridge.bundle.mjs",
+      "resources/agent-bridge-opencode.bundle.mjs",
+      "resources/title-server.bundle.mjs"
     ]
   }
 }

@@ -1,3 +1,44 @@
+export type AgentProvider = "claude-code" | "opencode";
+
+export interface ModelOption {
+  id: string;
+  name: string;
+  desc: string;
+}
+
+export const AGENT_PROVIDERS: { id: AgentProvider; label: string; models: ModelOption[]; defaultModel: string }[] = [
+  {
+    id: "claude-code",
+    label: "Claude Code",
+    defaultModel: "claude-opus-4-6",
+    models: [
+      { id: "claude-opus-4-6", name: "Opus 4.6", desc: "Most capable for complex work" },
+      { id: "claude-sonnet-4-6", name: "Sonnet 4.6", desc: "Best for everyday tasks" },
+      { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5", desc: "Fastest for quick answers" },
+    ],
+  },
+  {
+    id: "opencode",
+    label: "Open Code",
+    defaultModel: "anthropic/claude-sonnet-4-6",
+    models: [
+      { id: "anthropic/claude-opus-4-6", name: "Opus 4.6", desc: "Anthropic — most capable" },
+      { id: "anthropic/claude-sonnet-4-6", name: "Sonnet 4.6", desc: "Anthropic — everyday tasks" },
+      { id: "openai/o3", name: "o3", desc: "OpenAI — deep reasoning" },
+      { id: "openai/gpt-4.1", name: "GPT-4.1", desc: "OpenAI — fast and capable" },
+      { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro", desc: "Google — multimodal" },
+    ],
+  },
+];
+
+export function modelsForProvider(provider: AgentProvider): ModelOption[] {
+  return AGENT_PROVIDERS.find((p) => p.id === provider)?.models ?? [];
+}
+
+export function defaultModelForProvider(provider: AgentProvider): string {
+  return AGENT_PROVIDERS.find((p) => p.id === provider)?.defaultModel ?? "";
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -5,6 +46,7 @@ export interface Session {
   createdAt: number;
   lastActiveAt: number;
   directory: string;
+  provider: AgentProvider;
   homeDirectory?: string; // original directory before switching to a worktree
   claudeSessionId?: string;
   dangerouslySkipPermissions?: boolean;
@@ -13,6 +55,7 @@ export interface Session {
   pendingPrompt?: string; // auto-sent on bridge_ready (e.g. PR review)
   exitCode?: number; // last process exit code (non-zero = error)
   hasDraft?: boolean; // true when user has typed text in the input but not sent it
+  hasQuestion?: boolean; // true when the agent called AskUserQuestion and is waiting for an answer
 }
 
 /** The directory where the session's JSONL was created (homeDirectory if the

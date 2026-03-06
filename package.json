@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && pnpm build:mcp && pnpm build:agent",
+    "build": "tsc && vite build && pnpm build:mcp && pnpm build:agent && pnpm build:agent-opencode && pnpm build:title-server",
     "build:mcp": "esbuild src-tauri/resources/mcp-server.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/mcp-server.bundle.mjs",
     "build:agent": "esbuild src-tauri/resources/agent-bridge.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/agent-bridge.bundle.mjs",
+    "build:agent-opencode": "esbuild src-tauri/resources/agent-bridge-opencode.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/agent-bridge-opencode.bundle.mjs",
+    "build:title-server": "esbuild src-tauri/resources/title-server.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/title-server.bundle.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -47,7 +49,9 @@
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@lezer/highlight": "^1.2.3",
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "@opencode-ai/sdk": "^1.2.18",
     "@tailwindcss/vite": "^4.1.0",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
