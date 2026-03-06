@@ -18,6 +18,12 @@ export const AGENT_PROVIDERS: { id: AgentProvider; label: string; models: ModelO
       { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5", desc: "Fastest for quick answers" },
     ],
   },
+  {
+    id: "opencode",
+    label: "Open Code",
+    defaultModel: "",
+    models: [], // populated dynamically via fetch_opencode_models
+  },
 ];
 
 export function modelsForProvider(provider: AgentProvider): ModelOption[] {
