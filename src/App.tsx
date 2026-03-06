@@ -814,17 +814,17 @@ export default function App() {
               )}
               </div>
 
-              {/* Context usage bar — below input */}
-              {activeUsage && activeUsage.contextTokens > 0 && activePanel === null && (
+              {/* Context usage bar — below input (always rendered to avoid layout shift) */}
+              {activePanel === null && (
                 <div
                   className="h-[2px] w-full shrink-0"
-                  title={`Context: ${activeUsage.contextTokens.toLocaleString()} / 200,000 tokens\nInput: ${activeUsage.inputTokens.toLocaleString()} | Output: ${activeUsage.outputTokens.toLocaleString()} | Cache read: ${activeUsage.cacheReadInputTokens.toLocaleString()} | Cache write: ${activeUsage.cacheCreationInputTokens.toLocaleString()}`}
+                  title={activeUsage && activeUsage.contextTokens > 0 ? `Context: ${activeUsage.contextTokens.toLocaleString()} / 200,000 tokens\nInput: ${activeUsage.inputTokens.toLocaleString()} | Output: ${activeUsage.outputTokens.toLocaleString()} | Cache read: ${activeUsage.cacheReadInputTokens.toLocaleString()} | Cache write: ${activeUsage.cacheCreationInputTokens.toLocaleString()}` : undefined}
                 >
                   <div
                     className="h-full transition-all duration-500"
                     style={{
-                      width: `${Math.min(100, Math.round((activeUsage.contextTokens / 200_000) * 100))}%`,
-                      backgroundColor: activeUsage.contextTokens / 200_000 > 0.8 ? '#d97706' : '#d9770640',
+                      width: activeUsage && activeUsage.contextTokens > 0 ? `${Math.min(100, Math.round((activeUsage.contextTokens / 200_000) * 100))}%` : '0%',
+                      backgroundColor: activeUsage && activeUsage.contextTokens / 200_000 > 0.8 ? '#d97706' : '#d9770640',
                     }}
                   />
                 </div>
