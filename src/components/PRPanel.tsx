@@ -324,13 +324,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
     }
   }, [directory]);
 
-  // Reset fetch state when directory changes
   const hasFetched = useRef(false);
-  const lastDirectory = useRef(directory);
-  if (lastDirectory.current !== directory) {
-    lastDirectory.current = directory;
-    hasFetched.current = false;
-  }
 
   useEffect(() => {
     if (isActive && !hasFetched.current) {

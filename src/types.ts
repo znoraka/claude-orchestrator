@@ -4,6 +4,7 @@ export interface ModelOption {
   id: string;
   name: string;
   desc: string;
+  free?: boolean;
 }
 
 export const AGENT_PROVIDERS: { id: AgentProvider; label: string; models: ModelOption[]; defaultModel: string }[] = [
@@ -20,14 +21,8 @@ export const AGENT_PROVIDERS: { id: AgentProvider; label: string; models: ModelO
   {
     id: "opencode",
     label: "Open Code",
-    defaultModel: "anthropic/claude-sonnet-4-6",
-    models: [
-      { id: "anthropic/claude-opus-4-6", name: "Opus 4.6", desc: "Anthropic — most capable" },
-      { id: "anthropic/claude-sonnet-4-6", name: "Sonnet 4.6", desc: "Anthropic — everyday tasks" },
-      { id: "openai/o3", name: "o3", desc: "OpenAI — deep reasoning" },
-      { id: "openai/gpt-4.1", name: "GPT-4.1", desc: "OpenAI — fast and capable" },
-      { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro", desc: "Google — multimodal" },
-    ],
+    defaultModel: "",
+    models: [], // populated dynamically via fetch_opencode_models
   },
 ];
 
@@ -47,6 +42,7 @@ export interface Session {
   lastActiveAt: number;
   directory: string;
   provider: AgentProvider;
+  model?: string; // model ID used for this session
   homeDirectory?: string; // original directory before switching to a worktree
   claudeSessionId?: string;
   dangerouslySkipPermissions?: boolean;

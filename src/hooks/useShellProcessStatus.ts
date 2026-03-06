@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useAppVisible } from "./useAppVisible";
 
 /**
  * Polls shell PTY sessions to detect running child processes.
  * Returns a Map of directory path → number of shells with active processes.
+ * Pauses polling when the app is not visible.
  */
 export function useShellProcessStatus(
   shellTabs: Map<string, { id: string; num: number }[]>,
@@ -12,8 +14,10 @@ export function useShellProcessStatus(
   const [activeCounts, setActiveCounts] = useState<Map<string, number>>(new Map());
   const shellTabsRef = useRef(shellTabs);
   shellTabsRef.current = shellTabs;
+  const appVisible = useAppVisible();
 
   useEffect(() => {
+    if (!appVisible) return;
     let cancelled = false;
 
     const poll = async () => {
@@ -53,7 +57,7 @@ export function useShellProcessStatus(
       cancelled = true;
       clearInterval(id);
     };
-  }, [pollInterval]);
+  }, [pollInterval, appVisible]);
 
   return activeCounts;
 }

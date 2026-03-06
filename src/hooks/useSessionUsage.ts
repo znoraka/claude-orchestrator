@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { jsonlDirectory, type Session, type SessionUsage } from "../types";
+import { useAppVisible } from "./useAppVisible";
 
 export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> {
   const [usageMap, setUsageMap] = useState<Map<string, SessionUsage>>(new Map());
   const usageMapRef = useRef(usageMap);
   usageMapRef.current = usageMap;
+  const appVisible = useAppVisible();
 
   // Stable key: only changes when running session set changes (not on activeTime/name updates)
   const runningKey = sessions.filter((s) => s.status === "running").map((s) => s.id).join(",");
@@ -74,21 +76,23 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
       }
     });
 
-    // Poll busy sessions every 2s as a fallback in case file events are missed
-    const pollInterval = setInterval(() => {
-      for (const session of eligible) {
-        const usage = usageMapRef.current.get(session.id);
-        if (usage?.isBusy) {
-          fetchUsageForSession(session);
-        }
-      }
-    }, 5000);
+    // Poll busy sessions as a fallback in case file events are missed (only when visible)
+    const pollInterval = appVisible
+      ? setInterval(() => {
+          for (const session of eligible) {
+            const usage = usageMapRef.current.get(session.id);
+            if (usage?.isBusy) {
+              fetchUsageForSession(session);
+            }
+          }
+        }, 5000)
+      : null;
 
     return () => {
       unlistenPromise.then((fn) => fn());
-      clearInterval(pollInterval);
+      if (pollInterval) clearInterval(pollInterval);
     };
-  }, [runningSessions]);
+  }, [runningSessions, appVisible]);
 
   // Stable key for stopped sessions: only re-run when session list actually changes
   const stoppedSessionKey = useMemo(

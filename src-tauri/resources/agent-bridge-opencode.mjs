@@ -6,10 +6,23 @@
  *
  * Usage: node agent-bridge-opencode.bundle.mjs '{"sessionId":"...","cwd":"..."}'
  */
-import { createOpencode } from "@opencode-ai/sdk";
+import { createOpencodeClient, createOpencodeServer } from "@opencode-ai/sdk";
 import { appendFileSync } from "fs";
+import { createServer } from "net";
 import { homedir } from "os";
 import { join } from "path";
+
+/** Find a free port by briefly binding to port 0. */
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const port = srv.address().port;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+}
 
 // Ensure ~/.opencode/bin is in PATH (macOS GUI apps don't inherit interactive shell PATH)
 const opencodebin = join(homedir(), ".opencode", "bin");
@@ -35,9 +48,47 @@ function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
+// ── List-models mode: boot, fetch models, print, exit ────────────────
+if (config.mode === "list-models") {
+  (async () => {
+    try {
+      const port = await getFreePort();
+      const server = await createOpencodeServer({ port, timeout: 30_000 });
+      const client = createOpencodeClient({ baseUrl: server.url, directory: process.cwd() });
+      const result = await client.provider.list();
+      const providers = result.data?.all || [];
+      const models = [];
+      for (const provider of providers) {
+        for (const model of Object.values(provider.models || {})) {
+          if (!model.capabilities?.toolcall) continue;
+          if (model.providerID !== "opencode") continue;
+          if (model.cost?.input !== 0 || model.cost?.output !== 0) continue;
+          models.push({
+            id: model.id,
+            providerID: model.providerID,
+            name: model.name || model.id,
+            free: true,
+            costIn: 0,
+            costOut: 0,
+          });
+        }
+      }
+      process.stdout.write(JSON.stringify(models) + "\n");
+      await server.kill();
+    } catch (err) {
+      log(`list-models failed: ${err.message}`);
+    }
+    process.exit(0);
+  })();
+  // Prevent the rest of the script from running synchronously
+  // (the async IIFE above will call process.exit)
+} else {
+// ── Normal session mode ──────────────────────────────────────────────
+
 // ── Boot the OpenCode server + client ────────────────────────────────
 let client;
 let server;
+let bootPromise; // resolves when boot() completes successfully
 let ocSessionId = null; // OpenCode session ID
 let currentMessageId = null; // assistant message being streamed
 
@@ -47,13 +98,23 @@ const partsById = new Map();
 async function boot() {
   log(`Booting OpenCode server (cwd=${currentCwd})`);
   try {
-    const result = await createOpencode({
-      config: {
-        directory: currentCwd,
-      },
+    const port = await getFreePort();
+    log(`Using port ${port}`);
+    // Pass model via config so OpenCode uses it (sets OPENCODE_CONFIG_CONTENT)
+    const serverConfig = {};
+    if (config.model) {
+      serverConfig.model = config.model;
+      log(`Setting OpenCode model: ${config.model}`);
+    }
+    server = await createOpencodeServer({
+      port,
+      timeout: 30_000,
+      config: serverConfig,
     });
-    client = result.client;
-    server = result.server;
+    client = createOpencodeClient({
+      baseUrl: server.url,
+      directory: currentCwd,
+    });
     log(`OpenCode server started at ${server.url}`);
   } catch (err) {
     log(`Failed to start OpenCode server: ${err.message}`);
@@ -76,6 +137,37 @@ async function boot() {
     sessionId,
     cwd: currentCwd || process.cwd(),
   });
+
+  // Fetch available models and emit to frontend
+  fetchAndEmitModels();
+}
+
+async function fetchAndEmitModels() {
+  try {
+    const result = await client.provider.list();
+    const providers = result.data?.all || [];
+    // Only include genuinely free models from the opencode provider
+    const unique = [];
+    for (const provider of providers) {
+      for (const model of Object.values(provider.models || {})) {
+        if (!model.capabilities?.toolcall) continue;
+        if (model.providerID !== "opencode") continue;
+        if (model.cost?.input !== 0 || model.cost?.output !== 0) continue;
+        unique.push({
+          id: model.id,
+          providerID: model.providerID,
+          name: model.name || model.id,
+          free: true,
+          costIn: 0,
+          costOut: 0,
+        });
+      }
+    }
+    log(`Fetched ${unique.length} models (${unique.filter((m) => m.free).length} free)`);
+    emit({ type: "available_models", models: unique });
+  } catch (err) {
+    log(`Failed to fetch models: ${err.message}`);
+  }
 }
 
 // ── Event stream → JSON-line translation ────────────────────────────
@@ -111,6 +203,21 @@ function handleEvent(event) {
       } else if (status?.type === "idle") {
         // Session finished processing
         emitQueryComplete();
+      } else if (status?.type === "retry") {
+        // OpenCode is retrying (rate limit, transient error, etc.)
+        const attempt = status.attempt || 0;
+        const retryMsg = status.message || `Retrying (attempt ${attempt})...`;
+        log(`Session retry: ${retryMsg}`);
+        emit({
+          type: "assistant",
+          message: {
+            id: `retry-${Date.now()}`,
+            role: "assistant",
+            content: [{ type: "text", text: `⏳ ${retryMsg}` }],
+            model: "",
+            stop_reason: null,
+          },
+        });
       }
       break;
     }
@@ -171,6 +278,27 @@ function handleEvent(event) {
       break;
     }
 
+    case "message.part.removed": {
+      // A part was removed — emit an empty block to clear it in the UI.
+      // The frontend's block accumulator will replace the existing block with empty content.
+      const part = props.part;
+      if (!part) break;
+      const msgId = part.messageID || currentMessageId || `msg-${Date.now()}`;
+      // Emit empty text to effectively clear the removed part
+      emit({
+        type: "assistant",
+        message: {
+          id: msgId,
+          role: "assistant",
+          content: [{ type: "text", text: "" }],
+          model: "",
+          stop_reason: null,
+        },
+      });
+      partsById.delete(part.id);
+      break;
+    }
+
     case "session.error": {
       const error = props.error;
       const msg = error?.data?.message || error?.name || "Unknown OpenCode error";
@@ -191,7 +319,39 @@ function emitPartAsAssistantMessage(part, delta) {
 
   switch (part.type) {
     case "text": {
-      blocks.push({ type: "text", text: part.text || "" });
+      const text = part.text || "";
+      // Detect QUESTIONS [...] pattern and convert to AskUserQuestion tool call.
+      // Handles: "QUESTIONS [...]", "questions [...]", "Questions: [...]"
+      const questionsMatch = text.match(/\bquestions\s*:?\s*(\[[\s\S]*\])/i);
+      if (questionsMatch) {
+        try {
+          const parsed = JSON.parse(questionsMatch[1]);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const toolId = `ask-${part.id || Date.now()}`;
+            // Map to AskUserQuestion schema: { questions: AskQuestion[] }
+            const questions = parsed.map((q) => ({
+              question: q.question || q.label || "",
+              header: q.header || undefined,
+              options: Array.isArray(q.options) ? q.options : undefined,
+            }));
+            blocks.push({
+              type: "tool_use",
+              id: toolId,
+              name: "AskUserQuestion",
+              input: { questions },
+            });
+            // Emit any text before the QUESTIONS block
+            const before = text.slice(0, text.indexOf(questionsMatch[0])).trim();
+            if (before) {
+              blocks.unshift({ type: "text", text: before });
+            }
+            break;
+          }
+        } catch {
+          // JSON parse failed — fall through to plain text
+        }
+      }
+      blocks.push({ type: "text", text });
       break;
     }
     case "reasoning": {
@@ -225,6 +385,47 @@ function emitPartAsAssistantMessage(part, delta) {
       }
       break;
     }
+    case "subtask": {
+      // OpenCode's agent delegation — render as a tool call so the UI shows it
+      const toolId = `subtask-${part.id || Date.now()}`;
+      blocks.push({
+        type: "tool_use",
+        id: toolId,
+        name: "Agent",
+        input: {
+          prompt: part.prompt || part.description || "Subtask",
+          description: part.description || part.prompt || "Running subtask",
+        },
+      });
+      // If the subtask has completed, emit a tool_result
+      if (part.state?.status === "completed") {
+        blocks.push({
+          type: "tool_result",
+          tool_use_id: toolId,
+          content: part.state.output || "Subtask completed",
+          is_error: false,
+        });
+      } else if (part.state?.status === "error") {
+        blocks.push({
+          type: "tool_result",
+          tool_use_id: toolId,
+          content: part.state.error || "Subtask failed",
+          is_error: true,
+        });
+      }
+      break;
+    }
+    case "file": {
+      // File attachment — render as text with file info
+      const filename = part.filename || part.url || "file";
+      const mime = part.mime || "";
+      blocks.push({
+        type: "text",
+        text: `📎 File: ${filename}${mime ? ` (${mime})` : ""}`,
+      });
+      break;
+    }
+    case "agent":
     case "step-start":
     case "step-finish":
     case "snapshot":
@@ -310,6 +511,18 @@ async function handleStdinMessage(msg) {
     return;
   }
 
+  if (msg.type === "ask_user_answer") {
+    // User answered an AskUserQuestion — send the answer as a follow-up prompt
+    const answer = msg.answer || {};
+    const answerText = Object.entries(answer)
+      .map(([q, a]) => `${q}: ${a}`)
+      .join("\n");
+    if (answerText) {
+      await sendPrompt(answerText);
+    }
+    return;
+  }
+
   if (msg.type === "user") {
     await sendPrompt(msg.message);
     return;
@@ -340,11 +553,20 @@ async function sendPrompt(userMessage) {
   }
 
   try {
+    // Wait for boot to complete before using client
+    await bootPromise;
+
     // Create session on first prompt
     if (!ocSessionId) {
       const session = await client.session.create({
         body: { title: text.substring(0, 100) },
       });
+      if (session.error || !session.data) {
+        const errMsg = session.error?.message || session.error || "Unknown error creating session";
+        log(`Failed to create session: ${JSON.stringify(errMsg)}`);
+        emit({ type: "error", error: `Failed to create OpenCode session: ${errMsg}` });
+        return;
+      }
       ocSessionId = session.data.id;
       log(`OpenCode session created: ${ocSessionId}`);
       emit({
@@ -358,6 +580,24 @@ async function sendPrompt(userMessage) {
     const promptBody = {
       parts: [{ type: "text", text }],
     };
+
+    // Include model selection if set
+    if (config.model) {
+      // config.model is "providerID/modelID" or just "modelID"
+      const slash = config.model.indexOf("/");
+      if (slash > 0) {
+        promptBody.model = {
+          providerID: config.model.substring(0, slash),
+          modelID: config.model.substring(slash + 1),
+        };
+      } else {
+        promptBody.model = {
+          providerID: config.model,
+          modelID: config.model,
+        };
+      }
+      log(`Using model: ${JSON.stringify(promptBody.model)}`);
+    }
 
     // Send prompt (async — results come via SSE events)
     await client.session.promptAsync({
@@ -373,4 +613,6 @@ async function sendPrompt(userMessage) {
 }
 
 // ── Start ───────────────────────────────────────────────────────────
-boot();
+bootPromise = boot();
+
+} // end of normal session mode (else branch)

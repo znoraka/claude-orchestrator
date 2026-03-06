@@ -13,7 +13,16 @@ import { repoColor } from "./components/SessionTab";
 import { repoRootDir } from "./utils/workspaces";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
-import { AGENT_PROVIDERS, defaultModelForProvider, modelsForProvider, type AgentProvider, type Session } from "./types";
+import { AGENT_PROVIDERS, defaultModelForProvider, modelsForProvider, type AgentProvider, type ModelOption, type Session } from "./types";
+
+export interface OpenCodeModel {
+  id: string;
+  providerID: string;
+  name: string;
+  free: boolean;
+  costIn: number;
+  costOut: number;
+}
 
 // Memoized wrapper to prevent all AgentChat instances from re-rendering
 // when the sessions array changes (e.g. new session added).
@@ -32,6 +41,7 @@ const SessionPanel = memo(function SessionPanel({
   currentModel,
   setChatInputHeight,
   onEditFile,
+  onAvailableModels,
 }: {
   session: Session;
   isActive: boolean;
@@ -47,6 +57,7 @@ const SessionPanel = memo(function SessionPanel({
   currentModel: string;
   setChatInputHeight: ((h: number) => void) | undefined;
   onEditFile?: (filePath: string, line?: number) => void;
+  onAvailableModels?: (models: OpenCodeModel[]) => void;
 }) {
   const isVisible = isActive && activePanel === null;
 
@@ -84,6 +95,7 @@ const SessionPanel = memo(function SessionPanel({
           currentModel={currentModel}
           onInputHeightChange={isVisible ? setChatInputHeight : undefined}
           onEditFile={onEditFile}
+          onAvailableModels={onAvailableModels}
         />
       </ErrorBoundary>
     </div>
@@ -177,6 +189,53 @@ export default function App() {
     }
   }, [activeSessionId, sessions]);
 
+  // ── Provider availability (detect installed CLIs) ─────────────
+  const [providerAvailability, setProviderAvailability] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    invoke<Record<string, boolean>>("check_providers").then(setProviderAvailability).catch(() => {});
+  }, []);
+
+  // ── Dynamic OpenCode models (fetched at startup) ─────────────
+  const [opencodeModels, setOpencodeModels] = useState<OpenCodeModel[]>([]);
+  const [modelSearch, setModelSearch] = useState("");
+  const modelSearchRef = useRef<HTMLInputElement>(null);
+
+  // Fetch opencode models once at startup (only if opencode is available)
+  useEffect(() => {
+    invoke<string>("fetch_opencode_models").then((json) => {
+      try {
+        const models: OpenCodeModel[] = JSON.parse(json);
+        if (models.length > 0) {
+          setOpencodeModels(models);
+          // Default to first model if none selected yet
+          setModelByProvider((prev) => {
+            if (prev["opencode"]) return prev;
+            const modelKey = `${models[0].providerID}/${models[0].id}`;
+            const next = { ...prev, opencode: modelKey };
+            localStorage.setItem("claude-orchestrator-models", JSON.stringify(next));
+            return next;
+          });
+        }
+      } catch {}
+    }).catch((err) => console.warn("Failed to fetch opencode models:", err));
+  }, []);
+
+  const handleAvailableModels = useCallback((models: OpenCodeModel[]) => {
+    setOpencodeModels((prev) => {
+      if (prev.length === models.length && prev[0]?.id === models[0]?.id) return prev;
+      return models;
+    });
+    setModelByProvider((prev) => {
+      if (prev["opencode"]) return prev;
+      const freeModel = models.find((m) => m.free);
+      if (!freeModel) return prev;
+      const modelKey = `${freeModel.providerID}/${freeModel.id}`;
+      const next = { ...prev, opencode: modelKey };
+      localStorage.setItem("claude-orchestrator-models", JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
   // Close model dropdown on outside click
   useEffect(() => {
     if (!showModelDropdown) return;
@@ -195,8 +254,23 @@ export default function App() {
   );
 
   const activeProvider: AgentProvider = activeSession?.provider || "claude-code";
-  const activeModels = modelsForProvider(activeProvider);
-  const selectedModel = modelByProvider[activeProvider] || defaultModelForProvider(activeProvider);
+  const activeModels: ModelOption[] = useMemo(() => {
+    if (activeProvider === "opencode" && opencodeModels.length > 0) {
+      // Convert dynamic models to ModelOption format, free first
+      const free = opencodeModels.filter((m) => m.free);
+      const paid = opencodeModels.filter((m) => !m.free);
+      return [
+        ...free.map((m) => ({ id: `${m.providerID}/${m.id}`, name: m.name, desc: "Free", free: true as const })),
+        ...paid.map((m) => ({ id: `${m.providerID}/${m.id}`, name: m.name, desc: `$${m.costIn}/${m.costOut} per MTok`, free: false as const })),
+      ];
+    }
+    return modelsForProvider(activeProvider);
+  }, [activeProvider, opencodeModels]);
+  const selectedModel = modelByProvider[activeProvider] || (
+    activeProvider === "opencode" && activeModels.length > 0
+      ? activeModels[0].id // first free model
+      : defaultModelForProvider(activeProvider)
+  );
 
   const panelDirectory = activeSession?.directory ?? "~";
   const activeUsage = activeSessionId ? sessionUsage.get(activeSessionId) : undefined;
@@ -368,6 +442,15 @@ export default function App() {
     return paths;
   }, [workspaces, gitWorktreesByRepo, extraRecentDirs]);
 
+  // Auto-select first available provider when dialog opens
+  useEffect(() => {
+    if (!showDirDialog || Object.keys(providerAvailability).length === 0) return;
+    if (providerAvailability[selectedProvider] === false) {
+      const available = AGENT_PROVIDERS.find((p) => providerAvailability[p.id] !== false);
+      if (available) setSelectedProvider(available.id);
+    }
+  }, [showDirDialog, providerAvailability]);
+
   // Scroll selected item into view when navigating with Cmd+N/P
   useEffect(() => {
     if (!preselectedDir || !dirListRef.current) return;
@@ -377,7 +460,7 @@ export default function App() {
 
   const handleDirConfirm = async () => {
     const dir = dirInput.trim();
-    if (!dir || creating) return;
+    if (!dir || creating || providerAvailability[selectedProvider] === false) return;
     setCreating(true);
     const rootDir = repoRootDir(dir);
     localStorage.setItem("claude-orchestrator-last-dir", rootDir);
@@ -385,7 +468,7 @@ export default function App() {
     saveRecentDir(rootDir);
     setShowDirDialog(false);
     try {
-      await createSession(undefined, dir, skipPermissions, undefined, undefined, selectedProvider);
+      await createSession(undefined, dir, skipPermissions, undefined, undefined, selectedProvider, selectedModel);
       setActivePanel(null);
     } finally {
       setCreating(false);
@@ -429,7 +512,7 @@ export default function App() {
   };
 
   const quickCreate = async (dir: string) => {
-    if (creating) return;
+    if (creating || providerAvailability[selectedProvider] === false) return;
     setCreating(true);
     // Save the repo root as last-dir so worktrees are always listed from the main repo
     const rootDir = repoRootDir(dir);
@@ -438,7 +521,7 @@ export default function App() {
     saveRecentDir(rootDir);
     setShowDirDialog(false);
     try {
-      await createSession(undefined, dir, skipPermissions, undefined, undefined, selectedProvider);
+      await createSession(undefined, dir, skipPermissions, undefined, undefined, selectedProvider, selectedModel);
       setActivePanel(null);
     } finally {
       setCreating(false);
@@ -465,6 +548,7 @@ export default function App() {
         onDeleteSession={handleDeleteSession}
         shellProcessDirs={shellProcessDirs}
         unreadSessions={unreadSessions}
+        worktreeBranches={dialogBranches}
       />
 
       {/* Main area */}
@@ -539,6 +623,7 @@ export default function App() {
                   createSession={createSession}
                   currentModel={selectedModel}
                   setChatInputHeight={session.id === activeSessionId ? setChatInputHeight : undefined}
+                  onAvailableModels={session.provider === "opencode" ? handleAvailableModels : undefined}
                   onEditFile={(filePath) => {
                     const dir = session.directory.endsWith("/") ? session.directory : session.directory + "/";
                     setEditorFilePath(dir + filePath);
@@ -557,6 +642,7 @@ export default function App() {
                 }}
               >
                 <GitPanel
+                  key={panelDirectory}
                   directory={panelDirectory}
                   isActive={activePanel === "git"}
                   onEditFile={(relativePath) => {
@@ -577,6 +663,7 @@ export default function App() {
                 }}
               >
                 <PRPanel
+                  key={panelDirectory}
                   directory={panelDirectory}
                   isActive={activePanel === "prs"}
                   onResetRef={prPanelResetRef}
@@ -798,7 +885,7 @@ export default function App() {
               <div className="w-5 h-px bg-[var(--border-color)] my-0.5" />
               <div className="relative" ref={modelDropdownRef}>
                 <button
-                  onClick={() => setShowModelDropdown((v) => !v)}
+                  onClick={() => { setShowModelDropdown((v) => !v); setModelSearch(""); }}
                   className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50 transition-colors"
                   title={activeModels.find((m) => m.id === selectedModel)?.name ?? "Model"}
                 >
@@ -806,34 +893,67 @@ export default function App() {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z" />
                   </svg>
                 </button>
-                {showModelDropdown && (
-                  <div className="absolute bottom-0 right-full mr-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 min-w-[180px]">
-                    {activeModels.map((model) => (
-                      <button
-                        key={model.id}
-                        className={`w-full text-left px-3 py-2 flex items-center gap-3 text-sm transition-colors ${
-                          selectedModel === model.id
-                            ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
-                            : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
-                        }`}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          handleModelChange(model.id);
-                        }}
-                      >
-                        <div className="flex-1">
-                          <div className="font-medium text-[var(--text-primary)] text-xs">{model.name}</div>
-                          <div className="text-[10px] text-[var(--text-tertiary)]">{model.desc}</div>
+                {showModelDropdown && (() => {
+                  const isLargeList = activeModels.length > 10;
+                  const q = modelSearch.toLowerCase();
+                  const filtered = q ? activeModels.filter((m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)) : activeModels;
+                  const displayModels = filtered.slice(0, 50); // cap at 50 for perf
+                  return (
+                    <div className="absolute bottom-0 right-full mr-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 min-w-[220px] max-w-[320px] flex flex-col" style={{ maxHeight: "min(420px, 80vh)" }}>
+                      {isLargeList && (
+                        <div className="px-2 pt-2 pb-1 border-b border-[var(--border-color)]">
+                          <input
+                            ref={modelSearchRef}
+                            type="text"
+                            value={modelSearch}
+                            onChange={(e) => setModelSearch(e.target.value)}
+                            placeholder="Search models…"
+                            className="w-full px-2 py-1 text-xs bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded text-[var(--text-primary)] placeholder-[var(--text-tertiary)] outline-none focus:border-[var(--accent)]"
+                            autoFocus
+                            onKeyDown={(e) => { if (e.key === "Escape") setShowModelDropdown(false); }}
+                          />
                         </div>
-                        {selectedModel === model.id && (
-                          <svg className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                          </svg>
+                      )}
+                      <div className="overflow-y-auto flex-1">
+                        {displayModels.map((model) => (
+                          <button
+                            key={model.id}
+                            className={`w-full text-left px-3 py-1.5 flex items-center gap-2 text-sm transition-colors ${
+                              selectedModel === model.id
+                                ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
+                                : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                            }`}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              handleModelChange(model.id);
+                            }}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium text-[var(--text-primary)] text-xs truncate">{model.name}</div>
+                              <div className="text-[10px] text-[var(--text-tertiary)] truncate">{model.desc}</div>
+                            </div>
+                            {"free" in model && model.free && (
+                              <span className="text-[9px] font-semibold text-green-400 bg-green-400/10 px-1.5 py-0.5 rounded shrink-0">Free</span>
+                            )}
+                            {selectedModel === model.id && (
+                              <svg className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                              </svg>
+                            )}
+                          </button>
+                        ))}
+                        {filtered.length > 50 && (
+                          <div className="px-3 py-1.5 text-[10px] text-[var(--text-tertiary)]">
+                            {filtered.length - 50} more — type to search
+                          </div>
                         )}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                        {filtered.length === 0 && (
+                          <div className="px-3 py-2 text-[10px] text-[var(--text-tertiary)]">No models found</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -941,20 +1061,36 @@ export default function App() {
             )}
 
             {/* Provider picker */}
-            <div className="px-4 pb-2 flex items-center gap-1.5">
-              {AGENT_PROVIDERS.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => setSelectedProvider(p.id)}
-                  className={`px-2.5 py-1 text-[10px] font-medium rounded-md transition-colors ${
-                    selectedProvider === p.id
-                      ? "bg-[var(--accent)] text-white"
-                      : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                  }`}
-                >
-                  {p.label}
-                </button>
-              ))}
+            <div className="px-4 pb-2 flex flex-col gap-1">
+              <div className="flex items-center gap-1.5">
+                {AGENT_PROVIDERS.map((p) => {
+                  const available = providerAvailability[p.id] !== false;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => available && setSelectedProvider(p.id)}
+                      disabled={!available}
+                      className={`px-2.5 py-1 text-[10px] font-medium rounded-md transition-colors ${
+                        !available
+                          ? "bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] opacity-50 cursor-not-allowed"
+                          : selectedProvider === p.id
+                            ? "bg-[var(--accent)] text-white"
+                            : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                      }`}
+                      title={!available ? `${p.label} CLI not found` : undefined}
+                    >
+                      {p.label}{!available && " (not installed)"}
+                    </button>
+                  );
+                })}
+              </div>
+              {providerAvailability[selectedProvider] === false && (
+                <div className="text-[10px] text-[var(--text-tertiary)] px-0.5">
+                  {selectedProvider === "claude-code"
+                    ? "Install Claude Code: npm install -g @anthropic-ai/claude-code"
+                    : "Install OpenCode: curl -fsSL https://opencode.ai/install | bash"}
+                </div>
+              )}
             </div>
 
             {/* Workspace tree + recent dirs */}

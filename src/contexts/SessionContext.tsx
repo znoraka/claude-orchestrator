@@ -82,7 +82,8 @@ interface SessionContextValue {
     dangerouslySkipPermissions?: boolean,
     extraSystemPrompt?: string,
     pendingPrompt?: string,
-    provider?: AgentProvider
+    provider?: AgentProvider,
+    model?: string
   ) => Promise<string>;
   createWorktree: (repoDir: string, branchName: string, worktreeName?: string) => Promise<string>;
   removeWorktree: (path: string) => Promise<void>;
@@ -125,6 +126,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         createdAt: number;
         lastActiveAt: number;
         directory: string;
+        provider?: string;
+        model?: string;
         homeDirectory?: string;
         claudeSessionId?: string;
         dangerouslySkipPermissions?: boolean;
@@ -141,7 +144,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             createdAt: s.createdAt,
             lastActiveAt: s.lastActiveAt,
             directory: normalizeDir(s.directory),
-            provider: ((s as Record<string, unknown>).provider as Session["provider"]) || "claude-code",
+            provider: (s.provider as Session["provider"]) || "claude-code",
+            model: s.model,
             homeDirectory: s.homeDirectory ? normalizeDir(s.homeDirectory) : undefined,
             claudeSessionId: s.claudeSessionId,
             dangerouslySkipPermissions: s.dangerouslySkipPermissions,
@@ -172,6 +176,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       lastActiveAt: s.lastActiveAt,
       directory: s.directory,
       provider: s.provider || "claude-code",
+      model: s.model,
       homeDirectory: s.homeDirectory,
       claudeSessionId: s.claudeSessionId,
       dangerouslySkipPermissions: s.dangerouslySkipPermissions,
@@ -202,7 +207,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const saveKey = useMemo(
     () =>
       sessions
-        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.provider}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.dangerouslySkipPermissions}:${s.hasTitleBeenGenerated}`)
+        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.provider}:${s.model}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.dangerouslySkipPermissions}:${s.hasTitleBeenGenerated}`)
         .join("|"),
     [sessions]
   );
@@ -319,7 +324,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       dangerouslySkipPermissions = false,
       extraSystemPrompt?: string,
       pendingPrompt?: string,
-      provider: AgentProvider = "claude-code"
+      provider: AgentProvider = "claude-code",
+      model?: string
     ) => {
       const dir = normalizeDir(directory);
       const id = uuidv4();
@@ -334,6 +340,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         lastActiveAt: now,
         directory: dir,
         provider,
+        model: model || undefined,
         claudeSessionId,
         dangerouslySkipPermissions,
         pendingPrompt,
@@ -354,6 +361,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           resume: false,
           systemPrompt: extraSystemPrompt || null,
           provider,
+          model: model || null,
         });
         dispatch({ type: "UPDATE", id, patch: { status: "running" } });
         await enforceMaxSessions(id);
@@ -442,6 +450,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           resume: isResume,
           systemPrompt: null,
           provider: session.provider || "claude-code",
+          model: session.model || null,
         });
         dispatch({ type: "UPDATE", id, patch: { status: "running" } });
         await enforceMaxSessions(id);

@@ -27,6 +27,7 @@ interface AgentChatProps {
   currentModel?: string;
   onInputHeightChange?: (height: number) => void;
   onEditFile?: (filePath: string, line?: number) => void;
+  onAvailableModels?: (models: Array<{ id: string; providerID: string; name: string; free: boolean; costIn: number; costOut: number }>) => void;
 }
 
 /** @deprecated Use modelsForProvider(provider) from types.ts instead */
@@ -206,6 +207,7 @@ const AgentChat = memo(function AgentChat({
   onFork,
   currentModel = "claude-opus-4-6",
   onInputHeightChange,
+  onAvailableModels,
 }: AgentChatProps) {
   const isReadOnly = session?.status === "stopped";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -290,20 +292,15 @@ const AgentChat = memo(function AgentChat({
     setFileReferences((prev) => prev.filter((r) => r.filePath !== filePath));
   }, []);
 
-  // ── Current git branch ────────────────────────────────────────────
+  // ── Current git branch (fetch once, no polling — useWorktreeBranches handles periodic updates) ──
   const [currentBranch, setCurrentBranch] = useState("");
   useEffect(() => {
     if (!sessionDir) return;
     let cancelled = false;
-    const fetchBranch = async () => {
-      try {
-        const result = await invoke<{ branch: string; files: unknown[]; is_git_repo: boolean }>("get_git_status", { directory: sessionDir });
-        if (!cancelled && result.is_git_repo) setCurrentBranch(result.branch);
-      } catch {}
-    };
-    fetchBranch();
-    const interval = setInterval(fetchBranch, 10000);
-    return () => { cancelled = true; clearInterval(interval); };
+    invoke<{ branch: string; files: unknown[]; is_git_repo: boolean }>("get_git_status", { directory: sessionDir })
+      .then((result) => { if (!cancelled && result.is_git_repo) setCurrentBranch(result.branch); })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, [sessionDir]);
 
   // ── @ file autocomplete ────────────────────────────────────────────
@@ -397,6 +394,8 @@ const AgentChat = memo(function AgentChat({
   onResumeRef.current = onResume;
   const onForkRef = useRef(onFork);
   onForkRef.current = onFork;
+  const onAvailableModelsRef = useRef(onAvailableModels);
+  onAvailableModelsRef.current = onAvailableModels;
   const currentModelRef = useRef(currentModel);
   currentModelRef.current = currentModel;
 
@@ -620,6 +619,12 @@ const AgentChat = memo(function AgentChat({
   useEffect(() => {
     mountedRef.current = true;
 
+    // Defer loading until the session is actually visible to avoid
+    // loading history for all sessions on app start.
+    if (!isActive && lastLoadedClaudeSessionIdRef.current === null) {
+      return;
+    }
+
     // Skip reload if we already loaded for this exact claudeSessionId.
     // We must reload when claudeSessionId changes because the JSONL path depends on it.
     const currentClaudeSessionId = session?.claudeSessionId ?? null;
@@ -700,7 +705,7 @@ const AgentChat = memo(function AgentChat({
     return () => {
       mountedRef.current = false;
     };
-  }, [sessionId, session?.claudeSessionId]);
+  }, [sessionId, session?.claudeSessionId, isActive]);
 
   // ── Process SDK messages ─────────────────────────────────────────
 
@@ -714,6 +719,12 @@ const AgentChat = memo(function AgentChat({
       if (claudeSessionId && onClaudeSessionIdRef.current) {
         onClaudeSessionIdRef.current(claudeSessionId);
       }
+      return;
+    }
+
+    if (msgType === "available_models") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      onAvailableModelsRef.current?.(msg.models as any);
       return;
     }
 
@@ -2227,9 +2238,10 @@ function EditDiffView({ filePath, oldStr, newStr }: {
   );
 }
 
-function WriteContentView({ filePath, content }: {
+function WriteContentView({ filePath, content, startLine }: {
   filePath: string;
   content: string;
+  startLine?: number;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const lines = useMemo(() => content.split("\n"), [content]);
@@ -2238,6 +2250,7 @@ function WriteContentView({ filePath, content }: {
   const truncated = lines.length > maxLines;
   const displayLines = truncated ? lines.slice(0, maxLines) : lines;
   const displayTokens = truncated ? tokens?.slice(0, maxLines) : tokens;
+  const lineOffset = (startLine ?? 1) - 1;
 
   return (
     <div ref={containerRef} className="font-mono text-[11px] leading-[18px] overflow-x-auto">
@@ -2246,7 +2259,7 @@ function WriteContentView({ filePath, content }: {
           {displayLines.map((line, i) => (
             <tr key={i}>
               <td className="text-[var(--text-tertiary)] w-8 text-right select-none pr-2 align-top opacity-50">
-                {i + 1}
+                {i + 1 + lineOffset}
               </td>
               <td className="whitespace-pre">
                 {displayTokens?.[i] ? (
@@ -2675,6 +2688,22 @@ function ConsolidatedToolGroup({
     return typeof content === "string" ? content : JSON.stringify(content, null, 2);
   }, [group.toolResult]);
 
+  // For Read tool: strip `cat -n` line number prefixes and extract starting line
+  const readContent = useMemo(() => {
+    if (toolName !== "Read" || !resultContent) return null;
+    const lines = resultContent.split("\n");
+    let firstLineNum = 1;
+    const stripped = lines.map((line, i) => {
+      const m = line.match(/^\s*(\d+)\t(.*)$/);
+      if (m) {
+        if (i === 0) firstLineNum = parseInt(m[1], 10);
+        return m[2];
+      }
+      return line;
+    });
+    return { content: stripped.join("\n"), startLine: firstLineNum };
+  }, [toolName, resultContent]);
+
   return (
     <div className="border border-[var(--border-color)] rounded-lg overflow-hidden">
       <button
@@ -2720,23 +2749,32 @@ function ConsolidatedToolGroup({
                 content={input.content as string}
               />
             </div>
+          ) : toolName === "Read" && readContent && input.file_path ? (
+            <div className="py-1">
+              <WriteContentView
+                filePath={input.file_path as string}
+                content={readContent.content}
+                startLine={readContent.startLine}
+              />
+            </div>
           ) : toolName === "TodoWrite" && input.todos ? (
             <TodoListView todos={input.todos as TodoItem[]} />
+          ) : resultContent ? (
+            <>
+              <ToolInputView toolName={toolName} input={input} />
+              <div
+                className={`mx-3 mb-2 px-3 py-2 rounded text-xs font-mono whitespace-pre-wrap break-words max-h-40 overflow-y-auto ${
+                  isError
+                    ? "bg-red-500/10 text-red-400 border border-red-500/20"
+                    : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
+                }`}
+                onClick={handleLinkClick}
+              >
+                <LinkifiedText text={resultContent} />
+              </div>
+            </>
           ) : (
             <ToolInputView toolName={toolName} input={input} />
-          )}
-          {/* Inline result */}
-          {resultContent && (
-            <div
-              className={`mx-3 mb-2 px-3 py-2 rounded text-xs font-mono whitespace-pre-wrap break-words max-h-40 overflow-y-auto ${
-                isError
-                  ? "bg-red-500/10 text-red-400 border border-red-500/20"
-                  : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
-              }`}
-              onClick={handleLinkClick}
-            >
-              <LinkifiedText text={resultContent} />
-            </div>
           )}
         </div>
       )}

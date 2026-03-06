@@ -1564,8 +1564,8 @@ function createOpencodeClient(config2) {
       "x-opencode-directory": encodeURIComponent(config2.directory)
     };
   }
-  const client3 = createClient(config2);
-  return new OpencodeClient({ client: client3 });
+  const client2 = createClient(config2);
+  return new OpencodeClient({ client: client2 });
 }
 
 // node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/server.js
@@ -1637,24 +1637,21 @@ Server output: ${output}`;
   };
 }
 
-// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/index.js
-async function createOpencode(options) {
-  const server2 = await createOpencodeServer({
-    ...options
-  });
-  const client3 = createOpencodeClient({
-    baseUrl: server2.url
-  });
-  return {
-    client: client3,
-    server: server2
-  };
-}
-
 // src-tauri/resources/agent-bridge-opencode.mjs
 import { appendFileSync } from "fs";
+import { createServer } from "net";
 import { homedir } from "os";
 import { join } from "path";
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const port = srv.address().port;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+}
 var opencodebin = join(homedir(), ".opencode", "bin");
 if (!process.env.PATH?.includes(opencodebin)) {
   process.env.PATH = `${opencodebin}:${process.env.PATH || ""}`;
@@ -1675,281 +1672,479 @@ var currentCwd = initialCwd;
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
-var client2;
-var server;
-var ocSessionId = null;
-var currentMessageId = null;
-var partsById = /* @__PURE__ */ new Map();
-async function boot() {
-  log(`Booting OpenCode server (cwd=${currentCwd})`);
-  try {
-    const result = await createOpencode({
-      config: {
-        directory: currentCwd
-      }
-    });
-    client2 = result.client;
-    server = result.server;
-    log(`OpenCode server started at ${server.url}`);
-  } catch (err) {
-    log(`Failed to start OpenCode server: ${err.message}`);
-    emit({ type: "error", error: `Failed to start OpenCode: ${err.message}` });
-    process.exit(1);
-  }
-  try {
-    const sse = await client2.event.subscribe();
-    readEvents(sse);
-  } catch (err) {
-    log(`Failed to subscribe to events: ${err.message}`);
-    emit({ type: "error", error: `Failed to subscribe to OpenCode events: ${err.message}` });
-  }
-  emit({
-    type: "system",
-    subtype: "bridge_ready",
-    sessionId,
-    cwd: currentCwd || process.cwd()
-  });
-}
-async function readEvents(sse) {
-  try {
-    for await (const event of sse.stream) {
-      try {
-        handleEvent(event);
-      } catch (err) {
-        log(`Error handling event: ${err.message}`);
-      }
-    }
-  } catch (err) {
-    log(`SSE stream error: ${err.message}`);
-  }
-  log("SSE stream ended");
-}
-function handleEvent(event) {
-  if (!event || !event.type) return;
-  const props = event.properties || {};
-  const eventSessionId = props.sessionID || props.info?.sessionID;
-  if (eventSessionId && ocSessionId && eventSessionId !== ocSessionId) return;
-  switch (event.type) {
-    case "session.status": {
-      const status = props.status;
-      if (status?.type === "busy") {
-      } else if (status?.type === "idle") {
-        emitQueryComplete();
-      }
-      break;
-    }
-    case "message.updated": {
-      const info = props.info;
-      if (!info) break;
-      if (info.role === "assistant") {
-        currentMessageId = info.id;
-        if (info.time?.completed) {
-          emit({
-            type: "result",
-            subtype: "result",
-            result: "",
-            cost_usd: info.cost || 0,
-            usage: {
-              input_tokens: info.tokens?.input || 0,
-              output_tokens: info.tokens?.output || 0,
-              cache_read_input_tokens: info.tokens?.cache?.read || 0,
-              cache_creation_input_tokens: info.tokens?.cache?.write || 0
-            },
-            session_id: ocSessionId
+if (config.mode === "list-models") {
+  (async () => {
+    try {
+      const port = await getFreePort();
+      const server = await createOpencodeServer({ port, timeout: 3e4 });
+      const client2 = createOpencodeClient({ baseUrl: server.url, directory: process.cwd() });
+      const result = await client2.provider.list();
+      const providers = result.data?.all || [];
+      const models = [];
+      for (const provider of providers) {
+        for (const model of Object.values(provider.models || {})) {
+          if (!model.capabilities?.toolcall) continue;
+          if (model.providerID !== "opencode") continue;
+          if (model.cost?.input !== 0 || model.cost?.output !== 0) continue;
+          models.push({
+            id: model.id,
+            providerID: model.providerID,
+            name: model.name || model.id,
+            free: true,
+            costIn: 0,
+            costOut: 0
           });
         }
       }
-      break;
-    }
-    case "message.part.updated": {
-      const part = props.part;
-      const delta = props.delta;
-      if (!part) break;
-      if (currentMessageId && part.messageID !== currentMessageId) {
-        currentMessageId = part.messageID;
-      }
-      partsById.set(part.id, part);
-      emitPartAsAssistantMessage(part, delta);
-      break;
-    }
-    case "permission.updated": {
-      const permission = props;
-      log(`Permission requested: ${permission.type} \u2014 ${permission.title}`);
-      client2.postSessionIdPermissionsPermissionId({
-        path: {
-          id: permission.sessionID,
-          permissionId: permission.id
-        },
-        body: { allow: true }
-      }).catch((err) => log(`Failed to approve permission: ${err.message}`));
-      break;
-    }
-    case "session.error": {
-      const error = props.error;
-      const msg = error?.data?.message || error?.name || "Unknown OpenCode error";
-      log(`Session error: ${msg}`);
-      emit({ type: "error", error: msg });
-      break;
-    }
-    default:
-      break;
-  }
-}
-function emitPartAsAssistantMessage(part, delta) {
-  const blocks = [];
-  switch (part.type) {
-    case "text": {
-      blocks.push({ type: "text", text: part.text || "" });
-      break;
-    }
-    case "reasoning": {
-      blocks.push({ type: "thinking", thinking: part.text || "" });
-      break;
-    }
-    case "tool": {
-      const state = part.state;
-      blocks.push({
-        type: "tool_use",
-        id: part.callID || part.id,
-        name: part.tool,
-        input: state?.input || {}
-      });
-      if (state?.status === "completed") {
-        blocks.push({
-          type: "tool_result",
-          tool_use_id: part.callID || part.id,
-          content: state.output || "",
-          is_error: false
-        });
-      } else if (state?.status === "error") {
-        blocks.push({
-          type: "tool_result",
-          tool_use_id: part.callID || part.id,
-          content: state.error || "Tool error",
-          is_error: true
-        });
-      }
-      break;
-    }
-    case "step-start":
-    case "step-finish":
-    case "snapshot":
-    case "patch":
-    case "compaction":
-    case "retry":
-      return;
-    default:
-      return;
-  }
-  if (blocks.length > 0) {
-    emit({
-      type: "assistant",
-      message: {
-        id: part.messageID || `msg-${Date.now()}`,
-        role: "assistant",
-        content: blocks,
-        model: "",
-        stop_reason: null
-      }
-    });
-  }
-}
-function emitQueryComplete() {
-  currentMessageId = null;
-  partsById.clear();
-  emit({ type: "query_complete" });
-}
-var stdinBuf = "";
-process.stdin.setEncoding("utf-8");
-process.stdin.on("data", (chunk) => {
-  stdinBuf += chunk;
-  let newlineIdx;
-  while ((newlineIdx = stdinBuf.indexOf("\n")) !== -1) {
-    const line = stdinBuf.slice(0, newlineIdx).trim();
-    stdinBuf = stdinBuf.slice(newlineIdx + 1);
-    if (!line) continue;
-    try {
-      const msg = JSON.parse(line);
-      handleStdinMessage(msg);
+      process.stdout.write(JSON.stringify(models) + "\n");
+      await server.kill();
     } catch (err) {
-      emit({ type: "error", error: `Invalid JSON on stdin: ${err.message}` });
+      log(`list-models failed: ${err.message}`);
+    }
+    process.exit(0);
+  })();
+} else {
+  let handleEvent = function(event) {
+    if (!event || !event.type) return;
+    const props = event.properties || {};
+    const eventSessionId = props.sessionID || props.info?.sessionID;
+    if (eventSessionId && ocSessionId && eventSessionId !== ocSessionId) return;
+    switch (event.type) {
+      case "session.status": {
+        const status = props.status;
+        if (status?.type === "busy") {
+        } else if (status?.type === "idle") {
+          emitQueryComplete();
+        } else if (status?.type === "retry") {
+          const attempt = status.attempt || 0;
+          const retryMsg = status.message || `Retrying (attempt ${attempt})...`;
+          log(`Session retry: ${retryMsg}`);
+          emit({
+            type: "assistant",
+            message: {
+              id: `retry-${Date.now()}`,
+              role: "assistant",
+              content: [{ type: "text", text: `\u23F3 ${retryMsg}` }],
+              model: "",
+              stop_reason: null
+            }
+          });
+        }
+        break;
+      }
+      case "message.updated": {
+        const info = props.info;
+        if (!info) break;
+        if (info.role === "assistant") {
+          currentMessageId = info.id;
+          if (info.time?.completed) {
+            emit({
+              type: "result",
+              subtype: "result",
+              result: "",
+              cost_usd: info.cost || 0,
+              usage: {
+                input_tokens: info.tokens?.input || 0,
+                output_tokens: info.tokens?.output || 0,
+                cache_read_input_tokens: info.tokens?.cache?.read || 0,
+                cache_creation_input_tokens: info.tokens?.cache?.write || 0
+              },
+              session_id: ocSessionId
+            });
+          }
+        }
+        break;
+      }
+      case "message.part.updated": {
+        const part = props.part;
+        const delta = props.delta;
+        if (!part) break;
+        if (currentMessageId && part.messageID !== currentMessageId) {
+          currentMessageId = part.messageID;
+        }
+        partsById.set(part.id, part);
+        emitPartAsAssistantMessage(part, delta);
+        break;
+      }
+      case "permission.updated": {
+        const permission = props;
+        log(`Permission requested: ${permission.type} \u2014 ${permission.title}`);
+        client2.postSessionIdPermissionsPermissionId({
+          path: {
+            id: permission.sessionID,
+            permissionId: permission.id
+          },
+          body: { allow: true }
+        }).catch((err) => log(`Failed to approve permission: ${err.message}`));
+        break;
+      }
+      case "message.part.removed": {
+        const part = props.part;
+        if (!part) break;
+        const msgId = part.messageID || currentMessageId || `msg-${Date.now()}`;
+        emit({
+          type: "assistant",
+          message: {
+            id: msgId,
+            role: "assistant",
+            content: [{ type: "text", text: "" }],
+            model: "",
+            stop_reason: null
+          }
+        });
+        partsById.delete(part.id);
+        break;
+      }
+      case "session.error": {
+        const error = props.error;
+        const msg = error?.data?.message || error?.name || "Unknown OpenCode error";
+        log(`Session error: ${msg}`);
+        emit({ type: "error", error: msg });
+        break;
+      }
+      default:
+        break;
+    }
+  }, emitPartAsAssistantMessage = function(part, delta) {
+    const blocks = [];
+    switch (part.type) {
+      case "text": {
+        const text = part.text || "";
+        const questionsMatch = text.match(/\bquestions\s*:?\s*(\[[\s\S]*\])/i);
+        if (questionsMatch) {
+          try {
+            const parsed = JSON.parse(questionsMatch[1]);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              const toolId = `ask-${part.id || Date.now()}`;
+              const questions = parsed.map((q) => ({
+                question: q.question || q.label || "",
+                header: q.header || void 0,
+                options: Array.isArray(q.options) ? q.options : void 0
+              }));
+              blocks.push({
+                type: "tool_use",
+                id: toolId,
+                name: "AskUserQuestion",
+                input: { questions }
+              });
+              const before = text.slice(0, text.indexOf(questionsMatch[0])).trim();
+              if (before) {
+                blocks.unshift({ type: "text", text: before });
+              }
+              break;
+            }
+          } catch {
+          }
+        }
+        blocks.push({ type: "text", text });
+        break;
+      }
+      case "reasoning": {
+        blocks.push({ type: "thinking", thinking: part.text || "" });
+        break;
+      }
+      case "tool": {
+        const state = part.state;
+        blocks.push({
+          type: "tool_use",
+          id: part.callID || part.id,
+          name: part.tool,
+          input: state?.input || {}
+        });
+        if (state?.status === "completed") {
+          blocks.push({
+            type: "tool_result",
+            tool_use_id: part.callID || part.id,
+            content: state.output || "",
+            is_error: false
+          });
+        } else if (state?.status === "error") {
+          blocks.push({
+            type: "tool_result",
+            tool_use_id: part.callID || part.id,
+            content: state.error || "Tool error",
+            is_error: true
+          });
+        }
+        break;
+      }
+      case "subtask": {
+        const toolId = `subtask-${part.id || Date.now()}`;
+        blocks.push({
+          type: "tool_use",
+          id: toolId,
+          name: "Agent",
+          input: {
+            prompt: part.prompt || part.description || "Subtask",
+            description: part.description || part.prompt || "Running subtask"
+          }
+        });
+        if (part.state?.status === "completed") {
+          blocks.push({
+            type: "tool_result",
+            tool_use_id: toolId,
+            content: part.state.output || "Subtask completed",
+            is_error: false
+          });
+        } else if (part.state?.status === "error") {
+          blocks.push({
+            type: "tool_result",
+            tool_use_id: toolId,
+            content: part.state.error || "Subtask failed",
+            is_error: true
+          });
+        }
+        break;
+      }
+      case "file": {
+        const filename = part.filename || part.url || "file";
+        const mime = part.mime || "";
+        blocks.push({
+          type: "text",
+          text: `\u{1F4CE} File: ${filename}${mime ? ` (${mime})` : ""}`
+        });
+        break;
+      }
+      case "agent":
+      case "step-start":
+      case "step-finish":
+      case "snapshot":
+      case "patch":
+      case "compaction":
+      case "retry":
+        return;
+      default:
+        return;
+    }
+    if (blocks.length > 0) {
+      emit({
+        type: "assistant",
+        message: {
+          id: part.messageID || `msg-${Date.now()}`,
+          role: "assistant",
+          content: blocks,
+          model: "",
+          stop_reason: null
+        }
+      });
+    }
+  }, emitQueryComplete = function() {
+    currentMessageId = null;
+    partsById.clear();
+    emit({ type: "query_complete" });
+  };
+  handleEvent2 = handleEvent, emitPartAsAssistantMessage2 = emitPartAsAssistantMessage, emitQueryComplete2 = emitQueryComplete;
+  let client2;
+  let server;
+  let bootPromise;
+  let ocSessionId = null;
+  let currentMessageId = null;
+  const partsById = /* @__PURE__ */ new Map();
+  async function boot() {
+    log(`Booting OpenCode server (cwd=${currentCwd})`);
+    try {
+      const port = await getFreePort();
+      log(`Using port ${port}`);
+      const serverConfig = {};
+      if (config.model) {
+        serverConfig.model = config.model;
+        log(`Setting OpenCode model: ${config.model}`);
+      }
+      server = await createOpencodeServer({
+        port,
+        timeout: 3e4,
+        config: serverConfig
+      });
+      client2 = createOpencodeClient({
+        baseUrl: server.url,
+        directory: currentCwd
+      });
+      log(`OpenCode server started at ${server.url}`);
+    } catch (err) {
+      log(`Failed to start OpenCode server: ${err.message}`);
+      emit({ type: "error", error: `Failed to start OpenCode: ${err.message}` });
+      process.exit(1);
+    }
+    try {
+      const sse = await client2.event.subscribe();
+      readEvents(sse);
+    } catch (err) {
+      log(`Failed to subscribe to events: ${err.message}`);
+      emit({ type: "error", error: `Failed to subscribe to OpenCode events: ${err.message}` });
+    }
+    emit({
+      type: "system",
+      subtype: "bridge_ready",
+      sessionId,
+      cwd: currentCwd || process.cwd()
+    });
+    fetchAndEmitModels();
+  }
+  async function fetchAndEmitModels() {
+    try {
+      const result = await client2.provider.list();
+      const providers = result.data?.all || [];
+      const unique = [];
+      for (const provider of providers) {
+        for (const model of Object.values(provider.models || {})) {
+          if (!model.capabilities?.toolcall) continue;
+          if (model.providerID !== "opencode") continue;
+          if (model.cost?.input !== 0 || model.cost?.output !== 0) continue;
+          unique.push({
+            id: model.id,
+            providerID: model.providerID,
+            name: model.name || model.id,
+            free: true,
+            costIn: 0,
+            costOut: 0
+          });
+        }
+      }
+      log(`Fetched ${unique.length} models (${unique.filter((m) => m.free).length} free)`);
+      emit({ type: "available_models", models: unique });
+    } catch (err) {
+      log(`Failed to fetch models: ${err.message}`);
     }
   }
-});
-process.stdin.on("end", () => {
-  if (server) server.close();
-  process.exit(0);
-});
-async function handleStdinMessage(msg) {
-  if (msg.type === "abort") {
-    if (ocSessionId) {
+  async function readEvents(sse) {
+    try {
+      for await (const event of sse.stream) {
+        try {
+          handleEvent(event);
+        } catch (err) {
+          log(`Error handling event: ${err.message}`);
+        }
+      }
+    } catch (err) {
+      log(`SSE stream error: ${err.message}`);
+    }
+    log("SSE stream ended");
+  }
+  let stdinBuf = "";
+  process.stdin.setEncoding("utf-8");
+  process.stdin.on("data", (chunk) => {
+    stdinBuf += chunk;
+    let newlineIdx;
+    while ((newlineIdx = stdinBuf.indexOf("\n")) !== -1) {
+      const line = stdinBuf.slice(0, newlineIdx).trim();
+      stdinBuf = stdinBuf.slice(newlineIdx + 1);
+      if (!line) continue;
       try {
-        await client2.session.abort({ path: { id: ocSessionId } });
+        const msg = JSON.parse(line);
+        handleStdinMessage(msg);
       } catch (err) {
-        log(`Failed to abort session: ${err.message}`);
+        emit({ type: "error", error: `Invalid JSON on stdin: ${err.message}` });
       }
     }
-    emit({ type: "aborted" });
-    return;
-  }
-  if (msg.type === "set_cwd") {
-    currentCwd = msg.cwd;
-    log(`cwd updated to: ${currentCwd}`);
-    emit({ type: "cwd_updated", cwd: currentCwd });
-    return;
-  }
-  if (msg.type === "set_model") {
-    config.model = msg.model || null;
-    log(`model updated to: ${config.model}`);
-    emit({ type: "model_updated", model: config.model });
-    return;
-  }
-  if (msg.type === "user") {
-    await sendPrompt(msg.message);
-    return;
-  }
-  emit({ type: "error", error: `Unknown stdin message type: ${msg.type}` });
-}
-async function sendPrompt(userMessage) {
-  let text;
-  if (typeof userMessage === "string") {
-    text = userMessage;
-  } else if (Array.isArray(userMessage.content)) {
-    text = userMessage.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
-  } else if (typeof userMessage.content === "string") {
-    text = userMessage.content;
-  } else {
-    text = String(userMessage);
-  }
-  if (!text) {
-    emit({ type: "error", error: "Empty message" });
-    return;
-  }
-  try {
-    if (!ocSessionId) {
-      const session = await client2.session.create({
-        body: { title: text.substring(0, 100) }
-      });
-      ocSessionId = session.data.id;
-      log(`OpenCode session created: ${ocSessionId}`);
-      emit({
-        type: "system",
-        subtype: "init",
-        session_id: ocSessionId
-      });
+  });
+  process.stdin.on("end", () => {
+    if (server) server.close();
+    process.exit(0);
+  });
+  async function handleStdinMessage(msg) {
+    if (msg.type === "abort") {
+      if (ocSessionId) {
+        try {
+          await client2.session.abort({ path: { id: ocSessionId } });
+        } catch (err) {
+          log(`Failed to abort session: ${err.message}`);
+        }
+      }
+      emit({ type: "aborted" });
+      return;
     }
-    const promptBody = {
-      parts: [{ type: "text", text }]
-    };
-    await client2.session.promptAsync({
-      path: { id: ocSessionId },
-      body: promptBody
-    });
-    log(`Prompt sent to OpenCode session ${ocSessionId}`);
-  } catch (err) {
-    log(`Failed to send prompt: ${err.message}
-${err.stack}`);
-    emit({ type: "error", error: `Failed to send prompt: ${err.message}` });
+    if (msg.type === "set_cwd") {
+      currentCwd = msg.cwd;
+      log(`cwd updated to: ${currentCwd}`);
+      emit({ type: "cwd_updated", cwd: currentCwd });
+      return;
+    }
+    if (msg.type === "set_model") {
+      config.model = msg.model || null;
+      log(`model updated to: ${config.model}`);
+      emit({ type: "model_updated", model: config.model });
+      return;
+    }
+    if (msg.type === "ask_user_answer") {
+      const answer = msg.answer || {};
+      const answerText = Object.entries(answer).map(([q, a]) => `${q}: ${a}`).join("\n");
+      if (answerText) {
+        await sendPrompt(answerText);
+      }
+      return;
+    }
+    if (msg.type === "user") {
+      await sendPrompt(msg.message);
+      return;
+    }
+    emit({ type: "error", error: `Unknown stdin message type: ${msg.type}` });
   }
+  async function sendPrompt(userMessage) {
+    let text;
+    if (typeof userMessage === "string") {
+      text = userMessage;
+    } else if (Array.isArray(userMessage.content)) {
+      text = userMessage.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+    } else if (typeof userMessage.content === "string") {
+      text = userMessage.content;
+    } else {
+      text = String(userMessage);
+    }
+    if (!text) {
+      emit({ type: "error", error: "Empty message" });
+      return;
+    }
+    try {
+      await bootPromise;
+      if (!ocSessionId) {
+        const session = await client2.session.create({
+          body: { title: text.substring(0, 100) }
+        });
+        if (session.error || !session.data) {
+          const errMsg = session.error?.message || session.error || "Unknown error creating session";
+          log(`Failed to create session: ${JSON.stringify(errMsg)}`);
+          emit({ type: "error", error: `Failed to create OpenCode session: ${errMsg}` });
+          return;
+        }
+        ocSessionId = session.data.id;
+        log(`OpenCode session created: ${ocSessionId}`);
+        emit({
+          type: "system",
+          subtype: "init",
+          session_id: ocSessionId
+        });
+      }
+      const promptBody = {
+        parts: [{ type: "text", text }]
+      };
+      if (config.model) {
+        const slash = config.model.indexOf("/");
+        if (slash > 0) {
+          promptBody.model = {
+            providerID: config.model.substring(0, slash),
+            modelID: config.model.substring(slash + 1)
+          };
+        } else {
+          promptBody.model = {
+            providerID: config.model,
+            modelID: config.model
+          };
+        }
+        log(`Using model: ${JSON.stringify(promptBody.model)}`);
+      }
+      await client2.session.promptAsync({
+        path: { id: ocSessionId },
+        body: promptBody
+      });
+      log(`Prompt sent to OpenCode session ${ocSessionId}`);
+    } catch (err) {
+      log(`Failed to send prompt: ${err.message}
+${err.stack}`);
+      emit({ type: "error", error: `Failed to send prompt: ${err.message}` });
+    }
+  }
+  bootPromise = boot();
 }
-boot();
+var handleEvent2;
+var emitPartAsAssistantMessage2;
+var emitQueryComplete2;

@@ -11,7 +11,8 @@
     "build:agent-opencode": "esbuild src-tauri/resources/agent-bridge-opencode.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/agent-bridge-opencode.bundle.mjs",
     "build:title-server": "esbuild src-tauri/resources/title-server.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/title-server.bundle.mjs",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

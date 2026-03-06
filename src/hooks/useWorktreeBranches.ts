@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Workspace } from "../types";
+import { useAppVisible } from "./useAppVisible";
 
 export interface GitWorktreeInfo {
   path: string;
@@ -10,13 +11,14 @@ export interface GitWorktreeInfo {
 
 /** Fetch branch info for worktrees from the backend, keyed by worktree path.
  *  Also returns all git worktrees grouped by repo directory.
- *  Polls every 10s. */
+ *  Polls every 10s when app is visible. */
 export function useWorktreeBranches(workspaces: Workspace[]): {
   branches: Map<string, string>;
   byRepo: Map<string, GitWorktreeInfo[]>;
 } {
   const [branches, setBranches] = useState<Map<string, string>>(new Map());
   const [byRepo, setByRepo] = useState<Map<string, GitWorktreeInfo[]>>(new Map());
+  const appVisible = useAppVisible();
 
   useEffect(() => {
     const repos = new Set(workspaces.map((w) => w.directory));
@@ -48,12 +50,13 @@ export function useWorktreeBranches(workspaces: Workspace[]): {
     };
 
     fetchBranches();
+    if (!appVisible) return () => { cancelled = true; };
     const interval = setInterval(fetchBranches, 10_000);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [workspaces]);
+  }, [workspaces, appVisible]);
 
   return { branches, byRepo };
 }

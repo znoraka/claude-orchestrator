@@ -138,6 +138,10 @@ struct SessionMeta {
     active_time: f64,
     #[serde(default, rename = "hasTitleBeenGenerated")]
     has_title_been_generated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
 }
 
 fn sessions_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -240,6 +244,7 @@ fn create_agent_session(
     resume: bool,
     system_prompt: Option<String>,
     provider: Option<String>,
+    model: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -275,7 +280,7 @@ fn create_agent_session(
                     "args": [mcp_path],
                     "env": {
                         "ORCHESTRATOR_SESSION_ID": &session_id,
-                        "ORCHESTRATOR_SIGNAL_DIR": "/tmp/orchestrator-signals"
+                        "ORCHESTRATOR_SIGNAL_DIR": if cfg!(debug_assertions) { "/tmp/orchestrator-signals-dev" } else { "/tmp/orchestrator-signals" }
                     }
                 }
             })
@@ -300,6 +305,7 @@ fn create_agent_session(
             "sessionId": &session_id,
             "cwd": &directory,
             "systemPrompt": system_prompt,
+            "model": model,
         })
     };
     let config_json = config.to_string();
@@ -347,6 +353,57 @@ fn destroy_agent_session(session_id: String, state: State<'_, AppState>) -> Resu
 fn get_agent_history(session_id: String, state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
     manager.get_history(&session_id)
+}
+
+/// Spawn the opencode bridge in list-models mode and return the JSON array of models.
+#[tauri::command]
+async fn fetch_opencode_models(state: State<'_, AppState>) -> Result<String, String> {
+    let bridge_path = state
+        .agent_script_paths
+        .get("opencode")
+        .ok_or_else(|| "OpenCode bridge script not found".to_string())?
+        .clone();
+
+    let result: Result<String, String> = tauri::async_runtime::spawn_blocking(move || {
+        let node_bin = resolve_bin("node")
+            .ok_or_else(|| "Could not find `node` binary".to_string())?;
+        let path_env = shell_path();
+        let home = std::env::var("HOME")
+            .unwrap_or_else(|_| format!("/Users/{}", std::env::var("USER").unwrap_or_default()));
+        let config_json = r#"{"mode":"list-models"}"#;
+
+        let output = std::process::Command::new(&node_bin)
+            .arg(&bridge_path)
+            .arg(config_json)
+            .env("PATH", path_env)
+            .env("HOME", &home)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .map_err(|e| format!("Failed to spawn opencode bridge: {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if stdout.is_empty() {
+            return Ok("[]".to_string());
+        }
+        let first_line = stdout.lines().next().unwrap_or("[]");
+        Ok(first_line.to_string())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?;
+
+    result
+}
+
+/// Check which agent providers have their CLI available on the system.
+/// Returns a JSON object like {"claude-code": true, "opencode": false}.
+#[tauri::command]
+fn check_providers() -> std::collections::HashMap<String, bool> {
+    let mut result = std::collections::HashMap::new();
+    result.insert("claude-code".to_string(), resolve_bin("claude").is_some());
+    result.insert("opencode".to_string(), resolve_bin("opencode").is_some());
+    result
 }
 
 #[tauri::command]
@@ -1708,7 +1765,8 @@ fn shell_path() -> &'static str {
     })
 }
 
-/// Resolve the absolute path of a binary using the shell PATH.
+/// Resolve the absolute path of a binary using the shell PATH,
+/// falling back to well-known install locations.
 /// Results are cached so we only spawn a shell once per binary name.
 fn resolve_bin(name: &str) -> Option<String> {
     use std::sync::OnceLock;
@@ -1730,7 +1788,21 @@ fn resolve_bin(name: &str) -> Option<String> {
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            // GUI apps may not inherit the full shell PATH, so check
+            // well-known install directories as a fallback.
+            let home = std::env::var("HOME").ok()?;
+            let candidates = [
+                format!("{home}/.{name}/bin/{name}"),
+                format!("{home}/.local/bin/{name}"),
+                format!("{home}/go/bin/{name}"),
+                format!("{home}/.cargo/bin/{name}"),
+                format!("/usr/local/bin/{name}"),
+                format!("/opt/homebrew/bin/{name}"),
+            ];
+            candidates.into_iter().find(|p| std::path::Path::new(p).is_file())
+        });
 
     map.insert(name.to_string(), result.clone());
     result
@@ -3234,6 +3306,8 @@ pub fn run() {
             set_agent_cwd,
             destroy_agent_session,
             get_agent_history,
+            fetch_opencode_models,
+            check_providers,
             save_clipboard_image,
             get_clipboard_file_paths,
             save_sessions,

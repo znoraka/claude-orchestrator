@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Session, SessionUsage, Workspace } from "../types";
 import { worktreeName } from "../utils/workspaces";
 import SessionTab, { repoColor } from "./SessionTab";
-import { useWorktreeBranches } from "../hooks/useWorktreeBranches";
 
 
 interface SidebarProps {
@@ -18,6 +17,7 @@ interface SidebarProps {
   onDeleteSession: (id: string) => void;
   shellProcessDirs?: Map<string, number>;
   unreadSessions?: Set<string>;
+  worktreeBranches?: Map<string, string>;
 }
 
 type ViewMode = "workspace" | "date";
@@ -48,6 +48,7 @@ export default function Sidebar({
   onDeleteSession,
   shellProcessDirs,
   unreadSessions,
+  worktreeBranches,
 }: SidebarProps) {
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -57,7 +58,7 @@ export default function Sidebar({
   const [collapsedWorktrees, setCollapsedWorktrees] = useState<Set<string>>(new Set());
   const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(new Set());
 
-  const { branches } = useWorktreeBranches(workspaces);
+  const branches = worktreeBranches ?? new Map<string, string>();
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

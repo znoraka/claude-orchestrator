@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { jsonlDirectory, type Session } from "../types";
+import { useAppVisible } from "./useAppVisible";
 
 interface TitleState {
   titled: true;
@@ -21,6 +22,7 @@ export function useConversationTitles(
   const smartPendingRef = useRef<Set<string>>(new Set());
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+  const appVisible = useAppVisible();
 
   // Initialize state for sessions that already have a generated title (e.g., on resume)
   // This prevents regenerating titles when resuming a conversation
@@ -106,18 +108,20 @@ export function useConversationTitles(
       }
     });
 
-    // Fallback interval for cases where the file doesn't exist yet
-    const fallbackInterval = setInterval(() => {
-      for (const session of pending) {
-        if (!smartStateRef.current.has(session.id)) {
-          tryResolveTitle(session);
-        }
-      }
-    }, 5_000);
+    // Fallback interval for cases where the file doesn't exist yet (only when visible)
+    const fallbackInterval = appVisible
+      ? setInterval(() => {
+          for (const session of pending) {
+            if (!smartStateRef.current.has(session.id)) {
+              tryResolveTitle(session);
+            }
+          }
+        }, 5_000)
+      : null;
 
     return () => {
       unlistenPromise.then((fn) => fn());
-      clearInterval(fallbackInterval);
+      if (fallbackInterval) clearInterval(fallbackInterval);
     };
-  }, [runningSessions, renameSession, markTitleGenerated]);
+  }, [runningSessions, renameSession, markTitleGenerated, appVisible]);
 }
