@@ -134,8 +134,12 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-sm">
-        Loading PR diff...
+      <div className="flex flex-col items-center justify-center h-full gap-2 text-[var(--text-tertiary)]">
+        <svg className="animate-spin h-5 w-5 opacity-50" viewBox="0 0 24 24" fill="none">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        <span className="text-xs">Loading PR diff</span>
       </div>
     );
   }
@@ -143,35 +147,39 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center gap-3 px-3 py-2 border-b border-[var(--border-color)] flex-shrink-0">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--border-color)] flex-shrink-0">
         <button
           onClick={onBack}
-          className="text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--bg-tertiary)]"
+          className="flex items-center gap-1 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--bg-tertiary)]"
         >
-          Back
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path fillRule="evenodd" d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z" />
+          </svg>
+          PRs
         </button>
-        <span className="text-xs text-[var(--text-secondary)] truncate">
-          <span className="font-mono text-[var(--text-tertiary)]">#{prNumber}</span>
-          {" "}{prTitle}
-        </span>
-        <span className="text-[10px] text-[var(--text-tertiary)]">
-          {viewedFiles.size}/{files.length} viewed
-        </span>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="w-px h-4 bg-[var(--border-color)]" />
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+          <span className="text-[11px] font-mono text-[var(--text-tertiary)] flex-shrink-0">#{prNumber}</span>
+          <span className="text-xs text-[var(--text-primary)] truncate font-medium">{prTitle}</span>
+        </div>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <span className="text-[10px] text-[var(--text-tertiary)] tabular-nums">
+            {viewedFiles.size}/{files.length}
+          </span>
+          <div className="w-px h-3.5 bg-[var(--border-color)]" />
           <button
             onClick={() => openUrl(prUrl)}
-            className="text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--bg-tertiary)] flex items-center gap-1"
+            className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors p-1 rounded hover:bg-[var(--bg-tertiary)]"
             title="Open on GitHub"
           >
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
               <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
             </svg>
-            GitHub
           </button>
           {onAskClaude && selectedFile && (
             <button
               onClick={handleAskClaude}
-              className="text-[10px] text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--accent)]/10"
+              className="text-[10px] text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--accent)]/10 font-medium"
             >
               Ask Claude
             </button>
@@ -179,13 +187,12 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
           {onClaudeReview && (
             <button
               onClick={() => onClaudeReview(prNumber, headRefName)}
-              className="text-[10px] text-[var(--text-tertiary)] hover:text-[var(--accent)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--bg-tertiary)] flex items-center gap-1"
+              className="text-[var(--text-tertiary)] hover:text-[var(--accent)] transition-colors p-1 rounded hover:bg-[var(--bg-tertiary)]"
               title="Claude review in new session"
             >
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M1.5 2.75a.25.25 0 01.25-.25h8.5a.25.25 0 01.25.25v5.5a.25.25 0 01-.25.25h-3.5a.75.75 0 00-.53.22L3.5 11.44V9.25a.75.75 0 00-.75-.75h-1a.25.25 0 01-.25-.25v-5.5zM1.75 1A1.75 1.75 0 000 2.75v5.5C0 9.216.784 10 1.75 10H2v1.543a1.457 1.457 0 002.487 1.03L7.061 10h3.189A1.75 1.75 0 0012 8.25v-5.5A1.75 1.75 0 0010.25 1h-8.5zM14.5 4.75a.25.25 0 00-.25-.25h-.5a.75.75 0 110-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0114.25 12H14v1.543a1.457 1.457 0 01-2.487 1.03L9.22 12.28a.75.75 0 111.06-1.06l2.22 2.22v-2.19a.75.75 0 01.75-.75h1a.25.25 0 00.25-.25v-5.5z" />
               </svg>
-              Review
             </button>
           )}
           <button
@@ -202,8 +209,11 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       </div>
 
       {files.length === 0 ? (
-        <div className="flex items-center justify-center flex-1 text-[var(--text-tertiary)] text-sm">
-          No files changed
+        <div className="flex flex-col items-center justify-center flex-1 gap-2 text-[var(--text-tertiary)]">
+          <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" className="opacity-40">
+            <path fillRule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z" />
+          </svg>
+          <span className="text-xs">No files changed</span>
         </div>
       ) : (
         <div className="flex flex-1 min-h-0">

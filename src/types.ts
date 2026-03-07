@@ -50,6 +50,7 @@ export interface Session {
   activeTime?: number; // cumulative ms of running time
   hasTitleBeenGenerated?: boolean; // true if a smart title has been generated
   pendingPrompt?: string; // auto-sent on bridge_ready (e.g. PR review)
+  planContent?: string; // plan markdown shown as pinned block (from plan-mode fork)
   exitCode?: number; // last process exit code (non-zero = error)
   hasDraft?: boolean; // true when user has typed text in the input but not sent it
   hasQuestion?: boolean; // true when the agent called AskUserQuestion and is waiting for an answer

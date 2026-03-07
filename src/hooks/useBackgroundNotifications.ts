@@ -17,6 +17,7 @@ export function useBackgroundNotifications(
   activeSessionId: string | null
 ) {
   const prevBusyRef = useRef<Map<string, boolean>>(new Map());
+  const prevQuestionRef = useRef<Map<string, boolean>>(new Map());
   const permissionRef = useRef<boolean | null>(null);
 
   // Request permission once
@@ -52,7 +53,23 @@ export function useBackgroundNotifications(
         });
       }
 
+      // Detect hasQuestion false -> true transition for non-active sessions
+      const hadQuestion = prevQuestionRef.current.get(session.id) ?? false;
+      const hasQuestion = session.hasQuestion ?? false;
+      if (
+        !hadQuestion &&
+        hasQuestion &&
+        session.id !== activeSessionId &&
+        (session.status === "running" || session.status === "starting")
+      ) {
+        sendNotification({
+          title: "Claude has a question",
+          body: session.name,
+        });
+      }
+
       prevBusyRef.current.set(session.id, isBusy);
+      prevQuestionRef.current.set(session.id, hasQuestion);
     }
   }, [sessions, sessionUsage, activeSessionId]);
 }

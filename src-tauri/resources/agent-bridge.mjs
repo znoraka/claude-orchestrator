@@ -242,7 +242,15 @@ async function runQuery(userMessage) {
         return { behavior: "allow", updatedInput: input };
       }
 
-      // Plan/default mode — ask user for permission
+      // Plan mode — auto-allow everything except ExitPlanMode (accept plan).
+      // ExitPlanMode is the "plan ready" signal — let the user choose to
+      // continue here or fork into a new conversation.
+      if (toolName !== "ExitPlanMode") {
+        log(`canUseTool: auto-allowing ${toolName} in plan mode`);
+        return { behavior: "allow", updatedInput: input };
+      }
+
+      // ExitPlanMode — ask user for permission (accept plan UI)
       log(`canUseTool: permission request for ${toolName}`);
       emit({ type: "permission_request", toolName, input });
       const allowed = await new Promise((resolve) => {

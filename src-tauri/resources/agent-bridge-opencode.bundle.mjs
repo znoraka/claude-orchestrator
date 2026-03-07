@@ -1667,8 +1667,10 @@ var log = (msg) => {
   }
 };
 var config = JSON.parse(process.argv[2] || "{}");
-var { sessionId, cwd: initialCwd } = config;
+var { sessionId, cwd: initialCwd, permissionMode: configPermissionMode } = config;
 var currentCwd = initialCwd;
+var currentPermissionMode = configPermissionMode || "bypassPermissions";
+var permissionResolve = null;
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
@@ -1773,14 +1775,33 @@ if (config.mode === "list-models") {
       }
       case "permission.updated": {
         const permission = props;
-        log(`Permission requested: ${permission.type} \u2014 ${permission.title}`);
-        client2.postSessionIdPermissionsPermissionId({
-          path: {
-            id: permission.sessionID,
-            permissionId: permission.id
-          },
-          body: { allow: true }
-        }).catch((err) => log(`Failed to approve permission: ${err.message}`));
+        log(`Permission requested: ${permission.type} \u2014 ${permission.title} (mode=${currentPermissionMode})`);
+        if (currentPermissionMode === "bypassPermissions") {
+          client2.postSessionIdPermissionsPermissionId({
+            path: {
+              id: permission.sessionID,
+              permissionId: permission.id
+            },
+            body: { allow: true }
+          }).catch((err) => log(`Failed to approve permission: ${err.message}`));
+        } else {
+          emit({
+            type: "permission_request",
+            toolName: permission.title || permission.type || "unknown",
+            input: permission.metadata || {}
+          });
+          const sid = permission.sessionID;
+          const pid = permission.id;
+          new Promise((resolve) => {
+            permissionResolve = resolve;
+          }).then((allowed) => {
+            log(`Permission ${pid}: ${allowed ? "allow" : "deny"}`);
+            client2.postSessionIdPermissionsPermissionId({
+              path: { id: sid, permissionId: pid },
+              body: { allow: !!allowed }
+            }).catch((err) => log(`Failed to respond to permission: ${err.message}`));
+          });
+        }
         break;
       }
       case "message.part.removed": {
@@ -2049,6 +2070,10 @@ if (config.mode === "list-models") {
   });
   async function handleStdinMessage(msg) {
     if (msg.type === "abort") {
+      if (permissionResolve) {
+        permissionResolve(false);
+        permissionResolve = null;
+      }
       if (ocSessionId) {
         try {
           await client2.session.abort({ path: { id: ocSessionId } });
@@ -2063,6 +2088,22 @@ if (config.mode === "list-models") {
       currentCwd = msg.cwd;
       log(`cwd updated to: ${currentCwd}`);
       emit({ type: "cwd_updated", cwd: currentCwd });
+      return;
+    }
+    if (msg.type === "permission_response") {
+      if (permissionResolve) {
+        log(`Resolving permission: ${msg.allowed ? "allow" : "deny"}`);
+        permissionResolve(msg.allowed);
+        permissionResolve = null;
+      } else {
+        log("permission_response received but no pending permissionResolve \u2014 ignoring");
+      }
+      return;
+    }
+    if (msg.type === "set_permission_mode") {
+      currentPermissionMode = msg.permissionMode || "bypassPermissions";
+      log(`permissionMode updated to: ${currentPermissionMode}`);
+      emit({ type: "permission_mode_updated", permissionMode: currentPermissionMode });
       return;
     }
     if (msg.type === "set_model") {

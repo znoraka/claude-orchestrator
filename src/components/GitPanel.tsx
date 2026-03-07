@@ -215,24 +215,34 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
 
   if (loading && !status) {
     return (
-      <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-sm">
-        Loading git status...
+      <div className="flex flex-col items-center justify-center h-full gap-2 text-[var(--text-tertiary)]">
+        <svg className="animate-spin h-5 w-5 opacity-50" viewBox="0 0 24 24" fill="none">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        <span className="text-xs">Loading git status</span>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-full text-red-400 text-sm">
-        {error}
+      <div className="flex flex-col items-center justify-center h-full gap-2 text-red-400">
+        <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" className="opacity-50">
+          <path fillRule="evenodd" d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm9-3a1 1 0 11-2 0 1 1 0 012 0zM8 6.5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 6.5z" />
+        </svg>
+        <span className="text-xs">{error}</span>
       </div>
     );
   }
 
   if (!status?.isGitRepo) {
     return (
-      <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-sm">
-        Not a git repository
+      <div className="flex flex-col items-center justify-center h-full gap-2 text-[var(--text-tertiary)]">
+        <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" className="opacity-40">
+          <path fillRule="evenodd" d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 010-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9z" />
+        </svg>
+        <span className="text-xs">Not a git repository</span>
       </div>
     );
   }
@@ -294,14 +304,21 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center gap-3 px-3 py-2 border-b border-[var(--border-color)] flex-shrink-0">
-        <span className="text-xs font-mono text-[var(--text-secondary)]">
-          {status.branch}
-        </span>
-        <span className="text-[10px] text-[var(--text-tertiary)]">
-          {status.files.length} file{status.files.length !== 1 ? "s" : ""} changed
-        </span>
-        <div className="ml-auto flex items-center gap-1">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--border-color)] flex-shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" className="flex-shrink-0 text-[var(--text-tertiary)]">
+            <path fillRule="evenodd" d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z" />
+          </svg>
+          <span className="text-xs font-mono text-[var(--text-primary)] font-medium truncate">
+            {status.branch}
+          </span>
+          {status.files.length > 0 && (
+            <span className="text-[10px] text-[var(--text-tertiary)] tabular-nums flex-shrink-0">
+              {status.files.length} changed
+            </span>
+          )}
+        </div>
+        <div className="ml-auto flex items-center gap-0.5 flex-shrink-0">
           <button
             onClick={() => {
               const next = !compareMode;
@@ -310,12 +327,12 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
             }}
             className={`text-[10px] transition-colors px-1.5 py-0.5 rounded ${
               compareMode
-                ? "text-[var(--accent)] bg-[var(--accent)]/10"
+                ? "text-[var(--accent)] bg-[var(--accent)]/10 font-medium"
                 : "text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             }`}
             title={isFeatureBranch ? "Compare with master/main" : "Compare branches"}
           >
-            {isFeatureBranch ? "vs master" : "Compare"}
+            {isFeatureBranch ? "vs main" : "Compare"}
           </button>
           {!compareMode && (
             <button
@@ -332,10 +349,19 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
           )}
           <button
             onClick={refresh}
-            className="text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--bg-tertiary)]"
+            className={`text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--bg-tertiary)] ${loading ? "animate-spin-slow" : ""}`}
             title="Refresh"
           >
-            {loading ? "..." : "Refresh"}
+            {loading ? (
+              <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path fillRule="evenodd" d="M8 2.5a5.487 5.487 0 00-4.131 1.869l1.204 1.204A.25.25 0 014.896 6H1.25A.25.25 0 011 5.75V2.104a.25.25 0 01.427-.177l1.38 1.38A7.001 7.001 0 0114.95 7.16a.75.75 0 11-1.49.178A5.501 5.501 0 008 2.5zM1.705 8.005a.75.75 0 01.834.656 5.501 5.501 0 009.592 2.97l-1.204-1.204a.25.25 0 01.177-.427h3.646a.25.25 0 01.25.25v3.646a.25.25 0 01-.427.177l-1.38-1.38A7.001 7.001 0 011.05 8.84a.75.75 0 01.656-.834z" />
+              </svg>
+            )}
           </button>
         </div>
       </div>
@@ -347,27 +373,34 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
             <select
               value={baseBranch}
               onChange={(e) => setBaseBranch(e.target.value)}
-              className="bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-2 py-0.5 text-xs text-[var(--text-primary)] outline-none"
+              className="bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-2 py-0.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] font-mono max-w-[160px]"
             >
               {branches.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
-            <span className="text-[10px] text-[var(--text-tertiary)]">...</span>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" className="text-[var(--text-tertiary)] flex-shrink-0">
+              <path fillRule="evenodd" d="M8.22 2.97a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06l2.97-2.97H3.75a.75.75 0 010-1.5h7.44L8.22 4.03a.75.75 0 010-1.06z" />
+            </svg>
             <select
               value={compareBranch}
               onChange={(e) => setCompareBranch(e.target.value)}
-              className="bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-2 py-0.5 text-xs text-[var(--text-primary)] outline-none"
+              className="bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-2 py-0.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] font-mono max-w-[160px]"
             >
               {branches.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
-            <span className="text-[10px] text-[var(--text-tertiary)]">
+            <span className="text-[10px] text-[var(--text-tertiary)] tabular-nums flex-shrink-0">
               {branchCommits.length} commit{branchCommits.length !== 1 ? "s" : ""}
             </span>
           </div>
           <div className="flex flex-1 min-h-0">
             <div className="w-64 flex-shrink-0 border-r border-[var(--border-color)] overflow-y-auto py-2">
               {branchCommits.length === 0 ? (
-                <div className="px-2 py-4 text-xs text-[var(--text-tertiary)] text-center">
-                  {baseBranch && compareBranch ? "No commits on this branch" : "Select branches"}
+                <div className="flex flex-col items-center justify-center py-8 gap-2 text-[var(--text-tertiary)]">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" className="opacity-40">
+                    <path fillRule="evenodd" d="M10.5 7.75a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0zm1.43.75a4.002 4.002 0 01-7.86 0H.75a.75.75 0 010-1.5h3.32a4.001 4.001 0 017.86 0h3.32a.75.75 0 010 1.5h-3.32z" />
+                  </svg>
+                  <span className="text-[10px]">
+                    {baseBranch && compareBranch ? "No commits between branches" : "Select branches to compare"}
+                  </span>
                 </div>
               ) : (
                 branchCommits.map((commit) => {
@@ -429,8 +462,11 @@ export default function GitPanel({ directory, isActive, onEditFile }: GitPanelPr
           </div>
         </div>
       ) : status.files.length === 0 ? (
-        <div className="flex items-center justify-center flex-1 text-[var(--text-tertiary)] text-sm">
-          Working tree clean
+        <div className="flex flex-col items-center justify-center flex-1 gap-2 text-[var(--text-tertiary)]">
+          <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" className="opacity-40">
+            <path fillRule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z" />
+          </svg>
+          <span className="text-xs">Working tree clean</span>
         </div>
       ) : (
         <div className="flex flex-1 min-h-0">

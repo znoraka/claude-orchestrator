@@ -59,7 +59,7 @@ const SessionPanel = memo(function SessionPanel({
   renameSession: (id: string, name: string) => void;
   markTitleGenerated: (id: string) => void;
   restartSession: (id: string) => Promise<void>;
-  createSession: (name: string | undefined, directory: string, skip?: boolean, systemPrompt?: string, pendingPrompt?: string, provider?: AgentProvider) => Promise<string>;
+  createSession: (name: string | undefined, directory: string, skip?: boolean, systemPrompt?: string, pendingPrompt?: string, provider?: AgentProvider, model?: string, permissionMode?: "bypassPermissions" | "plan", planContent?: string) => Promise<string>;
   currentModel: string;
   setChatInputHeight: ((h: number) => void) | undefined;
   onEditFile?: (filePath: string, line?: number) => void;
@@ -76,6 +76,7 @@ const SessionPanel = memo(function SessionPanel({
   const handleClaudeSessionId = useCallback((claudeSessionId: string) => updateClaudeSessionId(session.id, claudeSessionId), [session.id, updateClaudeSessionId]);
   const handleResume = useCallback(() => restartSession(session.id), [session.id, restartSession]);
   const handleFork = useCallback((systemPrompt: string) => createSession(`Fork of ${session.name}`, session.directory, session.dangerouslySkipPermissions, systemPrompt), [session.name, session.directory, session.dangerouslySkipPermissions, createSession]);
+  const handleForkWithPrompt = useCallback((systemPrompt: string, pendingPrompt: string, planContent?: string) => createSession(`Execute: ${session.name}`, session.directory, false, systemPrompt, pendingPrompt, session.provider, session.model, "bypassPermissions", planContent), [session.name, session.directory, session.provider, session.model, createSession]);
   const handleRename = useCallback((name: string) => renameSession(session.id, name), [session.id, renameSession]);
   const handleMarkTitleGenerated = useCallback(() => markTitleGenerated(session.id), [session.id, markTitleGenerated]);
 
@@ -102,6 +103,7 @@ const SessionPanel = memo(function SessionPanel({
           session={session}
           onResume={handleResume}
           onFork={handleFork}
+          onForkWithPrompt={handleForkWithPrompt}
           currentModel={currentModel}
           onInputHeightChange={isVisible ? setChatInputHeight : undefined}
           onEditFile={onEditFile}
@@ -168,8 +170,8 @@ export default function App() {
   const [recentDirs, setRecentDirs] = useState<string[]>(loadRecentDirs);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(-1);
-  const [skipPermissions, setSkipPermissions] = useState(true);
-  const [permissionMode, setPermissionMode] = useState<"bypassPermissions" | "plan">("bypassPermissions");
+  const [skipPermissions, setSkipPermissions] = useState(false);
+  const [permissionMode, setPermissionMode] = useState<"bypassPermissions" | "plan">("plan");
   const [creating, setCreating] = useState(false);
   const [dirInputDirty, setDirInputDirty] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<AgentProvider>("claude-code");
@@ -589,17 +591,6 @@ export default function App() {
           <div className="absolute inset-0">
             {/* Content area */}
             <div className="absolute inset-0 flex flex-col">
-              {/* Session ID (subtle, top-right corner) */}
-              {activeSession?.claudeSessionId && activePanel === null && (
-                <button
-                  onClick={() => navigator.clipboard.writeText(activeSession.claudeSessionId!)}
-                  className="absolute top-1 right-12 z-10 px-1.5 py-0.5 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] font-mono transition-colors rounded hover:bg-[var(--bg-tertiary)]"
-                  title={`Copy session ID: ${activeSession.claudeSessionId}`}
-                >
-                  {activeSession.claudeSessionId.slice(0, 8)}…
-                </button>
-              )}
-
               {/* Panel content */}
               <div className="flex-1 min-h-0 relative">
               {/* Empty state when no session is selected */}
@@ -814,19 +805,28 @@ export default function App() {
               )}
               </div>
 
-              {/* Context usage bar — below input */}
-              {activeUsage && activeUsage.contextTokens > 0 && activePanel === null && (
+              {/* Context usage bar — below input (always rendered to prevent layout shift) */}
+              {activePanel === null && (
                 <div
                   className="h-[2px] w-full shrink-0"
-                  title={`Context: ${activeUsage.contextTokens.toLocaleString()} / 200,000 tokens\nInput: ${activeUsage.inputTokens.toLocaleString()} | Output: ${activeUsage.outputTokens.toLocaleString()} | Cache read: ${activeUsage.cacheReadInputTokens.toLocaleString()} | Cache write: ${activeUsage.cacheCreationInputTokens.toLocaleString()}`}
+                  title={activeUsage && activeUsage.contextTokens > 0 ? `Context: ${activeUsage.contextTokens.toLocaleString()} / 200,000 tokens\nInput: ${activeUsage.inputTokens.toLocaleString()} | Output: ${activeUsage.outputTokens.toLocaleString()} | Cache read: ${activeUsage.cacheReadInputTokens.toLocaleString()} | Cache write: ${activeUsage.cacheCreationInputTokens.toLocaleString()}` : undefined}
                 >
-                  <div
-                    className="h-full transition-all duration-500"
-                    style={{
-                      width: `${Math.min(100, Math.round((activeUsage.contextTokens / 200_000) * 100))}%`,
-                      backgroundColor: activeUsage.contextTokens / 200_000 > 0.8 ? '#d97706' : '#d9770640',
-                    }}
-                  />
+                  {(() => {
+                    const pct = activeUsage && activeUsage.contextTokens > 0 ? activeUsage.contextTokens / 200_000 : 0;
+                    const color = pct > 0.95 ? 'rgba(239,68,68,0.6)'
+                      : pct > 0.8 ? 'rgba(217,119,6,0.45)'
+                      : pct > 0.5 ? 'rgba(217,119,6,0.25)'
+                      : 'rgba(148,163,184,0.2)';
+                    return (
+                      <div
+                        className="h-full transition-all duration-500"
+                        style={{
+                          width: pct > 0 ? `${Math.min(100, Math.round(pct * 100))}%` : '0%',
+                          backgroundColor: color,
+                        }}
+                      />
+                    );
+                  })()}
                 </div>
               )}
             </div>

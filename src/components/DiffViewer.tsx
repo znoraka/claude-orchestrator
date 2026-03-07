@@ -56,6 +56,9 @@ export async function getHighlighter(): Promise<Highlighter> {
   return highlighterPromise;
 }
 
+// Eager-init: start loading the highlighter as soon as this module is imported
+getHighlighter();
+
 export async function ensureLang(hl: Highlighter, lang: string): Promise<void> {
   if (!loadedLangs.has(lang)) {
     try {

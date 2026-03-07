@@ -1698,6 +1698,69 @@ async fn get_conversation_jsonl(claude_session_id: String, directory: String) ->
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
+#[derive(Serialize)]
+struct ConversationTailResult {
+    lines: Vec<String>,
+    total: usize,
+}
+
+#[tauri::command]
+async fn get_conversation_jsonl_tail(
+    claude_session_id: String,
+    directory: String,
+    max_lines: usize,
+) -> Result<ConversationTailResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+
+        if !jsonl_path.exists() {
+            return Ok(ConversationTailResult { lines: vec![], total: 0 });
+        }
+
+        let file = std::fs::File::open(&jsonl_path)
+            .map_err(|e| format!("Failed to open conversation file: {}", e))?;
+        let reader = std::io::BufReader::new(file);
+
+        const WANTED: &[&str] = &[
+            "\"type\":\"user\"", "\"type\": \"user\"",
+            "\"type\":\"assistant\"", "\"type\": \"assistant\"",
+            "\"type\":\"result\"", "\"type\": \"result\"",
+            "\"type\":\"error\"", "\"type\": \"error\"",
+        ];
+
+        const TRUNCATE_THRESHOLD: usize = 30_000;
+
+        use std::io::BufRead;
+        let all_lines: Vec<String> = reader
+            .lines()
+            .filter_map(|l| l.ok())
+            .filter(|l| !l.is_empty() && WANTED.iter().any(|w| l.contains(w)))
+            .map(|l| {
+                if l.len() <= TRUNCATE_THRESHOLD {
+                    return l;
+                }
+                if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&l) {
+                    truncate_content_blocks(&mut val);
+                    serde_json::to_string(&val).unwrap_or(l)
+                } else {
+                    l
+                }
+            })
+            .collect();
+
+        let total = all_lines.len();
+        let tail = if total <= max_lines {
+            all_lines
+        } else {
+            all_lines[total - max_lines..].to_vec()
+        };
+
+        Ok(ConversationTailResult { lines: tail, total })
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 #[derive(Deserialize)]
 struct SearchableSession {
     #[serde(rename = "claudeSessionId")]
@@ -3348,6 +3411,7 @@ pub fn run() {
             generate_smart_title,
             generate_title_from_text,
             get_conversation_jsonl,
+            get_conversation_jsonl_tail,
             search_session_content,
             watch_jsonl,
             unwatch_jsonl,

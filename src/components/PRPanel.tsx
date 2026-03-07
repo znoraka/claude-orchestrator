@@ -362,28 +362,32 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
 
   if (loading && !result) {
     return (
-      <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-sm">
-        Loading pull requests...
+      <div className="flex flex-col items-center justify-center h-full gap-2 text-[var(--text-tertiary)]">
+        <svg className="animate-spin h-5 w-5 opacity-50" viewBox="0 0 24 24" fill="none">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        <span className="text-xs">Loading pull requests</span>
       </div>
     );
   }
 
   if (result && !result.ghAvailable) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-center px-6">
-          <div className="text-[var(--text-tertiary)] text-sm mb-2">
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-[var(--text-tertiary)]">
+        <svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor" className="opacity-30">
+          <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+        </svg>
+        <div className="text-center">
+          <div className="text-xs mb-1.5">
             {result.error || "GitHub CLI not available"}
           </div>
-          <div className="text-[var(--text-tertiary)] text-xs">
-            Install from{" "}
-            <button
-              onClick={() => openUrl("https://cli.github.com")}
-              className="text-[var(--accent)] hover:underline"
-            >
-              cli.github.com
-            </button>
-          </div>
+          <button
+            onClick={() => openUrl("https://cli.github.com")}
+            className="text-[10px] text-[var(--accent)] hover:text-[var(--accent-hover)] hover:underline transition-colors"
+          >
+            Install GitHub CLI
+          </button>
         </div>
       </div>
     );
@@ -395,27 +399,44 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center gap-3 px-3 py-2 border-b border-[var(--border-color)] flex-shrink-0">
-        <span className="text-xs text-[var(--text-secondary)]">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--border-color)] flex-shrink-0">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" className="flex-shrink-0 text-[var(--text-tertiary)]">
+          <path fillRule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z" />
+        </svg>
+        <span className="text-xs text-[var(--text-primary)] font-medium">
           Pull Requests
         </span>
-        <span className="text-[10px] text-[var(--text-tertiary)]">
-          {totalCount} open
-        </span>
-        <div className="ml-auto">
+        {totalCount > 0 && (
+          <span className="text-[10px] text-[var(--text-tertiary)] tabular-nums">
+            {totalCount} open
+          </span>
+        )}
+        <div className="ml-auto flex-shrink-0">
           <button
             onClick={() => { refresh(); fetchBranch(); }}
-            className="text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--bg-tertiary)]"
+            className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors p-1 rounded hover:bg-[var(--bg-tertiary)]"
             title="Refresh"
           >
-            {loading ? "..." : "Refresh"}
+            {loading ? (
+              <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path fillRule="evenodd" d="M8 2.5a5.487 5.487 0 00-4.131 1.869l1.204 1.204A.25.25 0 014.896 6H1.25A.25.25 0 011 5.75V2.104a.25.25 0 01.427-.177l1.38 1.38A7.001 7.001 0 0114.95 7.16a.75.75 0 11-1.49.178A5.501 5.501 0 008 2.5zM1.705 8.005a.75.75 0 01.834.656 5.501 5.501 0 009.592 2.97l-1.204-1.204a.25.25 0 01.177-.427h3.646a.25.25 0 01.25.25v3.646a.25.25 0 01-.427.177l-1.38-1.38A7.001 7.001 0 011.05 8.84a.75.75 0 01.656-.834z" />
+              </svg>
+            )}
           </button>
         </div>
       </div>
 
       {totalCount === 0 ? (
-        <div className="flex items-center justify-center flex-1 text-[var(--text-tertiary)] text-sm">
-          No open pull requests
+        <div className="flex flex-col items-center justify-center flex-1 gap-2 text-[var(--text-tertiary)]">
+          <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" className="opacity-40">
+            <path fillRule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z" />
+          </svg>
+          <span className="text-xs">No open pull requests</span>
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto">

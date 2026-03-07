@@ -6,6 +6,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { jsonlDirectory, modelsForProvider, type Session } from "../types";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { sendNotification } from "@tauri-apps/plugin-notification";
 import { getHighlighter, ensureLang, langFromPath } from "./DiffViewer";
 import FilePickerModal, { type FileReference } from "./FilePickerModal";
 
@@ -25,6 +26,7 @@ interface AgentChatProps {
   session?: Session;
   onResume?: () => Promise<void> | void;
   onFork?: (systemPrompt: string) => void;
+  onForkWithPrompt?: (systemPrompt: string, pendingPrompt: string, planContent?: string) => void;
   currentModel?: string;
   onInputHeightChange?: (height: number) => void;
   onEditFile?: (filePath: string, line?: number) => void;
@@ -85,10 +87,19 @@ function groupToolBlocks(blocks: ContentBlock[], messageId: string): GroupedBloc
     }
   }
 
+  // Collect tool_use IDs to hide (e.g. ToolSearch — internal plumbing, no user value)
+  const hiddenToolIds = new Set<string>();
+  for (const block of blocks) {
+    if (block.type === "tool_use" && block.name === "ToolSearch" && block.id) {
+      hiddenToolIds.add(block.id);
+    }
+  }
+
   // Second pass: build grouped items
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
     if (block.type === "tool_use") {
+      if (hiddenToolIds.has(block.id || "")) continue;
       const blockId = block.id || `${messageId}-${i}`;
       const toolResult = block.id ? toolResultMap.get(block.id) : undefined;
       items.push({
@@ -96,7 +107,7 @@ function groupToolBlocks(blocks: ContentBlock[], messageId: string): GroupedBloc
         group: { toolUse: block, toolResult, blockId },
       });
     } else if (block.type === "tool_result") {
-      // Skip - already paired with tool_use
+      // Skip - already paired with tool_use (or hidden)
       continue;
     } else {
       items.push({ type: "content", block });
@@ -194,73 +205,6 @@ function parseHistoryLines(
   });
 }
 
-// ── OpenCode Usage Indicator ──────────────────────────────────────────
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function OpenCodeUsageIndicator({ data }: { data: Record<string, any> }) {
-  // session.status() returns varied shapes — extract what we can
-  const input = data?.input ?? data?.tokens?.input ?? data?.usage?.input_tokens;
-  const output = data?.output ?? data?.tokens?.output ?? data?.usage?.output_tokens;
-  const limit = data?.limit ?? data?.rateLimit?.remaining ?? data?.remaining;
-  const used = data?.used ?? data?.rateLimit?.used;
-  const total = data?.total ?? data?.rateLimit?.limit;
-  const percent = data?.percent ?? data?.rateLimit?.percent;
-
-  // Format token count
-  const fmt = (n: number) => {
-    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-    if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
-    return String(n);
-  };
-
-  const parts: string[] = [];
-
-  if (typeof limit === "number") {
-    parts.push(`${fmt(limit)} remaining`);
-  }
-  if (typeof used === "number" && typeof total === "number") {
-    parts.push(`${fmt(used)}/${fmt(total)} used`);
-  }
-  if (typeof percent === "number") {
-    parts.push(`${percent.toFixed(0)}% used`);
-  }
-  if (typeof input === "number" || typeof output === "number") {
-    const tok = (input || 0) + (output || 0);
-    if (tok > 0) parts.push(`${fmt(tok)} tokens`);
-  }
-
-  // If we got data but nothing recognizable, show raw JSON keys for debugging
-  if (parts.length === 0 && data) {
-    const keys = Object.keys(data);
-    if (keys.length > 0) {
-      // Show a compact summary of what the server returned
-      return (
-        <span
-          className="flex items-center gap-1 cursor-help"
-          title={JSON.stringify(data, null, 2)}
-        >
-          OC: {keys.slice(0, 3).join(", ")}{keys.length > 3 ? "…" : ""}
-        </span>
-      );
-    }
-    return null;
-  }
-
-  if (parts.length === 0) return null;
-
-  // Color: green if plenty remaining, yellow if getting low, red if critical
-  let color = "text-[var(--text-tertiary)]";
-  if (typeof percent === "number") {
-    if (percent > 80) color = "text-red-400";
-    else if (percent > 60) color = "text-yellow-400";
-  }
-
-  return (
-    <span className={`flex items-center gap-1 ${color}`} title={JSON.stringify(data, null, 2)}>
-      OC: {parts.join(" · ")}
-    </span>
-  );
-}
 
 // ── Component ────────────────────────────────────────────────────────
 
@@ -277,6 +221,7 @@ const AgentChat = memo(function AgentChat({
   session,
   onResume,
   onFork,
+  onForkWithPrompt,
   currentModel = "claude-opus-4-6",
   onInputHeightChange,
   onAvailableModels,
@@ -292,6 +237,7 @@ const AgentChat = memo(function AgentChat({
   const generationStartRef = useRef<number>(0);
   const [currentTodo, setCurrentTodo] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] = useState<{ toolName: string; input: Record<string, unknown> } | null>(null);
+  const [pendingQuestion, setPendingQuestion] = useState<{ blockId: string; questions: AskQuestion[] } | null>(null);
   // Tool expansion state: single object to avoid double state updates
   // "expanded" = user manually expanded, "collapsed" = user manually collapsed, undefined = default
   const [toolStates, setToolStates] = useState<Record<string, "expanded" | "collapsed">>({});
@@ -299,8 +245,6 @@ const AgentChat = memo(function AgentChat({
   const [fileReferences, setFileReferences] = useState<FileReference[]>([]);
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [viewingFileRef, setViewingFileRef] = useState<FileReference | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [opencodeUsage, setOpencodeUsage] = useState<Record<string, any> | null>(null);
   // Accumulated usage for bridge-based sessions (OpenCode) — reported to parent for context bar
   const accumulatedUsageRef = useRef({ inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, costUsd: 0, contextTokens: 0 });
   const onUsageUpdateRef = useRef(onUsageUpdate);
@@ -475,6 +419,8 @@ const AgentChat = memo(function AgentChat({
   onResumeRef.current = onResume;
   const onForkRef = useRef(onFork);
   onForkRef.current = onFork;
+  const onForkWithPromptRef = useRef(onForkWithPrompt);
+  onForkWithPromptRef.current = onForkWithPrompt;
   const onAvailableModelsRef = useRef(onAvailableModels);
   onAvailableModelsRef.current = onAvailableModels;
   const onRenameRef = useRef(onRename);
@@ -512,6 +458,7 @@ const AgentChat = memo(function AgentChat({
       const builtins: Cmd[] = [
         { name: "clear", description: "Clear conversation display", source: "built-in" },
         { name: "compact", description: "Compact conversation to save context", source: "built-in" },
+        { name: "session-id", description: "Copy session ID to clipboard", source: "built-in" },
       ];
 
       // Try the dedicated backend command first (fast, scans both project + user dirs)
@@ -676,6 +623,29 @@ const AgentChat = memo(function AgentChat({
     setRenderCount((prev) => Math.min(prev + LOAD_MORE_CHUNK, messages.length));
   }, [messages.length]);
 
+  // Auto-load more messages when sentinel becomes visible
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    const container = scrollRef.current;
+    if (!el || !container) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          // Preserve scroll position when prepending messages
+          const prevHeight = container.scrollHeight;
+          loadMore();
+          requestAnimationFrame(() => {
+            container.scrollTop += container.scrollHeight - prevHeight;
+          });
+        }
+      },
+      { root: container, rootMargin: "200px 0px 0px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loadMore]);
+
   // Auto-scroll to bottom
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -721,69 +691,79 @@ const AgentChat = memo(function AgentChat({
     async function loadHistory() {
       if (!mountedRef.current) return;
 
-      // Always try JSONL first (persisted on disk) — this preserves
-      // conversation across bridge restarts (resume).
-      let lines: string[] = [];
-      if (session?.claudeSessionId) {
-        try {
-          lines = await invoke<string[]>("get_conversation_jsonl", {
-            claudeSessionId: session.claudeSessionId,
-            directory: jsonlDirectory(session),
+      const claudeSessionId = session?.claudeSessionId;
+      const dir = session ? jsonlDirectory(session) : "";
+
+      // Helper to merge replayed messages into state
+      const mergeMessages = (replayed: ChatMessage[]) => {
+        if (!mountedRef.current) return;
+        if (replayed.length > 0) {
+          console.log(`[loadHistory] ${sessionId}: ${replayed.length} messages, first=${replayed[0].type}:${replayed[0].id.substring(0, 20)}, last=${replayed[replayed.length-1].type}:${replayed[replayed.length-1].id.substring(0, 20)}`);
+        }
+        setMessages((prev) => {
+          lastLoadedClaudeSessionIdRef.current = claudeSessionId ?? null;
+          if (prev.length === 0) return replayed;
+          const newMessages = prev.filter((m) => {
+            if (replayed.some((r) => r.id === m.id)) return false;
+            if (m.type === "user") {
+              const mText = m.content.find((b) => b.type === "text")?.text || "";
+              return !replayed.some((r) => {
+                if (r.type !== "user") return false;
+                const rText = r.content.find((b) => b.type === "text")?.text || "";
+                return rText === mText;
+              });
+            }
+            return true;
           });
+          if (newMessages.length === 0) return replayed;
+          return [...replayed, ...newMessages];
+        });
+      };
+
+      // Phase 1: Load tail for fast initial display
+      let tailTotal = 0;
+      let tailLineCount = 0;
+      if (claudeSessionId) {
+        try {
+          const tail = await invoke<{ lines: string[]; total: number }>("get_conversation_jsonl_tail", {
+            claudeSessionId,
+            directory: dir,
+            maxLines: 300,
+          });
+          tailTotal = tail.total;
+          tailLineCount = tail.lines.length;
+          if (tail.lines.length > 0) {
+            const replayed = await parseHistoryLines(tail.lines, sdkMessageToChatMessage);
+            mergeMessages(replayed);
+          }
         } catch {}
       }
 
-      // If no JSONL (brand-new session), fall back to in-memory history
-      if (lines.length === 0) {
+      // If no JSONL tail (brand-new session), fall back to in-memory history
+      if (tailLineCount === 0) {
+        let lines: string[] = [];
         try {
           lines = await invoke<string[]>("get_agent_history", { sessionId });
         } catch {}
+        if (lines.length > 0) {
+          const replayed = await parseHistoryLines(lines, sdkMessageToChatMessage);
+          mergeMessages(replayed);
+        }
+        return;
       }
 
-      if (!mountedRef.current) return;
-
-      // The SDK writes each content block as a separate JSONL line with the same
-      // message ID. We must accumulate blocks per message ID to reconstruct
-      // complete messages, then deduplicate so only one ChatMessage per API
-      // message is shown.
-      //
-      // Strategy: Process all lines and track which message IDs we've seen.
-      // For each unique message (by ID), keep only ONE ChatMessage entry but
-      // update its content as we see more blocks. Track insertion order via
-      // a Map that preserves order.
-      const replayed = await parseHistoryLines(lines, sdkMessageToChatMessage);
-
-      if (replayed.length > 0) {
-        console.log(`[loadHistory] ${sessionId}: ${replayed.length} messages, first=${replayed[0].type}:${replayed[0].id.substring(0, 20)}, last=${replayed[replayed.length-1].type}:${replayed[replayed.length-1].id.substring(0, 20)}`);
+      // Phase 2: Background backfill if there are older messages
+      if (tailTotal > tailLineCount && claudeSessionId) {
+        try {
+          const allLines = await invoke<string[]>("get_conversation_jsonl", {
+            claudeSessionId,
+            directory: dir,
+          });
+          if (!mountedRef.current) return;
+          const replayed = await parseHistoryLines(allLines, sdkMessageToChatMessage);
+          mergeMessages(replayed);
+        } catch {}
       }
-
-      setMessages((prev) => {
-        lastLoadedClaudeSessionIdRef.current = session?.claudeSessionId ?? null;
-
-        if (prev.length === 0) {
-          return replayed;
-        }
-        const newMessages = prev.filter((m) => {
-          // Match by ID first
-          if (replayed.some((r) => r.id === m.id)) return false;
-          // For user messages, also match by text content to deduplicate
-          // live-added messages (from sendMessage) vs replayed ones (from JSONL)
-          // which have different IDs
-          if (m.type === "user") {
-            const mText = m.content.find((b) => b.type === "text")?.text || "";
-            return !replayed.some((r) => {
-              if (r.type !== "user") return false;
-              const rText = r.content.find((b) => b.type === "text")?.text || "";
-              return rText === mText;
-            });
-          }
-          return true;
-        });
-        if (newMessages.length === 0) {
-          return replayed;
-        }
-        return [...replayed, ...newMessages];
-      });
     }
 
     loadHistory();
@@ -814,12 +794,6 @@ const AgentChat = memo(function AgentChat({
       return;
     }
 
-    if (msgType === "opencode_usage") {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      setOpencodeUsage(msg.data as any);
-      return;
-    }
-
     if (msgType === "system" && msg.subtype === "bridge_ready") {
       // Set the selected model on the new agent
       if (currentModelRef.current !== "claude-opus-4-6") {
@@ -836,7 +810,7 @@ const AgentChat = memo(function AgentChat({
           {
             id: `user-${Date.now()}`,
             type: "user",
-            content: [{ type: "text", text: prompt }],
+            content: [{ type: "text", text: session?.planContent ? "Execute the plan." : prompt }],
             timestamp: Date.now(),
           },
         ]);
@@ -921,6 +895,11 @@ const AgentChat = memo(function AgentChat({
         for (const block of content) {
           if (block.type === "tool_use" && block.name === "AskUserQuestion") {
             onQuestionChangeRef.current?.(true);
+            const input = (block as { input?: { questions?: AskQuestion[] } }).input;
+            const questions = Array.isArray(input?.questions) ? input.questions : [];
+            if (questions.length > 0) {
+              setPendingQuestion({ blockId: (block as { id: string }).id, questions });
+            }
           }
         }
 
@@ -954,6 +933,7 @@ const AgentChat = memo(function AgentChat({
     if (msgType === "result") {
       setIsGenerating(false);
       setCurrentTodo(null);
+      setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
       const result = msg as Record<string, unknown>;
       const durationMs = generationStartRef.current ? Date.now() - generationStartRef.current : undefined;
@@ -999,6 +979,7 @@ const AgentChat = memo(function AgentChat({
     if (msgType === "query_complete") {
       setIsGenerating(false);
       setCurrentTodo(null);
+      setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
       return;
     }
@@ -1007,6 +988,7 @@ const AgentChat = memo(function AgentChat({
     if (msgType === "aborted") {
       setIsGenerating(false);
       setCurrentTodo(null);
+      setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
       return;
     }
@@ -1015,13 +997,21 @@ const AgentChat = memo(function AgentChat({
     if (msgType === "error") {
       setIsGenerating(false);
       setCurrentTodo(null);
+      setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
+      // Suppress "aborted by user" errors — treat like a silent abort
+      // (SDK's AbortError class doesn't set name="AbortError", so the bridge
+      // emits it as a regular error instead of the "aborted" event type)
+      const errorText = (msg.error as string) || "";
+      if (errorText.includes("aborted by user")) {
+        return;
+      }
       setMessages((prev) => [
         ...prev.filter((m) => !m.isStreaming),
         {
           id: `error-${Date.now()}`,
           type: "error",
-          content: [{ type: "text", text: (msg.error as string) || "Unknown error" }],
+          content: [{ type: "text", text: errorText || "Unknown error" }],
           timestamp: Date.now(),
         },
       ]);
@@ -1034,6 +1024,12 @@ const AgentChat = memo(function AgentChat({
         toolName: msg.toolName as string,
         input: msg.input as Record<string, unknown>,
       });
+      if (msg.toolName === "ExitPlanMode") {
+        sendNotification({
+          title: "Plan ready",
+          body: session?.name || "A session needs your approval",
+        });
+      }
       return;
     }
 
@@ -1238,6 +1234,14 @@ const AgentChat = memo(function AgentChat({
       sendMessage("Please provide a brief summary of our conversation so far, then we can continue from that context.");
       return;
     }
+    if (text === "/session-id") {
+      const sid = session?.claudeSessionId;
+      if (sid) {
+        navigator.clipboard.writeText(sid);
+      }
+      setInputText("");
+      return;
+    }
     // Build file reference context prefix
     const refs = fileReferences;
     let fileContext = "";
@@ -1372,6 +1376,7 @@ const AgentChat = memo(function AgentChat({
   // The bridge's canUseTool callback expects a Record<questionText, answerString>.
   const answerQuestion = useCallback((answer: Record<string, string>) => {
     onQuestionChangeRef.current?.(false);
+    setPendingQuestion(null);
     const msg = JSON.stringify({ type: "ask_user_answer", answer });
     invoke("send_agent_message", { sessionId, message: msg }).catch(() => {
       setInputText(Object.values(answer).join(", "));
@@ -1393,9 +1398,53 @@ const AgentChat = memo(function AgentChat({
   // Respond to a permission request (plan mode)
   const respondPermission = useCallback((allowed: boolean) => {
     setPendingPermission(null);
+    if (!allowed) {
+      // Deny ends the agent turn — stop spinner immediately
+      setIsGenerating(false);
+      onUsageUpdateRef.current?.({ ...accumulatedUsageRef.current, isBusy: false });
+    }
     const msg = JSON.stringify({ type: "permission_response", allowed });
     invoke("send_agent_message", { sessionId, message: msg }).catch(() => {});
   }, [sessionId]);
+
+  // Allow in a new conversation: fork with plan as pending prompt, deny current
+  const allowInNewConversation = useCallback(() => {
+    if (!onForkWithPromptRef.current) return;
+    // Extract plan file content from Write tool calls targeting .claude/plans/
+    const planFileContent = messages
+      .filter((m) => m.type === "assistant")
+      .flatMap((m) => Array.isArray(m.content) ? m.content : [])
+      .filter((b: ContentBlock) => b.type === "tool_use" && (b.name === "Write" || b.name === "write" || b.name === "Edit" || b.name === "edit"))
+      .map((b: ContentBlock) => b.input)
+      .find((input) => (input?.file_path as string)?.includes(".claude/plans/"));
+    const planMarkdown = (planFileContent?.content as string) || "";
+    // Extract plan text from assistant messages (fallback)
+    const assistantTexts = messages
+      .filter((m) => m.type === "assistant")
+      .map((m) =>
+        Array.isArray(m.content)
+          ? m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")
+          : ""
+      )
+      .filter(Boolean);
+    const planText = planMarkdown || assistantTexts[assistantTexts.length - 1] || "";
+    // Build fork context (transcript of all messages)
+    const lines = messages.map((m) => {
+      const text = Array.isArray(m.content)
+        ? m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")
+        : "";
+      if (m.type === "user") return `Human: ${text}`;
+      if (m.type === "assistant") return `Assistant: ${text}`;
+      return "";
+    }).filter(Boolean);
+    const systemPrompt = `This conversation was forked from a plan-mode session. Here is the conversation context:\n\n<fork-context>\n${lines.join("\n\n")}\n</fork-context>\n\nExecute the plan. Do not ask for confirmation — proceed directly.`;
+    // Deny current permission and abort agent so it actually stops
+    respondPermission(false);
+    invoke("abort_agent", { sessionId }).catch(() => {});
+    abortedRef.current = true;
+    // Create new session with bypass permissions, including plan content for display
+    onForkWithPromptRef.current(systemPrompt, planText, planMarkdown || undefined);
+  }, [messages, respondPermission]);
 
   // ── Edit / resend a user message ──────────────────────────────────
 
@@ -1657,7 +1706,11 @@ const AgentChat = memo(function AgentChat({
         {/* Skip rendering message DOM for inactive tabs to avoid layout thrash */}
         {isActive ? (
           <>
-            {messages.length === 0 && !isGenerating && (
+            {session?.planContent && (
+              <PinnedPlanBlock content={session.planContent} />
+            )}
+
+            {messages.length === 0 && !isGenerating && !session?.planContent && (
               <div className="flex items-center justify-center h-full">
                 <p className="text-sm text-[var(--text-tertiary)]">
                   Send a message to start the conversation
@@ -1665,14 +1718,7 @@ const AgentChat = memo(function AgentChat({
               </div>
             )}
 
-            {hasMore && (
-              <button
-                onClick={loadMore}
-                className="self-center px-3 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
-              >
-                Load {Math.min(LOAD_MORE_CHUNK, messages.length - renderCount)} earlier messages…
-              </button>
-            )}
+            {hasMore && <div ref={sentinelRef} className="h-1" />}
 
             {deferredMessages.map((msg, idx) => (
               <MessageBubble
@@ -1681,7 +1727,7 @@ const AgentChat = memo(function AgentChat({
                 toolStates={toolStates}
                 onToggleTool={toggleTool}
                 isLastMessage={idx === deferredMessages.length - 1 && trailingMessages.length === 0}
-                onAnswerQuestion={answerQuestion}
+                onAnswerQuestion={pendingQuestion ? undefined : answerQuestion}
                 onEdit={editMessage}
                 onFork={forkFromMessage}
                 onRetry={retryMessage}
@@ -1695,7 +1741,7 @@ const AgentChat = memo(function AgentChat({
                 toolStates={toolStates}
                 onToggleTool={toggleTool}
                 isLastMessage={idx === trailingMessages.length - 1}
-                onAnswerQuestion={answerQuestion}
+                onAnswerQuestion={pendingQuestion ? undefined : answerQuestion}
                 onEdit={editMessage}
                 onFork={forkFromMessage}
                 onRetry={retryMessage}
@@ -1703,7 +1749,7 @@ const AgentChat = memo(function AgentChat({
               />
             ))}
 
-            {isGenerating && !pendingPermission && (
+            {isGenerating && !pendingPermission && !pendingQuestion && (
               <div className="flex items-center gap-2 px-3 py-2">
                 <div className="flex gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
@@ -1713,39 +1759,6 @@ const AgentChat = memo(function AgentChat({
                 <span className="text-xs text-[var(--text-tertiary)]">
                   {currentTodo || "Thinking…"}
                 </span>
-              </div>
-            )}
-
-            {pendingPermission && (
-              <div className="mx-3 my-2 p-3 rounded-lg border border-[var(--warning-border,var(--border-color))] bg-[var(--bg-secondary)]">
-                <div className="text-xs text-[var(--text-secondary)] mb-1">Permission requested</div>
-                <div className="text-sm text-[var(--text-primary)] font-mono mb-2">
-                  {pendingPermission.toolName}
-                  {pendingPermission.input?.command != null && (
-                    <span className="text-[var(--text-tertiary)] ml-1">
-                      {String(pendingPermission.input.command).substring(0, 200)}
-                    </span>
-                  )}
-                  {pendingPermission.input?.file_path != null && (
-                    <span className="text-[var(--text-tertiary)] ml-1">
-                      {String(pendingPermission.input.file_path)}
-                    </span>
-                  )}
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => respondPermission(true)}
-                    className="px-3 py-1 text-xs rounded bg-[var(--accent)] text-white hover:opacity-90"
-                  >
-                    Allow
-                  </button>
-                  <button
-                    onClick={() => respondPermission(false)}
-                    className="px-3 py-1 text-xs rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
-                  >
-                    Deny
-                  </button>
-                </div>
               </div>
             )}
           </>
@@ -1833,113 +1846,132 @@ const AgentChat = memo(function AgentChat({
           </div>
         )}
 
-        {/* Attachments: file refs + images on one line */}
-        {(fileReferences.length > 0 || images.length > 0) && (
-          <div className="flex gap-2 flex-wrap items-center">
-            {fileReferences.map((ref) => {
-              const fileName = ref.filePath.split("/").pop()!;
-              const previewLines = ref.content.split("\n").slice(0, 8);
-              return (
-                <div
-                  key={ref.filePath}
-                  className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)] cursor-pointer hover:border-[var(--accent)] transition-colors"
-                  onClick={() => setViewingFileRef(ref)}
-                >
-                  <div className="w-full h-full bg-[var(--bg-tertiary)] p-1 overflow-hidden">
-                    <pre className="text-[3.5px] leading-[4.5px] text-[var(--text-tertiary)] font-mono whitespace-pre overflow-hidden pointer-events-none select-none">{previewLines.join("\n")}</pre>
-                  </div>
-                  <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent pt-3 pb-0.5 px-1">
-                    <span className="text-[8px] text-white/90 font-medium truncate block leading-tight">{fileName}</span>
-                    <span className="text-[7px] text-white/60 block leading-tight">L{ref.startLine}-{ref.endLine}</span>
-                  </div>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); removeFileReference(ref.filePath); }}
-                    className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl text-white opacity-0 group-hover:opacity-100 transition-opacity"
+        {/* Inline question / permission composer OR normal input */}
+        {pendingQuestion ? (
+          <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-3">
+            <div className="text-[10px] font-semibold text-[var(--accent)] uppercase tracking-wide mb-1.5">Agent is asking</div>
+            <InlineQuestionComposer
+              questions={pendingQuestion.questions}
+              onAnswer={answerQuestion}
+            />
+          </div>
+        ) : pendingPermission ? (
+          <div className="rounded-lg border border-[var(--warning-border,var(--border-color))] bg-[var(--bg-secondary)] p-3">
+            <InlinePermissionComposer
+              permission={pendingPermission}
+              onAllow={() => respondPermission(true)}
+              onDeny={() => respondPermission(false)}
+              onAllowInNew={allowInNewConversation}
+            />
+          </div>
+        ) : (
+          <>
+            {/* Attachments: file refs + images on one line */}
+            {(fileReferences.length > 0 || images.length > 0) && (
+              <div className="flex gap-2 flex-wrap items-center">
+                {fileReferences.map((ref) => {
+                  const fileName = ref.filePath.split("/").pop()!;
+                  const previewLines = ref.content.split("\n").slice(0, 8);
+                  return (
+                    <div
+                      key={ref.filePath}
+                      className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)] cursor-pointer hover:border-[var(--accent)] transition-colors"
+                      onClick={() => setViewingFileRef(ref)}
+                    >
+                      <div className="w-full h-full bg-[var(--bg-tertiary)] p-1 overflow-hidden">
+                        <pre className="text-[3.5px] leading-[4.5px] text-[var(--text-tertiary)] font-mono whitespace-pre overflow-hidden pointer-events-none select-none">{previewLines.join("\n")}</pre>
+                      </div>
+                      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent pt-3 pb-0.5 px-1">
+                        <span className="text-[8px] text-white/90 font-medium truncate block leading-tight">{fileName}</span>
+                        <span className="text-[7px] text-white/60 block leading-tight">L{ref.startLine}-{ref.endLine}</span>
+                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); removeFileReference(ref.filePath); }}
+                        className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  );
+                })}
+                {images.map((img) => (
+                  <div
+                    key={img.id}
+                    className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)]"
                   >
-                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              );
-            })}
-            {images.map((img) => (
-              <div
-                key={img.id}
-                className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)]"
-              >
-                <ImageWithLightbox src={`data:${img.mediaType};base64,${img.data}`} thumbnail />
+                    <ImageWithLightbox src={`data:${img.mediaType};base64,${img.data}`} thumbnail />
+                    <button
+                      onClick={() => removeImage(img.id)}
+                      className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex gap-2 items-end">
+              <div className="flex-1 flex items-end min-h-[38px] bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg focus-within:border-[var(--accent)] transition-colors">
+              {sessionDir && (
                 <button
-                  onClick={() => removeImage(img.id)}
-                  className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                  onClick={() => setShowFilePicker(true)}
+                  className="p-2 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors shrink-0 self-center"
+                  title="Attach file (⌘O)"
                 >
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
                   </svg>
                 </button>
+              )}
+              <textarea
+                ref={inputRef}
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                placeholder={`Message ${modelsForProvider(session?.provider || "claude-code").find((m) => m.id === currentModel)?.name ?? currentModel.split("/").pop() ?? "Agent"}…`}
+                rows={1}
+                className="flex-1 resize-none bg-transparent border-none px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none max-h-32 overflow-y-auto"
+                style={{ minHeight: "20px" }}
+                onInput={(e) => {
+                  const target = e.target as HTMLTextAreaElement;
+                  target.style.height = "auto";
+                  target.style.height = `${Math.min(target.scrollHeight, 128)}px`;
+                }}
+              />
               </div>
-            ))}
-          </div>
+              {isGenerating ? (
+                <button
+                  onClick={handleAbort}
+                  className="px-3 min-h-[38px] bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg text-sm font-medium transition-colors shrink-0"
+                >
+                  Stop
+                </button>
+              ) : (
+                <button
+                  onClick={() => sendMessage()}
+                  disabled={!inputText.trim() && images.length === 0 && fileReferences.length === 0}
+                  className="px-3 min-h-[38px] bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors shrink-0"
+                >
+                  Send
+                </button>
+              )}
+            </div>
+          </>
         )}
-
-        <div className="flex gap-2 items-end">
-          <div className="flex-1 flex items-end bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg focus-within:border-[var(--accent)] transition-colors">
-          {sessionDir && (
-            <button
-              onClick={() => setShowFilePicker(true)}
-              className="p-2 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors shrink-0 self-center"
-              title="Attach file (⌘O)"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
-              </svg>
-            </button>
-          )}
-          <textarea
-            ref={inputRef}
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder={`Message ${modelsForProvider(session?.provider || "claude-code").find((m) => m.id === currentModel)?.name ?? currentModel.split("/").pop() ?? "Agent"}…`}
-            rows={1}
-            className="flex-1 resize-none bg-transparent border-none px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none max-h-32 overflow-y-auto"
-            style={{ minHeight: "38px" }}
-            onInput={(e) => {
-              const target = e.target as HTMLTextAreaElement;
-              target.style.height = "auto";
-              target.style.height = `${Math.min(target.scrollHeight, 128)}px`;
-            }}
-          />
-          </div>
-          {isGenerating ? (
-            <button
-              onClick={handleAbort}
-              className="px-3 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg text-sm font-medium transition-colors shrink-0"
-            >
-              Stop
-            </button>
-          ) : (
-            <button
-              onClick={() => sendMessage()}
-              disabled={!inputText.trim() && images.length === 0 && fileReferences.length === 0}
-              className="px-3 py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors shrink-0"
-            >
-              Send
-            </button>
-          )}
-        </div>
-        {(currentBranch || opencodeUsage) && (
+        {currentBranch && (
           <div className="flex items-center gap-2 mt-1 px-1 text-[10px] text-[var(--text-tertiary)]">
-            {currentBranch && (
-              <span className="flex items-center gap-1">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
-                </svg>
-                {currentBranch}
-              </span>
-            )}
-            {opencodeUsage && <OpenCodeUsageIndicator data={opencodeUsage} />}
+            <span className="flex items-center gap-1">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
+              </svg>
+              {currentBranch}
+            </span>
           </div>
         )}
       </div>
@@ -2258,6 +2290,44 @@ function MarkdownContent({ text }: { text: string }) {
       onClick={handleLinkClick}
       dangerouslySetInnerHTML={{ __html: html }}
     />
+  );
+}
+
+// ── Pinned plan block ───────────────────────────────────────────────
+
+function PinnedPlanBlock({ content }: { content: string }) {
+  const [collapsed, setCollapsed] = useState(true);
+  const title = useMemo(() => {
+    const m = content.match(/^#\s+(.+)$/m);
+    return m ? m[1] : undefined;
+  }, [content]);
+  return (
+    <div className="border border-[var(--border-color)] rounded-lg overflow-hidden mb-2">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
+      >
+        <svg
+          className={`w-3 h-3 shrink-0 transition-transform ${collapsed ? "" : "rotate-90"}`}
+          viewBox="0 0 24 24"
+          fill="currentColor"
+        >
+          <path d="M9 18l6-6-6-6" />
+        </svg>
+        <span className="text-xs font-medium text-violet-400">Plan</span>
+        {title && (
+          <span className="text-xs text-[var(--text-tertiary)] truncate flex-1">
+            {title}
+          </span>
+        )}
+        <span className="text-xs text-green-400">✓</span>
+      </button>
+      {!collapsed && (
+        <div className="border-t border-[var(--border-color)] bg-[var(--bg-secondary)] px-4 pt-3 pb-3 text-sm text-[var(--text-primary)] overflow-y-auto max-h-64">
+          <MarkdownContent text={content} />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2646,7 +2716,7 @@ function ToolInputView({ toolName, input }: { toolName: string; input: Record<st
 
 // ── Consolidated tool group ────────────────────────────────────────
 
-// ── AskUserQuestion block ──────────────────────────────────────────
+// ── Inline composer overlays ─────────────────────────────────────────
 
 interface AskQuestion {
   question: string;
@@ -2654,6 +2724,143 @@ interface AskQuestion {
   options?: Array<{ label: string; description?: string }>;
   multiSelect?: boolean;
 }
+
+function InlineQuestionComposer({
+  questions,
+  onAnswer,
+}: {
+  questions: AskQuestion[];
+  onAnswer: (answer: Record<string, string>) => void;
+}) {
+  const [selected, setSelected] = useState<Record<number, string>>({});
+  const isSingle = questions.length === 1;
+
+  const handleSelect = (qi: number, label: string) => {
+    if (isSingle) {
+      onAnswer({ [questions[0].question]: label });
+    } else {
+      setSelected((prev) => ({ ...prev, [qi]: label }));
+    }
+  };
+
+  const allAnswered = !isSingle && questions.every((_, qi) => selected[qi] != null);
+
+  const handleSubmit = () => {
+    if (!allAnswered) return;
+    const answers: Record<string, string> = {};
+    questions.forEach((q, qi) => { answers[q.question] = selected[qi]; });
+    onAnswer(answers);
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      {questions.map((q, qi) => (
+        <div key={qi} className="flex flex-col gap-1.5">
+          {q.header && (
+            <div className="text-[10px] font-semibold text-[var(--accent)] uppercase tracking-wide">
+              {q.header}
+            </div>
+          )}
+          <div className="text-xs text-[var(--text-secondary)]">
+            {q.question}
+          </div>
+          {q.options && q.options.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {q.options.map((opt, oi) => {
+                const isSelected = selected[qi] === opt.label;
+                return (
+                  <button
+                    key={oi}
+                    onClick={() => handleSelect(qi, opt.label)}
+                    title={opt.description}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                      isSelected
+                        ? "bg-[var(--accent)] text-white"
+                        : "bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:bg-[var(--accent)]/15 hover:text-[var(--accent)]"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ))}
+      {!isSingle && (
+        <button
+          disabled={!allAnswered}
+          onClick={handleSubmit}
+          className={`self-end px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+            allAnswered
+              ? "bg-[var(--accent)] text-white hover:bg-[var(--accent)]/90"
+              : "bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] cursor-not-allowed"
+          }`}
+        >
+          Submit
+        </button>
+      )}
+    </div>
+  );
+}
+
+function InlinePermissionComposer({
+  permission,
+  onAllow,
+  onDeny,
+  onAllowInNew,
+}: {
+  permission: { toolName: string; input: Record<string, unknown> };
+  onAllow: () => void;
+  onDeny: () => void;
+  onAllowInNew: () => void;
+}) {
+  const isExitPlan = permission.toolName === "ExitPlanMode";
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-xs text-[var(--text-secondary)]">
+        {isExitPlan ? "Plan ready — how do you want to proceed?" : "Permission requested"}
+      </div>
+      {!isExitPlan && (
+        <div className="text-sm text-[var(--text-primary)] font-mono truncate">
+          {permission.toolName}
+          {permission.input?.command != null && (
+            <span className="text-[var(--text-tertiary)] ml-1">
+              {String(permission.input.command).substring(0, 200)}
+            </span>
+          )}
+          {permission.input?.file_path != null && (
+            <span className="text-[var(--text-tertiary)] ml-1">
+              {String(permission.input.file_path)}
+            </span>
+          )}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <button
+          onClick={onAllow}
+          className="px-3 py-1.5 text-xs rounded-md bg-[var(--accent)] text-white hover:opacity-90 font-medium"
+        >
+          {isExitPlan ? "Execute here" : "Allow"}
+        </button>
+        <button
+          onClick={onAllowInNew}
+          className="px-3 py-1.5 text-xs rounded-md bg-[var(--accent)]/80 text-white hover:opacity-90 font-medium"
+        >
+          {isExitPlan ? "Execute in new conversation" : "Allow in new"}
+        </button>
+        <button
+          onClick={onDeny}
+          className="px-3 py-1.5 text-xs rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] font-medium"
+        >
+          Deny
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── AskUserQuestion block ──────────────────────────────────────────
 
 function AskUserQuestionBlock({
   group,
@@ -2780,7 +2987,17 @@ function ConsolidatedToolGroup({
   collapsed: boolean;
   onToggle: (isCurrentlyExpanded: boolean) => void;
 }) {
-  const toolName = group.toolUse.name || "Unknown tool";
+  const rawToolName = group.toolUse.name || "Unknown tool";
+  // Normalize tool names to PascalCase so OpenCode's lowercase names
+  // (e.g. "write", "glob", "edit") match the same colors/summaries as Claude Code's
+  const toolName = useMemo(() => {
+    const canonicalMap: Record<string, string> = {
+      read: "Read", write: "Write", edit: "Edit", bash: "Bash",
+      glob: "Glob", grep: "Grep", websearch: "WebSearch", webfetch: "WebFetch",
+      task: "Task", todowrite: "TodoWrite", lsp: "LSP", agent: "Agent",
+    };
+    return canonicalMap[rawToolName.toLowerCase()] || rawToolName;
+  }, [rawToolName]);
   const input = group.toolUse.input || {};
   // Tool has a result if either:
   // 1. We have an explicit tool_result block matched to it, OR

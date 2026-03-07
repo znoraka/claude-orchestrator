@@ -84,7 +84,8 @@ interface SessionContextValue {
     pendingPrompt?: string,
     provider?: AgentProvider,
     model?: string,
-    permissionMode?: "bypassPermissions" | "plan"
+    permissionMode?: "bypassPermissions" | "plan",
+    planContent?: string
   ) => Promise<string>;
   createWorktree: (repoDir: string, branchName: string, worktreeName?: string) => Promise<string>;
   removeWorktree: (path: string) => Promise<void>;
@@ -332,7 +333,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       pendingPrompt?: string,
       provider: AgentProvider = "claude-code",
       model?: string,
-      permissionMode?: "bypassPermissions" | "plan"
+      permissionMode?: "bypassPermissions" | "plan",
+      planContent?: string
     ) => {
       const dir = normalizeDir(directory);
       const id = uuidv4();
@@ -352,6 +354,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         dangerouslySkipPermissions,
         permissionMode,
         pendingPrompt,
+        planContent,
       };
 
       dispatch({ type: "ADD", session });

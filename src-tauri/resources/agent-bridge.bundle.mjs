@@ -16727,6 +16727,10 @@ async function runQuery(userMessage) {
       if (isBypass) {
         return { behavior: "allow", updatedInput: input };
       }
+      if (toolName !== "ExitPlanMode") {
+        log(`canUseTool: auto-allowing ${toolName} in plan mode`);
+        return { behavior: "allow", updatedInput: input };
+      }
       log(`canUseTool: permission request for ${toolName}`);
       emit({ type: "permission_request", toolName, input });
       const allowed = await new Promise((resolve) => {

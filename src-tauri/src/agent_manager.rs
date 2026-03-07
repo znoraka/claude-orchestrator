@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -7,6 +8,16 @@ use tauri::{AppHandle, Emitter};
 
 /// Maximum stored messages per session for replay on component remount.
 const MAX_HISTORY_MESSAGES: usize = 10_000;
+
+/// Directory where bridge output is persisted for session restore.
+fn history_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join(".claude-orchestrator").join("history")
+}
+
+fn history_file_for(session_id: &str) -> PathBuf {
+    history_dir().join(format!("{}.jsonl", session_id))
+}
 
 pub struct AgentSession {
     stdin: ChildStdin,
@@ -48,6 +59,11 @@ impl AgentManager {
             let mut history = self.history.lock().map_err(|e| e.to_string())?;
             history.remove(session_id);
         }
+
+        // Ensure history directory exists for persistence
+        let hist_dir = history_dir();
+        let _ = std::fs::create_dir_all(&hist_dir);
+        let hist_file = history_file_for(session_id);
 
         let path_env = super::shell_path();
 
@@ -112,9 +128,16 @@ impl AgentManager {
         let sid_clone = sid.clone();
         let history_clone = Arc::clone(&history_ref);
         let sessions_clone = Arc::clone(&self.sessions);
+        let hist_file_clone = hist_file.clone();
         thread::spawn(move || {
             use std::io::{BufRead, BufReader};
             let reader = BufReader::new(stdout);
+            // Open file in append mode for persisting bridge output
+            let mut disk_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&hist_file_clone)
+                .ok();
             for line in reader.lines() {
                 let line = match line {
                     Ok(l) => l,
@@ -124,7 +147,7 @@ impl AgentManager {
                     continue;
                 }
 
-                // Store in history
+                // Store in history (memory)
                 if let Ok(mut hist) = history_clone.lock() {
                     let entry = hist.entry(sid_clone.clone()).or_insert_with(Vec::new);
                     entry.push(line.clone());
@@ -132,6 +155,12 @@ impl AgentManager {
                         let drain_count = entry.len() - MAX_HISTORY_MESSAGES;
                         entry.drain(..drain_count);
                     }
+                }
+
+                // Persist to disk for session restore
+                if let Some(ref mut f) = disk_file {
+                    let _ = writeln!(f, "{}", line);
+                    let _ = f.flush();
                 }
 
                 let event_name = format!("agent-message-{}", sid_clone);
@@ -212,9 +241,32 @@ impl AgentManager {
     }
 
     /// Return accumulated JSON-line history for replay.
+    /// Falls back to reading from disk if in-memory history is empty (e.g. after app restart).
     pub fn get_history(&self, session_id: &str) -> Result<Vec<String>, String> {
         let history = self.history.lock().map_err(|e| e.to_string())?;
-        Ok(history.get(session_id).cloned().unwrap_or_default())
+        if let Some(lines) = history.get(session_id) {
+            if !lines.is_empty() {
+                return Ok(lines.clone());
+            }
+        }
+        drop(history);
+
+        // Fall back to persisted file on disk
+        let path = history_file_for(session_id);
+        if path.exists() {
+            use std::io::{BufRead, BufReader};
+            let file = std::fs::File::open(&path)
+                .map_err(|e| format!("Failed to open history file: {}", e))?;
+            let reader = BufReader::new(file);
+            let lines: Vec<String> = reader
+                .lines()
+                .filter_map(|l| l.ok())
+                .filter(|l| !l.is_empty())
+                .collect();
+            return Ok(lines);
+        }
+
+        Ok(vec![])
     }
 
     /// Check if a session exists and its process is still running.
