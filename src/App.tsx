@@ -46,6 +46,7 @@ const SessionPanel = memo(function SessionPanel({
   setChatInputHeight,
   onEditFile,
   onAvailableModels,
+  onNavigateToSession,
 }: {
   session: Session;
   isActive: boolean;
@@ -66,6 +67,7 @@ const SessionPanel = memo(function SessionPanel({
   setChatInputHeight: ((h: number) => void) | undefined;
   onEditFile?: (filePath: string, line?: number) => void;
   onAvailableModels?: (models: OpenCodeModel[]) => void;
+  onNavigateToSession?: (sessionId: string) => void;
 }) {
   const isVisible = isActive && activePanel === null;
 
@@ -114,6 +116,7 @@ const SessionPanel = memo(function SessionPanel({
           onRename={handleRename}
           onMarkTitleGenerated={handleMarkTitleGenerated}
           onClearPendingPrompt={handleClearPendingPrompt}
+          onNavigateToSession={onNavigateToSession}
         />
       </ErrorBoundary>
     </div>
@@ -641,6 +644,7 @@ export default function App() {
                     const editor = localStorage.getItem("claude-orchestrator-editor-command") || "code";
                     invoke("open_in_editor", { editor, filePath: dir + filePath });
                   }}
+                  onNavigateToSession={handleSelectSession}
                 />
               ))}
 

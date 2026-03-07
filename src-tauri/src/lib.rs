@@ -2783,8 +2783,14 @@ fn get_branch_commits(directory: String, base: String, compare: String) -> Resul
 // --- Phase 3: PR Review ---
 
 #[derive(Serialize, Clone)]
+struct PrFileEntry {
+    path: String,
+    status: String, // "A" | "M" | "D" | "R"
+}
+
+#[derive(Serialize, Clone)]
 struct PrDiffResult {
-    files: Vec<String>,
+    files: Vec<PrFileEntry>,
     #[serde(rename = "fullDiff")]
     full_diff: String,
 }
@@ -2816,26 +2822,43 @@ struct PrComment {
 #[tauri::command]
 async fn get_pr_diff(directory: String, pr_number: u32) -> Result<PrDiffResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        // Get file list
-        let names_output = gh_in_dir(&directory)
-            .args(["pr", "diff", &pr_number.to_string(), "--name-only"])
-            .output()
-            .map_err(|e| format!("Failed to run gh pr diff: {}", e))?;
-        if !names_output.status.success() {
-            return Err(String::from_utf8_lossy(&names_output.stderr).to_string());
-        }
-        let files: Vec<String> = String::from_utf8_lossy(&names_output.stdout)
-            .lines()
-            .map(|l| l.to_string())
-            .filter(|l| !l.is_empty())
-            .collect();
-
-        // Get full diff
+        // Get full diff (we extract both file list and status from it)
         let diff_output = gh_in_dir(&directory)
             .args(["pr", "diff", &pr_number.to_string()])
             .output()
             .map_err(|e| format!("Failed to run gh pr diff: {}", e))?;
+        if !diff_output.status.success() {
+            return Err(String::from_utf8_lossy(&diff_output.stderr).to_string());
+        }
         let full_diff = String::from_utf8_lossy(&diff_output.stdout).to_string();
+
+        // Parse files and their status from diff headers
+        let mut files: Vec<PrFileEntry> = Vec::new();
+        let mut current_file: Option<String> = None;
+        let mut current_status = "M";
+        for line in full_diff.lines() {
+            if line.starts_with("diff --git a/") {
+                // Flush previous file
+                if let Some(path) = current_file.take() {
+                    files.push(PrFileEntry { path, status: current_status.to_string() });
+                }
+                // Extract path from "diff --git a/path b/path"
+                if let Some(b_part) = line.split(" b/").last() {
+                    current_file = Some(b_part.to_string());
+                }
+                current_status = "M"; // default
+            } else if line.starts_with("new file mode") {
+                current_status = "A";
+            } else if line.starts_with("deleted file mode") {
+                current_status = "D";
+            } else if line.starts_with("rename from") {
+                current_status = "R";
+            }
+        }
+        // Flush last file
+        if let Some(path) = current_file {
+            files.push(PrFileEntry { path, status: current_status.to_string() });
+        }
 
         Ok(PrDiffResult { files, full_diff })
     })

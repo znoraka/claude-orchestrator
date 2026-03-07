@@ -6,6 +6,7 @@ import {
 } from "@tauri-apps/plugin-notification";
 import type { Session, SessionUsage } from "../types";
 import { playNotificationSound } from "../utils/notificationSound";
+import { useAppVisible } from "./useAppVisible";
 
 /**
  * Sends an OS notification when a non-active session transitions from
@@ -17,6 +18,7 @@ export function useBackgroundNotifications(
   sessionUsage: Map<string, SessionUsage>,
   activeSessionId: string | null
 ) {
+  const appVisible = useAppVisible();
   const prevBusyRef = useRef<Map<string, boolean>>(new Map());
   const prevQuestionRef = useRef<Map<string, boolean>>(new Map());
   const prevActiveRef = useRef<string | null>(null);
@@ -47,7 +49,7 @@ export function useBackgroundNotifications(
       if (
         wasBusy &&
         !isBusy &&
-        session.id !== activeSessionId &&
+        (session.id !== activeSessionId || !appVisible) &&
         session.id !== prevActiveRef.current &&
         session.status === "running"
       ) {
@@ -64,7 +66,7 @@ export function useBackgroundNotifications(
       if (
         !hadQuestion &&
         hasQuestion &&
-        session.id !== activeSessionId &&
+        (session.id !== activeSessionId || !appVisible) &&
         (session.status === "running" || session.status === "starting")
       ) {
         sendNotification({
@@ -79,5 +81,5 @@ export function useBackgroundNotifications(
     }
 
     prevActiveRef.current = activeSessionId;
-  }, [sessions, sessionUsage, activeSessionId]);
+  }, [sessions, sessionUsage, activeSessionId, appVisible]);
 }

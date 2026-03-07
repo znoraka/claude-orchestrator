@@ -426,7 +426,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clearPendingPrompt = useCallback((id: string) => {
-    dispatch({ type: "UPDATE", id, patch: { pendingPrompt: undefined, planContent: undefined } });
+    dispatch({ type: "UPDATE", id, patch: { pendingPrompt: undefined } });
   }, []);
 
   const markStopped = useCallback((id: string, exitCode?: number) => {

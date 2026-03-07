@@ -26,7 +26,7 @@ interface AgentChatProps {
   session?: Session;
   onResume?: () => Promise<void> | void;
   onFork?: (systemPrompt: string) => void;
-  onForkWithPrompt?: (systemPrompt: string, pendingPrompt: string, planContent?: string) => void;
+  onForkWithPrompt?: (systemPrompt: string, pendingPrompt: string, planContent?: string) => Promise<string>;
   currentModel?: string;
   onInputHeightChange?: (height: number) => void;
   onEditFile?: (filePath: string, line?: number) => void;
@@ -34,6 +34,7 @@ interface AgentChatProps {
   onRename?: (name: string) => void;
   onMarkTitleGenerated?: () => void;
   onClearPendingPrompt?: () => void;
+  onNavigateToSession?: (sessionId: string) => void;
 }
 
 /** @deprecated Use modelsForProvider(provider) from types.ts instead */
@@ -65,6 +66,8 @@ interface ChatMessage {
   costUsd?: number;
   usage?: { input_tokens?: number; output_tokens?: number };
   durationMs?: number;
+  forkSessionId?: string;
+  forkSessionName?: string;
 }
 
 interface ToolGroup {
@@ -179,9 +182,10 @@ function bundleConsecutiveToolGroups(grouped: GroupedBlocks, isLastMessage: bool
     } else if (
       item.type === "content" &&
       (item.block.type === "thinking" ||
+       item.block.type === "redacted_thinking" ||
        (item.block.type === "text" && (!item.block.text || !item.block.text.trim())))
     ) {
-      // Thinking blocks and empty text blocks don't end a tool run
+      // Thinking blocks, redacted_thinking blocks, and empty text blocks don't end a tool run
       result.push(item);
     } else {
       flushRun();
@@ -189,6 +193,80 @@ function bundleConsecutiveToolGroups(grouped: GroupedBlocks, isLastMessage: bool
     }
   }
   flushRun();
+  return result;
+}
+
+// ── Merge consecutive tool-only assistant messages ────────────────────
+// Serial tool calls produce: assistant(tool_use) → user(tool_result) → assistant(tool_use) → ...
+// This merges those into a single virtual assistant message so bundling works across turns.
+
+const NON_VISUAL_BLOCK_TYPES = new Set(["thinking", "redacted_thinking", "tool_result"]);
+
+function isToolOnlyAssistant(msg: ChatMessage): boolean {
+  if (msg.type !== "assistant") return false;
+  const blocks = Array.isArray(msg.content) ? msg.content : [];
+  return blocks.every(
+    (b) =>
+      b.type === "tool_use" ||
+      NON_VISUAL_BLOCK_TYPES.has(b.type) ||
+      (b.type === "text" && (!b.text || !b.text.trim()))
+  );
+}
+
+function isToolResultOnlyUser(msg: ChatMessage): boolean {
+  if (msg.type !== "user") return false;
+  const blocks = Array.isArray(msg.content) ? msg.content : [];
+  return blocks.length > 0 && blocks.every((b) => b.type === "tool_result");
+}
+
+function mergeToolOnlyMessages(messages: ChatMessage[]): ChatMessage[] {
+  const result: ChatMessage[] = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+
+    // Start a merge run if this is a tool-only assistant message
+    if (isToolOnlyAssistant(msg)) {
+      const mergedContent: ContentBlock[] = [...(Array.isArray(msg.content) ? msg.content : [])];
+      let lastAssistant = msg;
+      let j = i + 1;
+
+      // Keep merging: user(tool_result) → assistant pairs
+      // Tool-only assistants continue the run; an assistant with text ends the run but is included
+      while (j + 1 < messages.length) {
+        const userMsg = messages[j];
+        const nextAssistant = messages[j + 1];
+        if (
+          isToolResultOnlyUser(userMsg) &&
+          nextAssistant.type === "assistant"
+        ) {
+          mergedContent.push(...(Array.isArray(userMsg.content) ? userMsg.content : []));
+          mergedContent.push(...(Array.isArray(nextAssistant.content) ? nextAssistant.content : []));
+          lastAssistant = nextAssistant;
+          j += 2;
+          // If the assistant message had visible text, stop merging here
+          if (!isToolOnlyAssistant(nextAssistant)) break;
+        } else {
+          break;
+        }
+      }
+
+      if (j > i + 1) {
+        // We merged multiple messages — create a virtual combined message
+        result.push({
+          ...msg,
+          content: mergedContent,
+          isStreaming: lastAssistant.isStreaming,
+        });
+        i = j - 1; // skip consumed messages
+      } else {
+        result.push(msg);
+      }
+    } else {
+      result.push(msg);
+    }
+  }
+
   return result;
 }
 
@@ -281,6 +359,8 @@ function parseHistoryLines(
 }
 
 
+const normaliseWs = (s: string) => s.replace(/\s+/g, " ").trim();
+
 // ── Component ────────────────────────────────────────────────────────
 
 const AgentChat = memo(function AgentChat({
@@ -303,6 +383,7 @@ const AgentChat = memo(function AgentChat({
   onRename,
   onMarkTitleGenerated,
   onClearPendingPrompt,
+  onNavigateToSession,
 }: AgentChatProps) {
   const isReadOnly = session?.status === "stopped";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -678,8 +759,8 @@ const AgentChat = memo(function AgentChat({
   }, [messages.length]);
 
   const visibleMessages = useMemo(() => {
-    if (messages.length <= renderCount) return messages;
-    return messages.slice(messages.length - renderCount);
+    const sliced = messages.length <= renderCount ? messages : messages.slice(messages.length - renderCount);
+    return mergeToolOnlyMessages(sliced);
   }, [messages, renderCount]);
 
   const hasMore = messages.length > renderCount;
@@ -792,6 +873,7 @@ const AgentChat = memo(function AgentChat({
           .join("\n")
           .replace(/<file[^>]*>[\s\S]*?<\/file>\s*/g, "")
           .replace(/^📎 .+$/gm, "")
+          .replace(/^\/.*claude-orchestrator-images\/.*$/gm, "")
           .trim();
 
       // Helper to merge replayed messages into state
@@ -1271,7 +1353,10 @@ const AgentChat = memo(function AgentChat({
       // Skip messages that look like Task/Agent tool prompts
       const textContent = visibleBlocks.find((b) => b.type === "text")?.text || "";
       if (looksLikeTaskPrompt(textContent)) {
-        return null;
+        // Don't filter out the plan execution message
+        const isPlanMessage = session?.planContent && textContent.length > 200 &&
+          normaliseWs(textContent).includes(normaliseWs(session.planContent).slice(0, 200));
+        if (!isPlanMessage) return null;
       }
       return {
         id: `user-${Date.now()}-${Math.random()}`,
@@ -1547,7 +1632,7 @@ const AgentChat = memo(function AgentChat({
   }, [sessionId]);
 
   // Allow in a new conversation: fork with plan as pending prompt, deny current
-  const allowInNewConversation = useCallback(() => {
+  const allowInNewConversation = useCallback(async () => {
     if (!onForkWithPromptRef.current) return;
     // Extract plan file content from Write tool calls targeting .claude/plans/
     const planFileContent = messages
@@ -1584,8 +1669,20 @@ const AgentChat = memo(function AgentChat({
     invoke("abort_agent", { sessionId }).catch(() => {});
     abortedRef.current = true;
     // Create new session with bypass permissions, including plan content for display
-    onForkWithPromptRef.current(systemPrompt, planText, planMarkdown || undefined);
-  }, [messages, respondPermission]);
+    const execName = `Execute: ${session?.name || "plan"}`;
+    const newSessionId = await onForkWithPromptRef.current(systemPrompt, planText, planMarkdown || undefined);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `fork-link-${Date.now()}`,
+        type: "system",
+        content: [{ type: "text", text: `Plan executing in → ${execName}` }],
+        timestamp: Date.now(),
+        forkSessionId: newSessionId,
+        forkSessionName: execName,
+      },
+    ]);
+  }, [messages, respondPermission, session?.name]);
 
   // ── Edit / resend a user message ──────────────────────────────────
 
@@ -1870,6 +1967,7 @@ const AgentChat = memo(function AgentChat({
                 onFork={forkFromMessage}
                 onRetry={retryMessage}
                 onCopy={copyMessage}
+                onNavigateToSession={onNavigateToSession}
               />
             ))}
             {trailingMessages.map((msg, idx) => (
@@ -1884,6 +1982,7 @@ const AgentChat = memo(function AgentChat({
                 onFork={forkFromMessage}
                 onRetry={retryMessage}
                 onCopy={copyMessage}
+                onNavigateToSession={onNavigateToSession}
               />
             ))}
 
@@ -2158,6 +2257,7 @@ const MessageBubble = memo(function MessageBubble({
   onRetry,
   onCopy,
   planContent,
+  onNavigateToSession,
 }: {
   message: ChatMessage;
   toolStates: Record<string, "expanded" | "collapsed">;
@@ -2168,6 +2268,7 @@ const MessageBubble = memo(function MessageBubble({
   onRetry?: (messageId: string) => void;
   onCopy?: (messageId: string) => void;
   planContent?: string;
+  onNavigateToSession?: (sessionId: string) => void;
 }) {
   // Defensive: ensure content is always an array (API can return string)
   const content = Array.isArray(message.content)
@@ -2183,7 +2284,6 @@ const MessageBubble = memo(function MessageBubble({
     // Filter out tool_result blocks (tool plumbing, not user content)
     const visible = content.filter((b) => b.type !== "tool_result");
     if (visible.length === 0) return null;
-    const normaliseWs = (s: string) => s.replace(/\s+/g, " ").trim();
     const hasPlan = planContent && visible.some(b => {
       if (b.type !== "text" || !b.text) return false;
       if (b.text.includes("Execute the plan")) return true;
@@ -2284,6 +2384,20 @@ const MessageBubble = memo(function MessageBubble({
   }
 
   if (message.type === "system") {
+    if (message.forkSessionId) {
+      return (
+        <div className="mx-3 my-2 px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center gap-2 text-xs text-blue-400">
+          <span>→</span>
+          <span>Plan executing in</span>
+          <button
+            className="font-medium underline underline-offset-2 hover:text-blue-300 transition-colors cursor-pointer"
+            onClick={() => onNavigateToSession?.(message.forkSessionId!)}
+          >
+            {message.forkSessionName || "new session"}
+          </button>
+        </div>
+      );
+    }
     return (
       <div className="px-3 py-1.5 text-xs text-[var(--text-tertiary)] italic text-center">
         {content[0]?.text}
@@ -2363,7 +2477,7 @@ const MessageBubble = memo(function MessageBubble({
   }, [bundledItems, isLastMessage]);
 
   return (
-    <div className="max-w-[95%] max-h-[32rem] overflow-y-auto">
+    <div className="max-w-[95%]">
       <div className="flex flex-col gap-3">
         {bundledItems.map((item, i) => {
           if (item.type === "toolBundle") {
@@ -2468,20 +2582,29 @@ function LinkifiedText({ text, className }: { text: string; className?: string }
 
 // ── Markdown rendering (marked + DOMPurify) ────────────────────────
 
-const markedRenderer = new marked.Renderer();
+marked.use({
+  renderer: {
+    link({ href, tokens }) {
+      const text = this.parser.parseInline(tokens);
+      return `<a href="${href}" class="text-[var(--accent)] underline" target="_blank" rel="noreferrer">${text}</a>`;
+    },
+  },
+});
 
-// Open links in new tab
-markedRenderer.link = ({ href, text }) =>
-  `<a href="${href}" class="text-[var(--accent)] underline" target="_blank" rel="noreferrer">${text}</a>`;
-
-const markedOptions = { renderer: markedRenderer };
+const markedOptions = {};
 
 function MarkdownContent({ text }: { text: string }) {
   const html = useMemo(() => {
+    // Unescape literal \n that may arrive from plan/tool content
+    const unescaped = text.replace(/\\n/g, "\n");
     // Strip CLI XML-like tags (e.g. <command-message-help>, <command-name>)
     // that DOMPurify preserves as valid custom elements
-    const cleaned = text.replace(/<\/?[a-z]+-[a-z-]*>/g, "");
+    const cleaned = unescaped.replace(/<\/?[a-z]+-[a-z-]*>/g, "");
     const raw = marked.parse(cleaned, markedOptions) as string;
+    if (text.includes("##") || text.includes("\\n")) {
+      console.log("[MD debug] text:", JSON.stringify(text.slice(0, 200)));
+      console.log("[MD debug] html:", raw.slice(0, 200));
+    }
     return DOMPurify.sanitize(raw, { ADD_ATTR: ["target"] });
   }, [text]);
 
@@ -2589,8 +2712,8 @@ function ContentBlockView({ block }: { block: ContentBlock }) {
         <summary className="cursor-pointer hover:text-[var(--text-secondary)] select-none">
           Thinking…
         </summary>
-        <div className="mt-1 pl-3 border-l border-[var(--border-color)] whitespace-pre-wrap">
-          {block.thinking}
+        <div className="mt-1 pl-3 border-l border-[var(--border-color)]">
+          <MarkdownContent text={block.thinking} />
         </div>
       </details>
     );
@@ -3393,6 +3516,10 @@ function ConsolidatedToolGroup({
             </div>
           ) : toolName === "TodoWrite" && input.todos ? (
             <TodoListView todos={input.todos as TodoItem[]} />
+          ) : toolName === "ExitPlanMode" && resultContent ? (
+            <div className="px-4 pt-3 pb-3 text-sm text-[var(--text-primary)] overflow-y-auto max-h-96">
+              <MarkdownContent text={resultContent} />
+            </div>
           ) : resultContent ? (
             <>
               <ToolInputView toolName={toolName} input={input} />

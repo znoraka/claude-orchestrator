@@ -141,8 +141,13 @@ export interface BranchCommitsResult {
 }
 
 // Phase 3: PR Review
+export interface PrFileEntry {
+  path: string;
+  status: "A" | "M" | "D" | "R";
+}
+
 export interface PrDiffResult {
-  files: string[];
+  files: PrFileEntry[];
   fullDiff: string;
 }
 

@@ -4,7 +4,58 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import DiffViewer from "./DiffViewer";
 import type { DiffMode } from "./DiffViewer";
 import FileIcon from "./FileIcon";
-import type { PrComment } from "../types";
+import type { PrComment, PrFileEntry } from "../types";
+
+// Tree node for the file tree
+interface FileTreeNode {
+  name: string;
+  path: string; // full path for this segment
+  children: FileTreeNode[];
+  file?: PrFileEntry; // present only for leaf nodes
+}
+
+function buildFileTree(files: PrFileEntry[]): FileTreeNode[] {
+  const root: FileTreeNode[] = [];
+  for (const file of files) {
+    const parts = file.path.split("/");
+    let current = root;
+    let pathSoFar = "";
+    for (let i = 0; i < parts.length; i++) {
+      pathSoFar = pathSoFar ? `${pathSoFar}/${parts[i]}` : parts[i];
+      const isLast = i === parts.length - 1;
+      let existing = current.find((n) => n.name === parts[i] && (isLast ? !!n.file : !n.file));
+      if (!existing) {
+        existing = {
+          name: parts[i],
+          path: pathSoFar,
+          children: [],
+          ...(isLast ? { file } : {}),
+        };
+        current.push(existing);
+      }
+      current = existing.children;
+    }
+  }
+  // Collapse single-child directories (e.g. "src/components" becomes one node)
+  function collapse(nodes: FileTreeNode[]): FileTreeNode[] {
+    return nodes.map((node) => {
+      node.children = collapse(node.children);
+      if (!node.file && node.children.length === 1 && !node.children[0].file) {
+        const child = node.children[0];
+        return { ...child, name: `${node.name}/${child.name}` };
+      }
+      return node;
+    });
+  }
+  return collapse(root);
+}
+
+const STATUS_COLORS: Record<string, string> = {
+  A: "text-green-400",
+  M: "text-yellow-400",
+  D: "text-red-400",
+  R: "text-blue-400",
+};
 
 interface PRReviewViewProps {
   directory: string;
@@ -18,8 +69,9 @@ interface PRReviewViewProps {
 }
 
 export default function PRReviewView({ directory, prNumber, prTitle, prUrl, headRefName, onBack, onAskClaude, onClaudeReview }: PRReviewViewProps) {
-  const [files, setFiles] = useState<string[]>([]);
+  const [files, setFiles] = useState<PrFileEntry[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
   const [fileDiff, setFileDiff] = useState("");
   const [loading, setLoading] = useState(true);
   const [comments, setComments] = useState<PrComment[]>([]);
@@ -56,10 +108,10 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
   // Load PR files
   useEffect(() => {
     setLoading(true);
-    invoke<{ files: string[]; fullDiff: string }>("get_pr_diff", { directory, prNumber })
+    invoke<{ files: PrFileEntry[]; fullDiff: string }>("get_pr_diff", { directory, prNumber })
       .then((result) => {
         setFiles(result.files);
-        if (result.files.length > 0) setSelectedFile(result.files[0]);
+        if (result.files.length > 0) setSelectedFile(result.files[0].path);
       })
       .catch((e) => console.error("Failed to load PR diff:", e))
       .finally(() => setLoading(false));
@@ -131,6 +183,106 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       : `Please review the changes in ${selectedFile} for PR #${prNumber}`;
     onAskClaude(context);
   }, [onAskClaude, selectedFile, fileDiff, prNumber]);
+
+  const fileTree = useMemo(() => buildFileTree(files), [files]);
+
+  const toggleDir = useCallback((dirPath: string) => {
+    setCollapsedDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(dirPath)) next.delete(dirPath); else next.add(dirPath);
+      return next;
+    });
+  }, []);
+
+  const renderTreeNode = useCallback((node: FileTreeNode, depth: number) => {
+    if (node.file) {
+      // Leaf node (file)
+      const file = node.file;
+      const commentCount = comments.filter((c) => c.path === file.path).length;
+      const isViewed = viewedFiles.has(file.path);
+      const isSelected = selectedFile === file.path;
+      return (
+        <div
+          key={file.path}
+          onClick={() => { setSelectedFile(file.path); setCommentLine(null); }}
+          className={`w-full text-left py-0.5 pr-2 text-xs font-mono flex items-center gap-1.5 rounded transition-colors cursor-pointer ${
+            isSelected
+              ? "bg-[var(--accent)] text-white"
+              : isViewed
+                ? "text-[var(--text-tertiary)] hover:bg-[var(--bg-tertiary)]"
+                : "text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+          }`}
+          style={{ paddingLeft: `${depth * 16 + 8}px` }}
+          title={file.path}
+        >
+          <span
+            role="checkbox"
+            aria-checked={isViewed}
+            onClick={(e) => { e.stopPropagation(); toggleViewed(file.path); }}
+            className={`flex-shrink-0 w-3.5 h-3.5 rounded border flex items-center justify-center cursor-pointer transition-all ${
+              isViewed
+                ? isSelected
+                  ? "bg-white/90 border-white/90"
+                  : "bg-green-500 border-green-500"
+                : isSelected
+                  ? "border-white/50 hover:border-white/80"
+                  : "border-[var(--text-tertiary)] hover:border-[var(--text-secondary)]"
+            }`}
+            title="Mark as viewed"
+          >
+            {isViewed && (
+              <svg width="8" height="8" viewBox="0 0 12 12" fill="none" stroke={isSelected ? "var(--accent)" : "white"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 6l3 3 5-5" />
+              </svg>
+            )}
+          </span>
+          <FileIcon filename={file.path} />
+          <span className={`truncate flex-1 ${isViewed && !isSelected ? "line-through opacity-60" : ""}`}>
+            {node.name}
+          </span>
+          {commentCount > 0 && (
+            <span className={`text-[10px] flex-shrink-0 ${isSelected ? "text-white/70" : "text-yellow-400"}`}>
+              {commentCount}
+            </span>
+          )}
+          <span className={`text-[10px] flex-shrink-0 font-semibold ${isSelected ? "text-white/70" : (STATUS_COLORS[file.status] || "text-[var(--text-tertiary)]")}`}>
+            {file.status}
+          </span>
+        </div>
+      );
+    }
+
+    // Directory node
+    const isCollapsed = collapsedDirs.has(node.path);
+    return (
+      <div key={node.path}>
+        <div
+          onClick={() => toggleDir(node.path)}
+          className="w-full text-left py-0.5 pr-2 text-xs flex items-center gap-1 rounded transition-colors cursor-pointer text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+          style={{ paddingLeft: `${depth * 16 + 8}px` }}
+        >
+          <svg
+            width="10"
+            height="10"
+            viewBox="0 0 16 16"
+            fill="currentColor"
+            className={`flex-shrink-0 transition-transform ${isCollapsed ? "" : "rotate-90"}`}
+          >
+            <path d="M6 4l4 4-4 4" />
+          </svg>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" className="flex-shrink-0 opacity-50">
+            {isCollapsed ? (
+              <path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z" />
+            ) : (
+              <path d="M.513 1.513A1.75 1.75 0 011.75 1h3.5c.55 0 1.07.26 1.4.7l.9 1.2a.25.25 0 00.2.1h6.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0114.25 15H1.75A1.75 1.75 0 010 13.25V2.75c0-.464.184-.91.513-1.237z" />
+            )}
+          </svg>
+          <span className="truncate font-medium">{node.name}</span>
+        </div>
+        {!isCollapsed && node.children.map((child) => renderTreeNode(child, depth + 1))}
+      </div>
+    );
+  }, [collapsedDirs, comments, selectedFile, viewedFiles, toggleDir, toggleViewed, setSelectedFile, setCommentLine]);
 
   if (loading) {
     return (
@@ -218,59 +370,8 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       ) : (
         <div className="flex flex-1 min-h-0">
           {/* File list */}
-          <div className="w-64 flex-shrink-0 border-r border-[var(--border-color)] overflow-y-auto py-2">
-            {files.map((file) => {
-              const commentCount = comments.filter((c) => c.path === file).length;
-              const isViewed = viewedFiles.has(file);
-              const isSelected = selectedFile === file;
-              return (
-                <div
-                  key={file}
-                  onClick={() => { setSelectedFile(file); setCommentLine(null); }}
-                  className={`w-full text-left px-2 py-1 text-xs font-mono flex items-center gap-1.5 rounded transition-colors cursor-pointer ${
-                    isSelected
-                      ? "bg-[var(--accent)] text-white"
-                      : isViewed
-                        ? "text-[var(--text-tertiary)] hover:bg-[var(--bg-tertiary)]"
-                        : "text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
-                  }`}
-                  title={file}
-                >
-                  <span
-                    role="checkbox"
-                    aria-checked={isViewed}
-                    onClick={(e) => { e.stopPropagation(); toggleViewed(file); }}
-                    className={`flex-shrink-0 w-3.5 h-3.5 rounded border flex items-center justify-center cursor-pointer transition-all ${
-                      isViewed
-                        ? isSelected
-                          ? "bg-white/90 border-white/90"
-                          : "bg-green-500 border-green-500"
-                        : isSelected
-                          ? "border-white/50 hover:border-white/80"
-                          : "border-[var(--text-tertiary)] hover:border-[var(--text-secondary)]"
-                    }`}
-                    title="Mark as viewed"
-                  >
-                    {isViewed && (
-                      <svg width="8" height="8" viewBox="0 0 12 12" fill="none" stroke={isSelected ? "var(--accent)" : "white"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M2 6l3 3 5-5" />
-                      </svg>
-                    )}
-                  </span>
-                  <FileIcon filename={file} />
-                  <span className={`truncate flex-1 ${isViewed && !isSelected ? "line-through opacity-60" : ""}`} dir="rtl">
-                    <bdi>{file}</bdi>
-                  </span>
-                  {commentCount > 0 && (
-                    <span className={`text-[10px] flex-shrink-0 ${
-                      isSelected ? "text-white/70" : "text-yellow-400"
-                    }`}>
-                      {commentCount}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
+          <div className="w-64 flex-shrink-0 border-r border-[var(--border-color)] overflow-y-auto py-1 px-1">
+            {fileTree.map((node) => renderTreeNode(node, 0))}
           </div>
 
           {/* Diff viewer with inline comments */}

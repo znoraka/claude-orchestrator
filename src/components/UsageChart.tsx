@@ -44,7 +44,7 @@ export default function UsageChart({ data, mode }: UsageChartProps) {
   const barWidth = Math.max(4, (chartW - barGap * (bars.length - 1)) / bars.length);
 
   return (
-    <div className="relative">
+    <div className="relative overflow-hidden">
       <svg
         viewBox={`0 0 ${width} ${height}`}
         className="w-full"
@@ -103,7 +103,7 @@ export default function UsageChart({ data, mode }: UsageChartProps) {
         <div
           className="absolute top-0 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-2 py-1 text-xs shadow-lg pointer-events-none z-10"
           style={{
-            left: `${((hoveredIdx + 0.5) / bars.length) * 100}%`,
+            left: `${Math.max(10, Math.min(90, ((hoveredIdx + 0.5) / bars.length) * 100))}%`,
             transform: "translateX(-50%)",
           }}
         >
