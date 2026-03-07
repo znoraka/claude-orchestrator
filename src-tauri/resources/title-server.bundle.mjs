@@ -1,3 +1,7 @@
+// src-tauri/resources/title-server.mjs
+import { createServer } from "http";
+import { appendFileSync as appendFileSync3 } from "fs";
+
 // node_modules/.pnpm/@anthropic-ai+claude-agent-sdk@0.1.77_zod@4.3.6/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 import { join as join5 } from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
@@ -16539,11 +16543,9 @@ function query({
 }
 
 // src-tauri/resources/title-server.mjs
-import { createServer } from "http";
-import { appendFileSync as appendFileSync3 } from "fs";
 delete process.env.CLAUDECODE;
 var config2 = JSON.parse(process.argv[2] || "{}");
-var claudeCliPath = config2.claudeCliPath || void 0;
+var claudeCliPath = config2.claudeCliPath || "claude";
 var logFile = "/tmp/title-server-debug.log";
 var log = (msg) => {
   const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
@@ -16554,36 +16556,54 @@ var log = (msg) => {
   } catch {
   }
 };
-var PROMPT_TEMPLATE = (userMsg) => `Summarize this request in 4-5 words as a short title. Reply with ONLY the title, nothing else.
+var MODEL = "claude-haiku-4-5-20251001";
+var TITLE_SYSTEM_PROMPT = "You are a title generator. Given a user message, respond with ONLY a 4-5 word title summarizing the request. No quotes, no punctuation, no explanation.";
+var CLASSIFY_SYSTEM_PROMPT = `You classify coding requests as "simple" or "complex".
 
-User: ${userMsg}`;
-async function generateTitle(userMessage) {
-  const prompt = PROMPT_TEMPLATE(userMessage);
-  const options = {
-    model: "haiku",
-    maxTurns: 1,
-    maxThinkingTokens: 0,
-    allowedTools: [],
-    systemPrompt: "You generate short titles. Reply with ONLY the title.",
-    cwd: process.cwd(),
-    ...claudeCliPath ? { pathToClaudeCodeExecutable: claudeCliPath } : {}
-  };
-  log(`query() options: model=${options.model}, cwd=${options.cwd}, cli=${claudeCliPath || "(auto)"}`);
-  let result = "";
-  const q = query({ prompt, options });
-  for await (const message of q) {
-    if (message.type === "assistant" && message.message?.content) {
-      const content = message.message.content;
-      if (Array.isArray(content)) {
+Simple: single well-defined action \u2014 commit, push, run tests, rename variable, fix typo, create/delete a file, install a package, format code, a quick one-liner change.
+Complex: multi-step tasks, architectural decisions, refactoring, debugging, anything ambiguous or requiring research/planning.
+
+When in doubt, respond "complex".
+
+Reply with ONLY "simple" or "complex".`;
+async function runSdkQuery(systemPrompt, userMessage) {
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), 3e4);
+  try {
+    const options = {
+      maxTurns: 1,
+      model: MODEL,
+      systemPrompt,
+      permissionMode: "bypassPermissions",
+      abortController
+    };
+    if (claudeCliPath) {
+      options.pathToClaudeCodeExecutable = claudeCliPath;
+    }
+    const result = query({ prompt: userMessage, options });
+    let text = "";
+    for await (const message of result) {
+      if (message.type === "assistant" && message.message?.content) {
+        const content = [].concat(message.message.content);
         for (const block of content) {
-          if (block.type === "text") result += block.text;
+          if (block.type === "text") text += block.text;
         }
-      } else if (typeof content === "string") {
-        result += content;
       }
     }
+    return text.trim();
+  } finally {
+    clearTimeout(timeout);
   }
-  return result.trim();
+}
+async function generateTitle(userMessage) {
+  log(`Calling SDK query() for title generation`);
+  return await runSdkQuery(TITLE_SYSTEM_PROMPT, userMessage);
+}
+async function classifyPrompt(userMessage) {
+  log(`Calling SDK query() for classification`);
+  const result = await runSdkQuery(CLASSIFY_SYSTEM_PROMPT, userMessage);
+  const classification = result.toLowerCase().trim();
+  return classification === "simple" ? "simple" : "complex";
 }
 var server = createServer(async (req, res) => {
   if (req.method !== "POST") {
@@ -16594,15 +16614,27 @@ var server = createServer(async (req, res) => {
   let body = "";
   for await (const chunk of req) body += chunk;
   try {
-    const { message } = JSON.parse(body);
-    if (!message) {
+    const { message, images } = JSON.parse(body);
+    if (!message && !(images && images.length)) {
       res.writeHead(400);
       res.end(JSON.stringify({ error: "missing message" }));
       return;
     }
-    log(`Generating title for: ${message.slice(0, 80)}...`);
-    const title = await generateTitle(message);
-    log(`Generated title: ${title}`);
+    const url = (req.url || "/").split("?")[0];
+    if (url === "/classify") {
+      log(`Classifying: ${(message || "").slice(0, 80)}...`);
+      const t02 = Date.now();
+      const classification = await classifyPrompt(message || "");
+      log(`Classification: ${classification} (${Date.now() - t02}ms)`);
+      const responseBody2 = JSON.stringify({ classification });
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(responseBody2) });
+      res.end(responseBody2);
+      return;
+    }
+    log(`Generating title for: ${(message || "").slice(0, 80)}...`);
+    const t0 = Date.now();
+    const title = await generateTitle(message || "");
+    log(`Generated title: ${title} (${Date.now() - t0}ms)`);
     const responseBody = JSON.stringify({ title });
     res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(responseBody) });
     res.end(responseBody);

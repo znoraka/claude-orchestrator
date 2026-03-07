@@ -5,6 +5,7 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import type { Session, SessionUsage } from "../types";
+import { playNotificationSound } from "../utils/notificationSound";
 
 /**
  * Sends an OS notification when a non-active session transitions from
@@ -18,6 +19,7 @@ export function useBackgroundNotifications(
 ) {
   const prevBusyRef = useRef<Map<string, boolean>>(new Map());
   const prevQuestionRef = useRef<Map<string, boolean>>(new Map());
+  const prevActiveRef = useRef<string | null>(null);
   const permissionRef = useRef<boolean | null>(null);
 
   // Request permission once
@@ -41,16 +43,19 @@ export function useBackgroundNotifications(
       const isBusy = usage?.isBusy ?? false;
 
       // Detect busy -> idle transition for non-active sessions
+      // Skip if this session was the active one last tick (user just switched away, e.g. plan fork)
       if (
         wasBusy &&
         !isBusy &&
         session.id !== activeSessionId &&
+        session.id !== prevActiveRef.current &&
         session.status === "running"
       ) {
         sendNotification({
           title: "Claude finished",
           body: session.name,
         });
+        playNotificationSound();
       }
 
       // Detect hasQuestion false -> true transition for non-active sessions
@@ -66,10 +71,13 @@ export function useBackgroundNotifications(
           title: "Claude has a question",
           body: session.name,
         });
+        playNotificationSound();
       }
 
       prevBusyRef.current.set(session.id, isBusy);
       prevQuestionRef.current.set(session.id, hasQuestion);
     }
+
+    prevActiveRef.current = activeSessionId;
   }, [sessions, sessionUsage, activeSessionId]);
 }

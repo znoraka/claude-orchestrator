@@ -92,6 +92,7 @@ interface SessionContextValue {
   deleteSession: (id: string) => Promise<void>;
   renameSession: (id: string, name: string) => void;
   markTitleGenerated: (id: string) => void;
+  clearPendingPrompt: (id: string) => void;
   markStopped: (id: string, exitCode?: number) => void;
   restartSession: (id: string) => Promise<void>;
   touchSession: (id: string) => void;
@@ -138,6 +139,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         permissionMode?: string;
         activeTime?: number;
         hasTitleBeenGenerated?: boolean;
+        planContent?: string;
       }>
     >("load_sessions")
       .then((saved) => {
@@ -157,6 +159,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             permissionMode: s.permissionMode as Session["permissionMode"],
             activeTime: s.activeTime || 0,
             hasTitleBeenGenerated: s.hasTitleBeenGenerated,
+            planContent: s.planContent,
           }));
           dispatch({ type: "SET_ALL", sessions: restored });
         }
@@ -189,6 +192,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       permissionMode: s.permissionMode,
       activeTime: s.activeTime || 0,
       hasTitleBeenGenerated: s.hasTitleBeenGenerated,
+      planContent: s.planContent,
     }));
   }, []);
 
@@ -419,6 +423,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const markTitleGenerated = useCallback((id: string) => {
     dispatch({ type: "UPDATE", id, patch: { hasTitleBeenGenerated: true } });
+  }, []);
+
+  const clearPendingPrompt = useCallback((id: string) => {
+    dispatch({ type: "UPDATE", id, patch: { pendingPrompt: undefined, planContent: undefined } });
   }, []);
 
   const markStopped = useCallback((id: string, exitCode?: number) => {
@@ -851,6 +859,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       deleteSession,
       renameSession,
       markTitleGenerated,
+      clearPendingPrompt,
       markStopped,
       restartSession,
       touchSession,
@@ -880,6 +889,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       deleteSession,
       renameSession,
       markTitleGenerated,
+      clearPendingPrompt,
       markStopped,
       restartSession,
       touchSession,

@@ -4,11 +4,11 @@ import { useSessionContext } from "./contexts/SessionContext";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
 import AgentChat from "./components/AgentChat";
-import GitPanel from "./components/GitPanel";
 import PRPanel from "./components/PRPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
 import UsagePanel from "./components/UsagePanel";
 import FileEditor from "./components/FileEditor";
+import ContextPieChart from "./components/ContextPieChart";
 import { repoColor } from "./components/SessionTab";
 import { repoRootDir } from "./utils/workspaces";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
@@ -39,6 +39,7 @@ const SessionPanel = memo(function SessionPanel({
   updateClaudeSessionId,
   renameSession,
   markTitleGenerated,
+  clearPendingPrompt,
   restartSession,
   createSession,
   currentModel,
@@ -58,6 +59,7 @@ const SessionPanel = memo(function SessionPanel({
   updateClaudeSessionId: (id: string, claudeSessionId: string) => void;
   renameSession: (id: string, name: string) => void;
   markTitleGenerated: (id: string) => void;
+  clearPendingPrompt: (id: string) => void;
   restartSession: (id: string) => Promise<void>;
   createSession: (name: string | undefined, directory: string, skip?: boolean, systemPrompt?: string, pendingPrompt?: string, provider?: AgentProvider, model?: string, permissionMode?: "bypassPermissions" | "plan", planContent?: string) => Promise<string>;
   currentModel: string;
@@ -79,6 +81,7 @@ const SessionPanel = memo(function SessionPanel({
   const handleForkWithPrompt = useCallback((systemPrompt: string, pendingPrompt: string, planContent?: string) => createSession(`Execute: ${session.name}`, session.directory, false, systemPrompt, pendingPrompt, session.provider, session.model, "bypassPermissions", planContent), [session.name, session.directory, session.provider, session.model, createSession]);
   const handleRename = useCallback((name: string) => renameSession(session.id, name), [session.id, renameSession]);
   const handleMarkTitleGenerated = useCallback(() => markTitleGenerated(session.id), [session.id, markTitleGenerated]);
+  const handleClearPendingPrompt = useCallback(() => clearPendingPrompt(session.id), [session.id, clearPendingPrompt]);
 
   return (
     <div
@@ -110,6 +113,7 @@ const SessionPanel = memo(function SessionPanel({
           onAvailableModels={onAvailableModels}
           onRename={handleRename}
           onMarkTitleGenerated={handleMarkTitleGenerated}
+          onClearPendingPrompt={handleClearPendingPrompt}
         />
       </ErrorBoundary>
     </div>
@@ -129,6 +133,7 @@ export default function App() {
     deleteSession,
     renameSession,
     markTitleGenerated,
+    clearPendingPrompt,
     markStopped,
     restartSession,
     touchSession,
@@ -179,7 +184,7 @@ export default function App() {
   const [preselectedDir, setPreselectedDir] = useState<string | null>(null);
 
   // ── Panel state (replaces per-workspace tab state) ──────────────
-  const [activePanel, setActivePanel] = useState<"git" | "prs" | "shell" | null>(null);
+  const [activePanel, setActivePanel] = useState<"prs" | "shell" | null>(null);
   const [chatInputHeight, setChatInputHeight] = useState(0);
 
   // ── Model picker (per-provider, persisted) ──────────────────
@@ -338,7 +343,7 @@ export default function App() {
   // Ref to notify PRPanel to reset to list view
   const prPanelResetRef = useRef<(() => void) | null>(null);
 
-  const togglePanel = (panel: "git" | "prs" | "shell") => {
+  const togglePanel = (panel: "prs" | "shell") => {
     if (activePanel === panel) {
       // Already on this panel — reset internal state (e.g. PR review → PR list)
       if (panel === "prs") prPanelResetRef.current?.();
@@ -364,14 +369,11 @@ export default function App() {
         setShowDirDialog(true);
       }
       if (e.metaKey && e.key === "e") {
-        if (activePanel === "git") return;
         e.preventDefault();
-        setEditorFilePath(undefined);
-        setShowFileEditor((v) => !v);
-      }
-      if (e.metaKey && e.key === "g") {
-        e.preventDefault();
-        togglePanel("git");
+        const editor = localStorage.getItem("claude-orchestrator-editor-command") || "code";
+        if (panelDirectory) {
+          invoke("open_in_editor", { editor, filePath: panelDirectory });
+        }
       }
       if (e.metaKey && e.key === "p") {
         e.preventDefault();
@@ -628,6 +630,7 @@ export default function App() {
                   updateClaudeSessionId={updateClaudeSessionId}
                   renameSession={renameSession}
                   markTitleGenerated={markTitleGenerated}
+                  clearPendingPrompt={clearPendingPrompt}
                   restartSession={restartSession}
                   createSession={createSession}
                   currentModel={selectedModel}
@@ -635,32 +638,11 @@ export default function App() {
                   onAvailableModels={session.provider === "opencode" ? handleAvailableModels : undefined}
                   onEditFile={(filePath) => {
                     const dir = session.directory.endsWith("/") ? session.directory : session.directory + "/";
-                    setEditorFilePath(dir + filePath);
-                    setShowFileEditor(true);
+                    const editor = localStorage.getItem("claude-orchestrator-editor-command") || "code";
+                    invoke("open_in_editor", { editor, filePath: dir + filePath });
                   }}
                 />
               ))}
-
-              {/* Git panel — always mounted to preserve state */}
-              <div
-                className="absolute inset-0 right-10 bg-[var(--bg-primary)]"
-                style={{
-                  zIndex: activePanel === "git" ? 2 : 0,
-                  pointerEvents: activePanel === "git" ? "auto" : "none",
-                  visibility: activePanel === "git" ? "visible" : "hidden",
-                }}
-              >
-                <GitPanel
-                  key={panelDirectory}
-                  directory={panelDirectory}
-                  isActive={activePanel === "git"}
-                  onEditFile={(relativePath) => {
-                    const dir = panelDirectory.endsWith("/") ? panelDirectory : panelDirectory + "/";
-                    setEditorFilePath(dir + relativePath);
-                    setShowFileEditor(true);
-                  }}
-                />
-              </div>
 
               {/* PRs panel — always mounted to preserve review state */}
               <div
@@ -805,30 +787,6 @@ export default function App() {
               )}
               </div>
 
-              {/* Context usage bar — below input (always rendered to prevent layout shift) */}
-              {activePanel === null && (
-                <div
-                  className="h-[2px] w-full shrink-0"
-                  title={activeUsage && activeUsage.contextTokens > 0 ? `Context: ${activeUsage.contextTokens.toLocaleString()} / 200,000 tokens\nInput: ${activeUsage.inputTokens.toLocaleString()} | Output: ${activeUsage.outputTokens.toLocaleString()} | Cache read: ${activeUsage.cacheReadInputTokens.toLocaleString()} | Cache write: ${activeUsage.cacheCreationInputTokens.toLocaleString()}` : undefined}
-                >
-                  {(() => {
-                    const pct = activeUsage && activeUsage.contextTokens > 0 ? activeUsage.contextTokens / 200_000 : 0;
-                    const color = pct > 0.95 ? 'rgba(239,68,68,0.6)'
-                      : pct > 0.8 ? 'rgba(217,119,6,0.45)'
-                      : pct > 0.5 ? 'rgba(217,119,6,0.25)'
-                      : 'rgba(148,163,184,0.2)';
-                    return (
-                      <div
-                        className="h-full transition-all duration-500"
-                        style={{
-                          width: pct > 0 ? `${Math.min(100, Math.round(pct * 100))}%` : '0%',
-                          backgroundColor: color,
-                        }}
-                      />
-                    );
-                  })()}
-                </div>
-              )}
             </div>
 
             {/* Activity bar — vertical icon tabs (right side, stops above input on Claude panel) */}
@@ -850,16 +808,17 @@ export default function App() {
                 </svg>
               </button>
               <button
-                onClick={() => togglePanel("git")}
-                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
-                  activePanel === "git"
-                    ? "bg-orange-500/20 text-orange-400"
-                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
-                }`}
-                title="Git (⌘G)"
+                onClick={() => {
+                  if (panelDirectory) {
+                    const editor = localStorage.getItem("claude-orchestrator-editor-command") || "code";
+                    invoke("open_in_editor", { editor, filePath: panelDirectory });
+                  }
+                }}
+                className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
+                title="Open in Editor (⌘E)"
               >
-                <svg className="w-[18px] h-[18px]" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
+                <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
                 </svg>
               </button>
               <button
@@ -891,6 +850,7 @@ export default function App() {
 
               {/* Spacer to push bottom items down */}
               <div className="flex-1" />
+              <ContextPieChart usage={activeUsage} />
               <button
                 onClick={() => setShowUsagePanel(true)}
                 className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50 transition-colors"

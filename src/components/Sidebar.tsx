@@ -52,7 +52,9 @@ export default function Sidebar({
 }: SidebarProps) {
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>("workspace");
+  const [viewMode, setViewMode] = useState<ViewMode>(
+    () => (localStorage.getItem("claude-orchestrator-sidebar-view") as ViewMode) || "workspace"
+  );
   const [collapsedDateGroups, setCollapsedDateGroups] = useState<Set<string>>(new Set());
   const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(new Set());
   const [collapsedWorktrees, setCollapsedWorktrees] = useState<Set<string>>(new Set());
@@ -246,7 +248,7 @@ export default function Sidebar({
       <div className="px-1 pb-1.5 flex">
         <div className="flex bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-md overflow-hidden w-full">
           <button
-            onClick={() => setViewMode("workspace")}
+            onClick={() => { setViewMode("workspace"); localStorage.setItem("claude-orchestrator-sidebar-view", "workspace"); }}
             className={`flex-1 text-[10px] py-0.5 transition-colors ${
               viewMode === "workspace"
                 ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-medium"
@@ -256,7 +258,7 @@ export default function Sidebar({
             Workspaces
           </button>
           <button
-            onClick={() => setViewMode("date")}
+            onClick={() => { setViewMode("date"); localStorage.setItem("claude-orchestrator-sidebar-view", "date"); }}
             className={`flex-1 text-[10px] py-0.5 transition-colors ${
               viewMode === "date"
                 ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-medium"

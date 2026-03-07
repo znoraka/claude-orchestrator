@@ -11,7 +11,7 @@ use signal_watcher::SignalWatcher;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tauri::{AppHandle, Manager, State};
 
@@ -27,10 +27,18 @@ struct IncrementalUsageEntry {
     value: SessionUsage,
 }
 
+/// Incremental cache entry for conversation lines: tracks byte offset for append-only reads.
+struct ConversationCacheEntry {
+    byte_offset: u64,
+    mtime: SystemTime,
+    lines: Vec<String>,
+}
+
 /// Caches expensive JSONL parsing results, keyed by file path.
 struct JsonlCache {
     usage: HashMap<PathBuf, IncrementalUsageEntry>,
     title: HashMap<PathBuf, CachedEntry<Option<String>>>,
+    conversation: HashMap<PathBuf, ConversationCacheEntry>,
 }
 
 impl JsonlCache {
@@ -38,6 +46,7 @@ impl JsonlCache {
         Self {
             usage: HashMap::new(),
             title: HashMap::new(),
+            conversation: HashMap::new(),
         }
     }
 }
@@ -106,7 +115,7 @@ struct FileListCache {
 
 struct AppState {
     pty_manager: Mutex<PtyManager>,
-    agent_manager: Mutex<AgentManager>,
+    agent_manager: Arc<Mutex<AgentManager>>,
     jsonl_cache: Mutex<JsonlCache>,
     pricing: PricingConfig,
     file_watcher: Mutex<JsonlWatcher>,
@@ -144,6 +153,8 @@ struct SessionMeta {
     provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(default, rename = "planContent", skip_serializing_if = "Option::is_none")]
+    plan_content: Option<String>,
 }
 
 fn sessions_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -214,6 +225,38 @@ fn pty_has_child_process(
     manager.has_child_process(&session_id)
 }
 
+/// Check whether a path falls inside a macOS TCC-protected directory (Desktop,
+/// Documents, Downloads, etc.).  Accessing these from a non-sandboxed app
+/// triggers a system permission dialog, so we avoid proactive filesystem calls
+/// on them.
+#[cfg(target_os = "macos")]
+fn is_tcc_protected(expanded_path: &str) -> bool {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if home.is_empty() {
+        return false;
+    }
+    const PROTECTED: &[&str] = &[
+        "Desktop",
+        "Documents",
+        "Downloads",
+        "Movies",
+        "Music",
+        "Pictures",
+    ];
+    for dir in PROTECTED {
+        let prefix = format!("{}/{}", home, dir);
+        if expanded_path == prefix || expanded_path.starts_with(&format!("{}/", prefix)) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_tcc_protected(_expanded_path: &str) -> bool {
+    false
+}
+
 #[tauri::command]
 fn directory_exists(path: String) -> bool {
     let expanded = if path.starts_with('~') {
@@ -225,6 +268,9 @@ fn directory_exists(path: String) -> bool {
     } else {
         path
     };
+    if is_tcc_protected(&expanded) {
+        return true;
+    }
     std::path::Path::new(&expanded).is_dir()
 }
 
@@ -239,7 +285,7 @@ fn get_pty_scrollback(session_id: String, state: State<'_, AppState>) -> Result<
 // ── Agent session commands ──────────────────────────────────────────
 
 #[tauri::command]
-fn create_agent_session(
+async fn create_agent_session(
     session_id: String,
     directory: String,
     claude_session_id: Option<String>,
@@ -251,71 +297,75 @@ fn create_agent_session(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let provider = provider.unwrap_or_else(|| "claude-code".to_string());
-
-    // Expand leading ~ to $HOME (shells expand ~ but programmatic callers don't)
-    let home = std::env::var("HOME")
-        .unwrap_or_else(|_| format!("/Users/{}", std::env::var("USER").unwrap_or_default()));
-    let directory = if directory.starts_with("~/") {
-        format!("{}/{}", home, &directory[2..])
-    } else if directory == "~" {
-        home
-    } else {
-        directory
-    };
-
-    eprintln!("[create_agent_session] session_id={}, directory={:?}, claude_session_id={:?}, resume={}, provider={}", session_id, directory, claude_session_id, resume, provider);
-
-    let agent_script = state
-        .agent_script_paths
-        .get(&provider)
-        .ok_or_else(|| format!("Agent bridge script not found for provider '{}'. Run `pnpm build` to build it.", provider))?
-        .clone();
-
+    // Extract owned values from State before moving into spawn_blocking
+    let agent_script_paths = state.agent_script_paths.clone();
     let mcp_script = state.mcp_script_path.clone();
+    let agent_manager = state.agent_manager.clone();
 
-    let config = if provider == "claude-code" {
-        // Build MCP servers config for the agent SDK
-        let mcp_servers = if let Some(ref mcp_path) = mcp_script {
-            serde_json::json!({
-                "orchestrator": {
-                    "command": "node",
-                    "args": [mcp_path],
-                    "env": {
-                        "ORCHESTRATOR_SESSION_ID": &session_id,
-                        "ORCHESTRATOR_SIGNAL_DIR": if cfg!(debug_assertions) { "/tmp/orchestrator-signals-dev" } else { "/tmp/orchestrator-signals" }
-                    }
-                }
-            })
+    tauri::async_runtime::spawn_blocking(move || {
+        let provider = provider.unwrap_or_else(|| "claude-code".to_string());
+
+        // Expand leading ~ to $HOME (shells expand ~ but programmatic callers don't)
+        let home = std::env::var("HOME")
+            .unwrap_or_else(|_| format!("/Users/{}", std::env::var("USER").unwrap_or_default()));
+        let directory = if directory.starts_with("~/") {
+            format!("{}/{}", home, &directory[2..])
+        } else if directory == "~" {
+            home
         } else {
-            serde_json::json!({})
+            directory
         };
 
-        // Resolve the `claude` CLI so the Agent SDK can find it inside the app bundle
-        let claude_cli = resolve_bin("claude");
+        eprintln!("[create_agent_session] session_id={}, directory={:?}, claude_session_id={:?}, resume={}, provider={}", session_id, directory, claude_session_id, resume, provider);
 
-        serde_json::json!({
-            "sessionId": &session_id,
-            "cwd": &directory,
-            "resume": if resume { claude_session_id.as_deref() } else { None::<&str> },
-            "mcpServers": mcp_servers,
-            "systemPrompt": system_prompt,
-            "claudeCliPath": claude_cli,
-            "permissionMode": permission_mode,
-        })
-    } else {
-        // Generic config for other providers (opencode, etc.)
-        serde_json::json!({
-            "sessionId": &session_id,
-            "cwd": &directory,
-            "systemPrompt": system_prompt,
-            "model": model,
-        })
-    };
-    let config_json = config.to_string();
+        let agent_script = agent_script_paths
+            .get(&provider)
+            .ok_or_else(|| format!("Agent bridge script not found for provider '{}'. Run `pnpm build` to build it.", provider))?
+            .clone();
 
-    let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
-    manager.create_session(&session_id, app_handle, &agent_script, &config_json)
+        let config = if provider == "claude-code" {
+            // Build MCP servers config for the agent SDK
+            let mcp_servers = if let Some(ref mcp_path) = mcp_script {
+                serde_json::json!({
+                    "orchestrator": {
+                        "command": "node",
+                        "args": [mcp_path],
+                        "env": {
+                            "ORCHESTRATOR_SESSION_ID": &session_id,
+                            "ORCHESTRATOR_SIGNAL_DIR": if cfg!(debug_assertions) { "/tmp/orchestrator-signals-dev" } else { "/tmp/orchestrator-signals" }
+                        }
+                    }
+                })
+            } else {
+                serde_json::json!({})
+            };
+
+            // Resolve the `claude` CLI so the Agent SDK can find it inside the app bundle
+            let claude_cli = resolve_bin("claude");
+
+            serde_json::json!({
+                "sessionId": &session_id,
+                "cwd": &directory,
+                "resume": if resume { claude_session_id.as_deref() } else { None::<&str> },
+                "mcpServers": mcp_servers,
+                "systemPrompt": system_prompt,
+                "claudeCliPath": claude_cli,
+                "permissionMode": permission_mode,
+            })
+        } else {
+            // Generic config for other providers (opencode, etc.)
+            serde_json::json!({
+                "sessionId": &session_id,
+                "cwd": &directory,
+                "systemPrompt": system_prompt,
+                "model": model,
+            })
+        };
+        let config_json = config.to_string();
+
+        let manager = agent_manager.lock().map_err(|e| e.to_string())?;
+        manager.create_session(&session_id, app_handle, &agent_script, &config_json)
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -442,7 +492,10 @@ fn list_directories_sync(partial: String) -> Result<Vec<String>, String> {
         (parent.to_path_buf(), prefix)
     };
 
-    let entries = std::fs::read_dir(&dir).map_err(|e| format!("Read dir error: {}", e))?;
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(vec![]),
+    };
 
     let home = std::env::var("HOME").unwrap_or_default();
     let mut results: Vec<String> = entries
@@ -1484,8 +1537,7 @@ fn get_message_count_sync(claude_session_id: String, directory: String) -> Resul
 
 #[tauri::command]
 /// Call the warm title server with a user message and return the generated title.
-async fn call_title_server(port: u16, user_msg: String) -> Result<Option<String>, String> {
-    let body = serde_json::json!({ "message": user_msg }).to_string();
+async fn call_title_server(port: u16, body: String) -> Result<Option<String>, String> {
 
     let response = tauri::async_runtime::spawn_blocking(move || {
         let client = std::net::TcpStream::connect_timeout(
@@ -1556,7 +1608,20 @@ async fn generate_smart_title(
         None => return Ok(None),
     };
 
-    call_title_server(port, user_msg).await
+    // Build body with text and optional images
+    let text = user_msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
+    let images = user_msg.get("images").and_then(|i| i.as_array());
+    let body = if let Some(imgs) = images {
+        if imgs.is_empty() {
+            serde_json::json!({ "message": text })
+        } else {
+            serde_json::json!({ "message": text, "images": imgs })
+        }
+    } else {
+        serde_json::json!({ "message": text })
+    };
+
+    call_title_server(port, body.to_string()).await
 }
 
 #[tauri::command]
@@ -1570,10 +1635,70 @@ async fn generate_title_from_text(
     }
 
     let truncated: String = message.chars().take(500).collect();
-    call_title_server(port, truncated).await
+    let body = serde_json::json!({ "message": truncated }).to_string();
+    call_title_server(port, body).await
 }
 
-fn extract_first_user_message(claude_session_id: &str, directory: &str) -> Result<Option<String>, String> {
+/// Call the title server's /classify endpoint to determine if a prompt is simple or complex.
+async fn call_classify_server(port: u16, user_msg: String) -> Result<String, String> {
+    let body = serde_json::json!({ "message": user_msg }).to_string();
+
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        let client = std::net::TcpStream::connect_timeout(
+            &format!("127.0.0.1:{}", port).parse().unwrap(),
+            std::time::Duration::from_secs(5),
+        )
+        .map_err(|e| format!("Failed to connect to classify server: {}", e))?;
+        client.set_read_timeout(Some(std::time::Duration::from_secs(15))).ok();
+        client.set_write_timeout(Some(std::time::Duration::from_secs(5))).ok();
+
+        use std::io::{Read, Write};
+        let mut stream = client;
+        let request = format!(
+            "POST /classify HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            port,
+            body.len(),
+            body
+        );
+        stream.write_all(request.as_bytes())
+            .map_err(|e| format!("Failed to send request: {}", e))?;
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response)
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+
+        Ok::<String, String>(response)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))??;
+
+    // Parse HTTP response — extract body after \r\n\r\n
+    let body = response.split("\r\n\r\n").nth(1).unwrap_or("");
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(classification) = parsed.get("classification").and_then(|c| c.as_str()) {
+            return Ok(classification.to_string());
+        }
+    }
+
+    // Default to complex on any parse failure
+    Ok("complex".to_string())
+}
+
+#[tauri::command]
+async fn classify_prompt(
+    message: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let port = state.title_server_port.load(std::sync::atomic::Ordering::Relaxed);
+    if port == 0 {
+        return Ok("complex".to_string());
+    }
+
+    let truncated: String = message.chars().take(500).collect();
+    call_classify_server(port, truncated).await
+}
+
+fn extract_first_user_message(claude_session_id: &str, directory: &str) -> Result<Option<serde_json::Value>, String> {
     let jsonl_path = jsonl_path_for(claude_session_id, directory)?;
 
     if !jsonl_path.exists() {
@@ -1598,13 +1723,41 @@ fn extract_first_user_message(claude_session_id: &str, directory: &str) -> Resul
                     .get("message")
                     .and_then(|m| m.get("content"))
                 {
-                    if let Some(text) = extract_user_text(content) {
-                        if text.starts_with("<command-message>") {
-                            continue;
+                    // Collect text and image blocks from content
+                    let mut texts = Vec::new();
+                    let mut images = Vec::new();
+
+                    if let Some(s) = content.as_str() {
+                        texts.push(s.to_string());
+                    } else if let Some(arr) = content.as_array() {
+                        for block in arr {
+                            let block_type = block.get("type").and_then(|t| t.as_str());
+                            if block_type == Some("text") {
+                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                    texts.push(text.to_string());
+                                }
+                            } else if block_type == Some("image") {
+                                // Preserve full image block (limit to 3)
+                                if images.len() < 3 {
+                                    images.push(block.clone());
+                                }
+                            }
                         }
-                        let truncated: String = text.chars().take(500).collect();
-                        return Ok(Some(truncated));
                     }
+
+                    let combined_text = texts.join("\n");
+                    if combined_text.starts_with("<command-message>") {
+                        continue;
+                    }
+                    if combined_text.is_empty() && images.is_empty() {
+                        continue;
+                    }
+
+                    let truncated: String = combined_text.chars().take(500).collect();
+                    return Ok(Some(serde_json::json!({
+                        "text": truncated,
+                        "images": images
+                    })));
                 }
             }
         }
@@ -1647,55 +1800,135 @@ fn truncate_content_blocks(val: &mut serde_json::Value) {
     }
 }
 
-#[tauri::command]
-async fn get_conversation_jsonl(claude_session_id: String, directory: String) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+/// Read new lines from a JSONL file starting at `byte_offset`, filter to wanted message types,
+/// and truncate large content blocks. Returns `(new_filtered_lines, new_byte_offset)`.
+fn read_and_filter_jsonl_lines(path: &std::path::Path, byte_offset: u64) -> Result<(Vec<String>, u64), String> {
+    use std::io::{BufRead, Seek, SeekFrom};
 
-        if !jsonl_path.exists() {
-            return Ok(vec![]);
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open conversation file: {}", e))?;
+
+    let file_len = file.metadata()
+        .map_err(|e| format!("Failed to get file metadata: {}", e))?
+        .len();
+
+    if byte_offset >= file_len {
+        return Ok((vec![], byte_offset));
+    }
+
+    file.seek(SeekFrom::Start(byte_offset))
+        .map_err(|e| format!("Failed to seek in file: {}", e))?;
+
+    const WANTED: &[&str] = &[
+        "\"type\":\"user\"", "\"type\": \"user\"",
+        "\"type\":\"assistant\"", "\"type\": \"assistant\"",
+        "\"type\":\"result\"", "\"type\": \"result\"",
+        "\"type\":\"error\"", "\"type\": \"error\"",
+    ];
+    const TRUNCATE_THRESHOLD: usize = 30_000;
+
+    let reader = std::io::BufReader::new(file);
+    let mut new_offset = byte_offset;
+    let mut lines = Vec::new();
+
+    for line_result in reader.lines() {
+        let l = line_result.map_err(|e| format!("Failed to read line: {}", e))?;
+        new_offset += l.len() as u64 + 1; // +1 for newline
+        if l.is_empty() || !WANTED.iter().any(|w| l.contains(w)) {
+            continue;
         }
+        if l.len() <= TRUNCATE_THRESHOLD {
+            lines.push(l);
+        } else if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&l) {
+            truncate_content_blocks(&mut val);
+            lines.push(serde_json::to_string(&val).unwrap_or(l));
+        } else {
+            lines.push(l);
+        }
+    }
 
-        let file = std::fs::File::open(&jsonl_path)
-            .map_err(|e| format!("Failed to open conversation file: {}", e))?;
-        let reader = std::io::BufReader::new(file);
+    Ok((lines, new_offset))
+}
 
-        // Only return message types that the frontend actually renders.
-        // Use lightweight string check before expensive JSON parse.
-        // Handle both compact ("type":"user") and spaced ("type": "user") JSON.
-        const WANTED: &[&str] = &[
-            "\"type\":\"user\"", "\"type\": \"user\"",
-            "\"type\":\"assistant\"", "\"type\": \"assistant\"",
-            "\"type\":\"result\"", "\"type\": \"result\"",
-            "\"type\":\"error\"", "\"type\": \"error\"",
-        ];
+/// Get all cached conversation lines for a JSONL path, reading incrementally from disk.
+/// Returns a reference-counted clone of the cached lines.
+fn get_cached_conversation_lines(
+    jsonl_path: &std::path::Path,
+    cache: &Mutex<JsonlCache>,
+) -> Result<Vec<String>, String> {
+    let mtime = std::fs::metadata(jsonl_path)
+        .map_err(|e| format!("Failed to get metadata: {}", e))?
+        .modified()
+        .map_err(|e| format!("Failed to get mtime: {}", e))?;
 
-        // Skip full JSON parse for lines that are already small
-        const TRUNCATE_THRESHOLD: usize = 30_000;
+    // Fast path: check if cache is fresh
+    {
+        let guard = cache.lock().unwrap();
+        if let Some(entry) = guard.conversation.get(jsonl_path) {
+            if entry.mtime == mtime {
+                return Ok(entry.lines.clone());
+            }
+        }
+    }
 
-        use std::io::BufRead;
-        let lines: Vec<String> = reader
-            .lines()
-            .filter_map(|l| l.ok())
-            .filter(|l| !l.is_empty() && WANTED.iter().any(|w| l.contains(w)))
-            .map(|l| {
-                if l.len() <= TRUNCATE_THRESHOLD {
-                    return l;
-                }
-                // Parse, truncate large text blocks, re-serialize
-                if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&l) {
-                    truncate_content_blocks(&mut val);
-                    serde_json::to_string(&val).unwrap_or(l)
-                } else {
-                    l
-                }
-            })
-            .collect();
+    // Cache miss or stale — read incrementally
+    let guard = cache.lock().unwrap();
+    // Double-check after acquiring lock
+    let existing_offset = guard.conversation.get(jsonl_path)
+        .filter(|e| e.mtime == mtime)
+        .map(|e| e.byte_offset);
 
-        Ok(lines)
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?
+    if let Some(_offset) = existing_offset {
+        // Another thread filled it while we waited
+        return Ok(guard.conversation.get(jsonl_path).unwrap().lines.clone());
+    }
+
+    // Check if file was truncated/replaced (mtime changed and we had a cache entry)
+    let start_offset = guard.conversation.get(jsonl_path)
+        .filter(|e| {
+            // Only reuse offset if file grew (same or newer mtime, offset still valid)
+            let file_len = std::fs::metadata(jsonl_path).map(|m| m.len()).unwrap_or(0);
+            file_len >= e.byte_offset
+        })
+        .map(|e| e.byte_offset)
+        .unwrap_or(0);
+
+    let mut existing_lines = if start_offset > 0 {
+        guard.conversation.get(jsonl_path).map(|e| e.lines.clone()).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // Drop the lock during I/O
+    drop(guard);
+
+    let (new_lines, new_offset) = read_and_filter_jsonl_lines(jsonl_path, start_offset)?;
+    existing_lines.extend(new_lines);
+
+    let result = existing_lines.clone();
+
+    // Store in cache
+    let mut guard = cache.lock().unwrap();
+    guard.conversation.insert(jsonl_path.to_path_buf(), ConversationCacheEntry {
+        byte_offset: new_offset,
+        mtime,
+        lines: existing_lines,
+    });
+
+    Ok(result)
+}
+
+#[tauri::command]
+fn get_conversation_jsonl(
+    claude_session_id: String,
+    directory: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+    if !jsonl_path.exists() {
+        return Ok(vec![]);
+    }
+    get_cached_conversation_lines(&jsonl_path, &state.jsonl_cache)
 }
 
 #[derive(Serialize)]
@@ -1705,60 +1938,26 @@ struct ConversationTailResult {
 }
 
 #[tauri::command]
-async fn get_conversation_jsonl_tail(
+fn get_conversation_jsonl_tail(
     claude_session_id: String,
     directory: String,
     max_lines: usize,
+    state: State<'_, AppState>,
 ) -> Result<ConversationTailResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+    if !jsonl_path.exists() {
+        return Ok(ConversationTailResult { lines: vec![], total: 0 });
+    }
 
-        if !jsonl_path.exists() {
-            return Ok(ConversationTailResult { lines: vec![], total: 0 });
-        }
+    let all_lines = get_cached_conversation_lines(&jsonl_path, &state.jsonl_cache)?;
+    let total = all_lines.len();
+    let tail = if total <= max_lines {
+        all_lines
+    } else {
+        all_lines[total - max_lines..].to_vec()
+    };
 
-        let file = std::fs::File::open(&jsonl_path)
-            .map_err(|e| format!("Failed to open conversation file: {}", e))?;
-        let reader = std::io::BufReader::new(file);
-
-        const WANTED: &[&str] = &[
-            "\"type\":\"user\"", "\"type\": \"user\"",
-            "\"type\":\"assistant\"", "\"type\": \"assistant\"",
-            "\"type\":\"result\"", "\"type\": \"result\"",
-            "\"type\":\"error\"", "\"type\": \"error\"",
-        ];
-
-        const TRUNCATE_THRESHOLD: usize = 30_000;
-
-        use std::io::BufRead;
-        let all_lines: Vec<String> = reader
-            .lines()
-            .filter_map(|l| l.ok())
-            .filter(|l| !l.is_empty() && WANTED.iter().any(|w| l.contains(w)))
-            .map(|l| {
-                if l.len() <= TRUNCATE_THRESHOLD {
-                    return l;
-                }
-                if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&l) {
-                    truncate_content_blocks(&mut val);
-                    serde_json::to_string(&val).unwrap_or(l)
-                } else {
-                    l
-                }
-            })
-            .collect();
-
-        let total = all_lines.len();
-        let tail = if total <= max_lines {
-            all_lines
-        } else {
-            all_lines[total - max_lines..].to_vec()
-        };
-
-        Ok(ConversationTailResult { lines: tail, total })
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?
+    Ok(ConversationTailResult { lines: tail, total })
 }
 
 #[derive(Deserialize)]
@@ -3155,6 +3354,25 @@ fn walk_dir_recursive(base: &std::path::Path, dir: &std::path::Path, out: &mut V
 }
 
 #[tauri::command]
+fn open_in_editor(editor: String, file_path: String) -> Result<(), String> {
+    let expanded = if file_path.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            file_path.replacen('~', &home, 1)
+        } else {
+            file_path
+        }
+    } else {
+        file_path
+    };
+    std::process::Command::new(&editor)
+        .arg(&expanded)
+        .env("PATH", shell_path())
+        .spawn()
+        .map_err(|e| format!("Failed to open editor '{}': {}", editor, e))?;
+    Ok(())
+}
+
+#[tauri::command]
 fn resolve_path(file_path: String) -> Result<String, String> {
     let expanded = if file_path.starts_with('~') {
         if let Ok(home) = std::env::var("HOME") {
@@ -3301,11 +3519,9 @@ pub fn run() {
                 map
             };
 
-            // Spawn the title generation server (stays warm for fast title generation)
-            let title_server_port = std::sync::atomic::AtomicU16::new(0);
-            let mut title_server_child: Option<std::process::Child> = None;
-            {
-                let title_script_candidates = [
+            // Resolve title server script path (fast, no I/O beyond stat)
+            let title_script = {
+                let candidates = [
                     app.handle()
                         .path()
                         .resource_dir()
@@ -3317,66 +3533,77 @@ pub fn run() {
                             .join("title-server.bundle.mjs"),
                     ),
                 ];
-                if let Some(title_script) = title_script_candidates.into_iter().flatten().find(|p| p.exists()) {
-                    eprintln!("[setup] Title server script found at {:?}", title_script);
-                    if let Some(node_bin) = resolve_bin("node") {
-                        let claude_cli = resolve_bin("claude");
-                        let title_config = serde_json::json!({
-                            "claudeCliPath": claude_cli,
-                        });
-                        match std::process::Command::new(&node_bin)
-                            .arg(title_script.to_string_lossy().as_ref())
-                            .arg(title_config.to_string())
-                            .env("PATH", shell_path())
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::inherit())
-                            .spawn()
-                        {
-                            Ok(mut child) => {
-                                // Read the port from stdout
-                                if let Some(ref mut stdout) = child.stdout {
-                                    use std::io::BufRead;
-                                    let mut reader = std::io::BufReader::new(stdout);
-                                    let mut line = String::new();
-                                    if reader.read_line(&mut line).is_ok() {
-                                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
-                                            if let Some(port) = parsed.get("port").and_then(|p| p.as_u64()) {
-                                                title_server_port.store(port as u16, std::sync::atomic::Ordering::Relaxed);
-                                                eprintln!("[setup] Title server started on port {}", port);
-                                            }
-                                        }
-                                    }
-                                }
-                                // Detach stdout so it doesn't block
-                                child.stdout.take();
-                                title_server_child = Some(child);
-                            }
-                            Err(e) => {
-                                eprintln!("[setup] Failed to spawn title server: {}", e);
-                            }
-                        }
-                    } else {
-                        eprintln!("[setup] Cannot start title server: node binary not found");
-                    }
-                } else {
-                    eprintln!("[setup] Title server script not found. Run `pnpm build:title-server` to build it.");
-                }
-            }
+                candidates.into_iter().flatten().find(|p| p.exists())
+            };
 
             app.manage(AppState {
                 pty_manager: Mutex::new(PtyManager::new()),
-                agent_manager: Mutex::new(AgentManager::new()),
+                agent_manager: Arc::new(Mutex::new(AgentManager::new())),
                 jsonl_cache: Mutex::new(JsonlCache::new()),
                 pricing: PricingConfig::load(),
                 file_watcher: Mutex::new(watcher),
                 _signal_watcher: signal_watcher,
                 mcp_script_path,
                 agent_script_paths,
-                title_server_port,
-                _title_server_child: Mutex::new(title_server_child),
+                title_server_port: std::sync::atomic::AtomicU16::new(0),
+                _title_server_child: Mutex::new(None),
                 file_list_cache: Mutex::new(FileListCache { entries: HashMap::new() }),
             });
+
+            // Spawn the title generation server in a background thread so it
+            // doesn't block window creation (resolve_bin + node startup can
+            // take 500ms-2s).
+            if let Some(title_script) = title_script {
+                eprintln!("[setup] Title server script found at {:?}", title_script);
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let Some(node_bin) = resolve_bin("node") else {
+                        eprintln!("[setup] Cannot start title server: node binary not found");
+                        return;
+                    };
+                    let claude_cli = resolve_bin("claude");
+                    let title_config = serde_json::json!({
+                        "claudeCliPath": claude_cli,
+                    });
+                    match std::process::Command::new(&node_bin)
+                        .arg(title_script.to_string_lossy().as_ref())
+                        .arg(title_config.to_string())
+                        .env("PATH", shell_path())
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::inherit())
+                        .spawn()
+                    {
+                        Ok(mut child) => {
+                            // Read the port from stdout
+                            if let Some(ref mut stdout) = child.stdout {
+                                use std::io::BufRead;
+                                let mut reader = std::io::BufReader::new(stdout);
+                                let mut line = String::new();
+                                if reader.read_line(&mut line).is_ok() {
+                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
+                                        if let Some(port) = parsed.get("port").and_then(|p| p.as_u64()) {
+                                            let state = handle.state::<AppState>();
+                                            state.title_server_port.store(port as u16, std::sync::atomic::Ordering::Relaxed);
+                                            eprintln!("[setup] Title server started on port {}", port);
+                                        }
+                                    }
+                                }
+                            }
+                            // Detach stdout so it doesn't block
+                            child.stdout.take();
+                            if let Ok(mut guard) = handle.state::<AppState>()._title_server_child.lock() {
+                                *guard = Some(child);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[setup] Failed to spawn title server: {}", e);
+                        }
+                    }
+                });
+            } else {
+                eprintln!("[setup] Title server script not found. Run `pnpm build:title-server` to build it.");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3410,6 +3637,7 @@ pub fn run() {
             get_message_count,
             generate_smart_title,
             generate_title_from_text,
+            classify_prompt,
             get_conversation_jsonl,
             get_conversation_jsonl_tail,
             search_session_content,
@@ -3438,6 +3666,7 @@ pub fn run() {
             get_pr_viewed_files,
             set_pr_file_viewed,
             set_dock_badge,
+            open_in_editor,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

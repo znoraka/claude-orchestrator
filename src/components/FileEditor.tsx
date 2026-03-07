@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { EditorView, keymap } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 import { Vim, vim } from "@replit/codemirror-vim";
@@ -386,9 +385,9 @@ export default function FileEditor({ baseDirectory, initialFilePath, onClose }: 
           {loadedPath && (
             <button
               onClick={async () => {
-                // resolve_path expands ~ and relative paths on the Rust side
+                const editor = localStorage.getItem("claude-orchestrator-editor-command") || "code";
                 const resolved = await invoke<string>("resolve_path", { filePath: loadedPath });
-                await openPath(resolved);
+                await invoke("open_in_editor", { editor, filePath: resolved });
               }}
               className="px-2 py-0.5 text-[10px] font-mono rounded border bg-[var(--bg-primary)] text-[var(--text-tertiary)] border-[var(--border-color)] hover:text-[var(--text-secondary)] transition-colors"
               title="Open in default editor"

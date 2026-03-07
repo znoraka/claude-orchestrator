@@ -71,15 +71,17 @@ export default function FileIcon({ filename, size = 14 }: FileIconProps) {
       <path
         d="M3 1h7l3 3v11H3V1z"
         fill={color}
-        fillOpacity={0.15}
+        fillOpacity={0.08}
         stroke={color}
-        strokeWidth={1}
+        strokeOpacity={0.6}
+        strokeWidth={0.75}
         strokeLinejoin="round"
       />
       <path
         d="M10 1v3h3"
         stroke={color}
-        strokeWidth={1}
+        strokeOpacity={0.6}
+        strokeWidth={0.75}
         strokeLinejoin="round"
       />
       {/* Extension letter */}
@@ -89,8 +91,9 @@ export default function FileIcon({ filename, size = 14 }: FileIconProps) {
           y="12"
           textAnchor="middle"
           fill={color}
+          fillOpacity={0.85}
           fontSize={letter.length > 2 ? "4.5" : letter.length > 1 ? "5.5" : "7"}
-          fontWeight="bold"
+          fontWeight="600"
           fontFamily="system-ui, sans-serif"
         >
           {letter}

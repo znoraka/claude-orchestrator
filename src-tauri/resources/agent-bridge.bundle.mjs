@@ -16615,6 +16615,7 @@ async function handleStdinMessage(msg) {
       permissionResolve(false);
       permissionResolve = null;
     }
+    emit({ type: "aborted" });
     return;
   }
   if (msg.type === "set_cwd") {

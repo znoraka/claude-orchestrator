@@ -107,9 +107,9 @@ export default memo(function SessionTab({
 
   const isRunning = session.status === "running" || session.status === "starting";
   const isBusy = usage?.isBusy && isRunning;
-  const hasQuestion = session.hasQuestion && isRunning && !isBusy; // AskUserQuestion pending
+  const hasQuestion = session.hasQuestion && isRunning; // AskUserQuestion pending (takes priority over busy)
   const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
-  const hasDraft = session.hasDraft && isRunning && !isBusy;
+  const hasDraft = session.hasDraft && isRunning;
 
   return (
     <div
@@ -126,16 +126,18 @@ export default memo(function SessionTab({
         }
       `}
     >
-      {/* Status indicator: error > spinner (busy) > question (orange pulse) > draft (pencil) > solid dot (unread) */}
+      {/* Status indicator: error > question (orange pulse) > spinner (busy) > draft (pencil) > solid dot (unread) */}
       <span className="shrink-0 w-3 h-3 flex items-center justify-center">
         {hasError ? (
           <svg className="w-3 h-3 text-red-400" viewBox="0 0 16 16" fill="currentColor">
             <path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575ZM8 5a.75.75 0 0 0-.75.75v2.5a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8 5Zm1 6a1 1 0 1 0-2 0 1 1 0 0 0 2 0Z" />
           </svg>
+        ) : hasQuestion ? (
+          <svg className="w-3 h-3 text-orange-400" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4.5 2a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 4.5 2Zm7 0a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 11.5 2Z" />
+          </svg>
         ) : isBusy ? (
           <span className="w-2.5 h-2.5 border-[1.5px] border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-        ) : hasQuestion ? (
-          <span className="w-2.5 h-2.5 rounded-full bg-orange-400 animate-pulse" />
         ) : hasDraft ? (
           <svg className="w-2.5 h-2.5 text-blue-400" viewBox="0 0 16 16" fill="currentColor">
             <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.25.25 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z" />
