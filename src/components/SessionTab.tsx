@@ -48,21 +48,6 @@ function hashToColor(s: string): string {
   return `hsl(${hue}, 55%, 55%)`;
 }
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
-  return String(n);
-}
-
-function formatDuration(ms: number): string {
-  const totalMinutes = Math.floor(ms / 60_000);
-  if (totalMinutes < 1) return "<1m";
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours === 0) return `${minutes}m`;
-  return `${hours}h ${minutes}m`;
-}
-
 export interface SessionTabProps {
   session: Session;
   isActive: boolean;
@@ -83,7 +68,7 @@ export default memo(function SessionTab({
   usage,
   contentOnly,
   unread,
-  hideDirectory,
+  hideDirectory: _hideDirectory,
   parentName,
   childCount,
   onClick,
@@ -111,26 +96,33 @@ export default memo(function SessionTab({
 
   const isRunning = session.status === "running" || session.status === "starting";
   const isBusy = usage?.isBusy && isRunning;
-  const hasQuestion = session.hasQuestion && isRunning; // AskUserQuestion pending (takes priority over busy)
+  const hasQuestion = session.hasQuestion && isRunning;
   const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
   const hasDraft = session.hasDraft && isRunning;
+
+  // Row-level background tints for attention states
+  const rowBg = hasQuestion
+    ? "bg-orange-500/8"
+    : hasError
+    ? "bg-red-500/5"
+    : isActive
+    ? "bg-[var(--accent)]/8"
+    : "";
 
   return (
     <div
       onClick={onClick}
       className={`
-        session-tab group relative flex items-center gap-2 px-2.5 py-2 mx-0.5 my-px cursor-pointer
-        rounded-lg
-        ${
-          isActive
-            ? hasQuestion
-              ? "bg-orange-500/10 text-[var(--text-primary)]"
-              : "bg-[var(--accent)]/8 text-[var(--text-primary)]"
-            : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+        session-tab group relative flex items-center gap-2 pl-2 pr-1.5 py-1.5 cursor-pointer
+        rounded-md transition-colors
+        ${rowBg}
+        ${isActive
+          ? "border-l-2 border-[var(--accent)] text-[var(--text-primary)]"
+          : "border-l-2 border-transparent text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
         }
       `}
     >
-      {/* Status indicator: error > question (orange pulse) > spinner (busy) > draft (pencil) > solid dot (unread) */}
+      {/* Status indicator */}
       <span className="shrink-0 w-3 h-3 flex items-center justify-center">
         {hasError ? (
           <svg className="w-3 h-3 text-red-400" viewBox="0 0 16 16" fill="currentColor">
@@ -151,7 +143,7 @@ export default memo(function SessionTab({
         ) : null}
       </span>
 
-      {/* Name + directory */}
+      {/* Name + details */}
       <div className="flex-1 min-w-0">
         {isEditing ? (
           <input
@@ -168,69 +160,39 @@ export default memo(function SessionTab({
           />
         ) : (
           <span
-            className="text-xs truncate block leading-snug"
+            className={`text-xs truncate block leading-snug ${
+              isActive || unread ? "font-medium text-[var(--text-primary)]" : ""
+            }`}
             onDoubleClick={(e) => {
               e.stopPropagation();
               setEditName(session.name);
               setIsEditing(true);
             }}
           >
+            {session.name}
             {childCount !== undefined && childCount > 0 && (
-              <span className="mr-0.5 text-[9px] px-1 py-px rounded bg-blue-500/15 text-blue-400 font-medium align-middle" title={`${childCount} execution session${childCount !== 1 ? "s" : ""}`}>
-                <svg className="w-2.5 h-2.5 inline -mt-px mr-0.5" viewBox="0 0 16 16" fill="currentColor"><path d="M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75v-.878a2.25 2.25 0 1 1 1.5 0v.878a2.25 2.25 0 0 1-2.25 2.25h-1.5v2.128a2.251 2.251 0 1 1-1.5 0V8.5h-1.5A2.25 2.25 0 0 1 3.5 6.25v-.878a2.25 2.25 0 1 1 1.5 0Z" /></svg>
-                {childCount}
+              <span className="ml-1 text-[10px] text-[var(--text-tertiary)]">
+                ({childCount})
               </span>
             )}
-            {session.name}
-            {session.provider && session.provider !== "claude-code" && (
-              <span className="ml-1.5 text-[9px] px-1 py-px rounded bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] uppercase tracking-wider font-semibold align-middle">
-                {session.provider === "opencode" ? "OC" : session.provider}
+            {contentOnly && (
+              <span className="ml-1.5 text-[9px] px-1 py-px rounded bg-[var(--accent)]/10 text-[var(--accent)] font-medium align-middle">
+                match
               </span>
             )}
           </span>
         )}
-        {parentName && (
+
+        {/* Parent name — visible when active */}
+        {isActive && parentName && (
           <span className="text-[10px] text-violet-400/70 truncate block mt-0.5">
             from: {parentName}
           </span>
         )}
-        {!hideDirectory && session.directory && (() => {
-          const isWorktree = session.directory.includes("/.worktrees/") || session.directory.includes("/.claude/worktrees/");
-          if (isWorktree) {
-            const short = shortenPath(session.directory);
-            const slashIdx = short.indexOf("/");
-            const repo = short.slice(0, slashIdx);
-            const wt = short.slice(slashIdx);
-            return (
-              <span className="text-[10px] truncate block mt-0.5">
-                <span style={{ color: repoColor(session.directory) }}>{repo}</span>
-                <span style={{ color: directoryColor(session.directory) }}>{wt}</span>
-              </span>
-            );
-          }
-          return (
-            <span
-              className="text-[10px] truncate block mt-0.5"
-              style={{ color: repoColor(session.directory) }}
-            >
-              {shortenPath(session.directory)}
-            </span>
-          );
-        })()}
-        {contentOnly && (
-          <span className="text-[10px] text-[var(--accent)] truncate block mt-0.5">
-            content match
-          </span>
-        )}
-        {usage && (usage.inputTokens > 0 || usage.outputTokens > 0) && (
-          <span className="text-[10px] text-[var(--text-tertiary)] truncate block mt-0.5">
-            {formatTokens(usage.inputTokens + usage.outputTokens)} tokens · ${usage.costUsd.toFixed(2)}
-            {session.activeTime ? ` · ${formatDuration(session.activeTime)}` : ""}
-          </span>
-        )}
+
       </div>
 
-      {/* Delete button */}
+      {/* Delete button — hover only */}
       <button
         onClick={(e) => {
           e.stopPropagation();

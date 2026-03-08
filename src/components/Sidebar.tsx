@@ -24,7 +24,7 @@ interface SidebarProps {
 export default function Sidebar({
   workspaces,
   activeSessionId,
-  activeWorktreePath,
+  activeWorktreePath: _activeWorktreePath,
   sessionUsage,
   onSelectSession,
   onCreateSession,
@@ -207,30 +207,12 @@ export default function Sidebar({
 
 
   return (
-    <div className="w-64 h-full bg-gradient-to-b from-[var(--bg-secondary)] to-[#10121a] flex flex-col shrink-0 px-3 pt-4 pb-3">
-      {/* Header + New Session */}
-      <div className="px-1 pb-2.5 flex items-center gap-2">
-        <div className="flex items-center gap-2 flex-1 min-w-0">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#ff9040] to-[#e06020] flex items-center justify-center text-white text-xs font-bold shrink-0 shadow-[0_0_12px_rgba(240,120,48,0.3)]">
-            C
-          </div>
-          <span className="text-xs font-semibold text-[var(--text-primary)] tracking-tight truncate">
-            Sessions
-          </span>
-        </div>
-        <button
-          onClick={onCreateSession}
-          className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] hover:shadow-[0_0_12px_rgba(240,120,48,0.3)] text-white text-[11px] font-medium transition-all duration-200 shrink-0"
-        >
-          + New
-        </button>
-      </div>
-
-      {/* Search */}
-      <div className="px-1 pb-1.5">
-        <div className="relative">
+    <div className="w-64 h-full bg-gradient-to-b from-[var(--bg-secondary)] to-[#10121a] flex flex-col shrink-0 px-2 pt-3 pb-3">
+      {/* Search + New button merged into one row */}
+      <div className="pb-2 flex items-center gap-1.5">
+        <div className="relative flex-1 min-w-0">
           <svg
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)]"
+            className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)]"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -247,18 +229,25 @@ export default function Sidebar({
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search sessions..."
-            className="sidebar-search w-full bg-[var(--bg-primary)]/80 border border-[var(--border-color)] rounded-lg pl-8 pr-3 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] focus:shadow-[0_0_0_3px_rgba(240,120,48,0.1)] transition-all duration-200"
+            className="sidebar-search w-full bg-[var(--bg-primary)]/80 border border-[var(--border-color)] rounded-lg pl-7 pr-3 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] focus:shadow-[0_0_0_3px_rgba(240,120,48,0.1)] transition-all duration-200"
           />
           {contentSearching && (
-            <div className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
           )}
         </div>
+        <button
+          onClick={onCreateSession}
+          className="w-7 h-7 rounded-lg bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] hover:shadow-[0_0_12px_rgba(240,120,48,0.3)] text-white text-sm font-medium transition-all duration-200 shrink-0 flex items-center justify-center"
+          title="New session"
+        >
+          +
+        </button>
       </div>
 
       {/* Tree */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         {workspaces.length > 0 ? (
-          workspaces.map((workspace) => {
+          workspaces.map((workspace, wsIdx) => {
             const repoName = workspace.directory.split("/").filter(Boolean).pop() || workspace.directory;
             const isRepoCollapsed = collapsedRepos.has(workspace.id);
 
@@ -275,44 +264,35 @@ export default function Sidebar({
             if (filterQ && filteredWorktrees.length === 0) return null;
 
             const color = repoColor(workspace.directory);
+            const totalSessions = workspace.worktrees.reduce((n, wt) => n + wt.sessions.length, 0);
 
             return (
               <div
                 key={workspace.id}
-                className="mb-2 rounded-md"
+                className={wsIdx > 0 ? "mt-2" : ""}
               >
-                {/* Repo header */}
+                {/* Workspace header — bold section bar */}
                 <button
                   onClick={() => toggleRepo(workspace.id)}
-                  className="w-full flex items-center gap-1.5 px-2 py-1 rounded-md text-left hover:bg-[var(--bg-hover)] transition-colors group"
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left bg-[var(--bg-tertiary)]/60 hover:bg-[var(--bg-tertiary)] transition-colors group"
+                  style={{ borderLeft: `3px solid ${color}` }}
                 >
                   <svg
-                    className={`w-3 h-3 shrink-0 text-[var(--text-tertiary)] transition-transform ${
+                    className={`w-2.5 h-2.5 shrink-0 text-[var(--text-tertiary)] transition-transform ${
                       isRepoCollapsed ? "" : "rotate-90"
                     }`}
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
-                    strokeWidth={2}
+                    strokeWidth={2.5}
                   >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
-                  <svg
-                    className="w-3.5 h-3.5 shrink-0"
-                    style={{ color }}
-                    viewBox="0 0 16 16"
-                    fill="currentColor"
-                  >
-                    <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
-                  </svg>
-                  <span className="text-[11px] font-semibold text-[var(--text-primary)] truncate flex-1">
+                  <span className="text-xs font-bold text-[var(--text-primary)] truncate flex-1">
                     {repoName}
                   </span>
-                  <span className="text-[10px] text-[var(--text-tertiary)] shrink-0 flex items-center gap-1">
-                    {workspace.worktrees.some((wt) => shellProcessDirs?.get(wt.path)) && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="Shell process running" />
-                    )}
-                    {workspace.worktrees.reduce((n, wt) => n + wt.sessions.length, 0)}
+                  <span className="text-[10px] text-[var(--text-tertiary)] bg-[var(--bg-primary)]/50 px-1.5 py-0.5 rounded-full shrink-0">
+                    {totalSessions}
                   </span>
                 </button>
 
@@ -322,7 +302,7 @@ export default function Sidebar({
                     .flatMap((wt) => wt.sessions)
                     .filter((s) => isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
                   return important.map((session) => (
-                    <div key={session.id} className="ml-1">
+                    <div key={session.id} className="pl-5">
                       {renderSession(session, { hideDirectory: true })}
                     </div>
                   ));
@@ -330,71 +310,72 @@ export default function Sidebar({
 
                 {/* Worktrees */}
                 {!isRepoCollapsed &&
-                  filteredWorktrees.map((wt) => {
+                  filteredWorktrees.map((wt, wtIdx) => {
                     const wtName = wt.isMain ? "main" : worktreeName(wt.path);
                     const branch = branches.get(wt.path) || wt.branch;
                     const isWtCollapsed = collapsedWorktrees.has(wt.path);
-                    const isActiveWt = activeWorktreePath === wt.path;
                     const hasShellProcess = !!(shellProcessDirs?.get(wt.path));
+                    const hasMultipleWorktrees = filteredWorktrees.length > 1;
+
+                    // Deduplicate: if worktree name equals branch, show once
+                    const displayLabel = branch && branch !== wtName
+                      ? `${wtName} · ${branch}`
+                      : wtName;
 
                     return (
-                      <div key={wt.path} className="ml-1">
-                        {/* Worktree row */}
-                        <button
-                          onClick={() => toggleWorktree(wt.path)}
-                          className={`w-full flex items-center gap-1.5 px-2 py-1 rounded-md text-left transition-colors group ${
-                            isActiveWt
-                              ? "bg-[var(--bg-tertiary)]"
-                              : "hover:bg-[var(--bg-hover)]"
-                          }`}
-                        >
-                          <svg
-                            className={`w-2.5 h-2.5 shrink-0 text-[var(--text-tertiary)] transition-transform ${
-                              isWtCollapsed ? "" : "rotate-90"
-                            }`}
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={2}
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                          </svg>
-                          {/* Branch icon */}
-                          <svg className="w-3 h-3 shrink-0 text-[var(--text-tertiary)]" viewBox="0 0 16 16" fill="currentColor">
-                            <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
-                          </svg>
-                          <span className="text-[11px] text-[var(--text-secondary)] truncate flex-1">
-                            {wtName}
-                            {branch && (
-                              <span className="text-[var(--text-tertiary)] ml-1">
-                                ({branch})
+                      <div key={wt.path}>
+                        {/* Worktree row — lightweight divider */}
+                        {hasMultipleWorktrees && (
+                          <>
+                            {wtIdx > 0 && (
+                              <div className="mx-2 border-t border-[var(--border-color)]/30 my-1" />
+                            )}
+                            <button
+                              onClick={() => toggleWorktree(wt.path)}
+                              className="w-full flex items-center gap-1.5 pl-4 pr-2 py-1 text-left transition-colors hover:text-[var(--text-primary)] group"
+                            >
+                              <svg
+                                className={`w-2 h-2 shrink-0 text-[var(--text-tertiary)] transition-transform ${
+                                  isWtCollapsed ? "" : "rotate-90"
+                                }`}
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                                strokeWidth={2.5}
+                              >
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                              </svg>
+                              <svg className="w-2.5 h-2.5 shrink-0 text-[var(--text-tertiary)]" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
+                              </svg>
+                              <span className="text-[11px] font-medium text-[var(--text-secondary)] truncate flex-1">
+                                {displayLabel}
                               </span>
-                            )}
-                          </span>
-                          <span className="text-[10px] text-[var(--text-tertiary)] shrink-0 flex items-center gap-1">
-                            {hasShellProcess && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="Shell process running" />
-                            )}
-                            {wt.sessions.length}
-                          </span>
-                        </button>
+                              <span className="text-[10px] text-[var(--text-tertiary)] shrink-0 flex items-center gap-1">
+                                {hasShellProcess && (
+                                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="Shell process running" />
+                                )}
+                                {wt.sessions.length}
+                              </span>
+                            </button>
+                          </>
+                        )}
 
                         {/* Important sessions shown even when worktree is collapsed */}
-                        {isWtCollapsed && (() => {
+                        {isWtCollapsed && hasMultipleWorktrees && (() => {
                           const important = wt.sessions.filter((s) => isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
                           return important.map((session) => (
-                            <div key={session.id} className="ml-1">
+                            <div key={session.id} className="pl-5">
                               {renderSession(session, { hideDirectory: true })}
                             </div>
                           ));
                         })()}
 
                         {/* Sessions */}
-                        {!isWtCollapsed && (() => {
+                        {(!isWtCollapsed || !hasMultipleWorktrees) && (() => {
                           const MAX_INACTIVE = 3;
                           const isExpanded = expandedWorktrees.has(wt.path);
                           const topLevel = wt.sessions.filter((s) => !s.parentSessionId || s.id === activeSessionId);
-                          // topLevel is already sorted by lastActiveAt desc from deriveWorkspaces
                           const showAll = isExpanded || !!filterQ;
                           let visible: Session[];
                           if (showAll) {
@@ -410,7 +391,7 @@ export default function Sidebar({
                           return (
                             <>
                               {visible.map((session) => (
-                                <div key={session.id} className="ml-1">
+                                <div key={session.id} className="pl-5">
                                   {renderSession(session, { hideDirectory: true })}
                                 </div>
                               ))}
@@ -421,9 +402,9 @@ export default function Sidebar({
                                     next.add(wt.path);
                                     return next;
                                   })}
-                                  className="ml-1 w-[calc(100%-4px)] px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left"
+                                  className="pl-5 w-full px-3 py-1 text-[10px] text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors text-left font-medium"
                                 >
-                                  {hiddenCount} more session{hiddenCount !== 1 ? "s" : ""}…
+                                  +{hiddenCount} more
                                 </button>
                               )}
                               {isExpanded && topLevel.length > MAX_INACTIVE && !filterQ && (
@@ -433,7 +414,7 @@ export default function Sidebar({
                                     next.delete(wt.path);
                                     return next;
                                   })}
-                                  className="ml-1 w-[calc(100%-4px)] px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left"
+                                  className="pl-5 w-full px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left"
                                 >
                                   Show less
                                 </button>
@@ -449,7 +430,7 @@ export default function Sidebar({
                 {!isRepoCollapsed && (
                   <button
                     onClick={() => onCreateWorktree(workspace.directory)}
-                    className="ml-1 w-[calc(100%-4px)] flex items-center gap-1.5 px-2 py-1 rounded-md text-left text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors text-[10px]"
+                    className="pl-4 w-full flex items-center gap-1.5 px-2 py-1 text-left text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-[10px]"
                   >
                     <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />

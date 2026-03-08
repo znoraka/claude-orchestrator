@@ -77,6 +77,9 @@ export default function ContextPieChart({ usage, model }: { usage: SessionUsage 
             <div>Cache read: {usage.cacheReadInputTokens.toLocaleString()}</div>
             <div>Cache write: {usage.cacheCreationInputTokens.toLocaleString()}</div>
           </div>
+          <div className="border-t border-[var(--border-color)] mt-1.5 pt-1.5 text-[var(--text-secondary)] font-medium">
+            {(usage.inputTokens + usage.outputTokens).toLocaleString()} tokens · ${usage.costUsd.toFixed(2)}
+          </div>
         </div>
       )}
     </div>
