@@ -599,9 +599,17 @@ export default function App() {
       {/* Main area */}
       <div className="flex-1 min-w-0 relative">
         {sessions.length === 0 ? (
-          <div className="flex items-center justify-center h-full">
+          <div className="flex items-center justify-center h-full animate-fade-in-up">
             <div className="text-center">
-              <h1 className="text-2xl font-light text-[var(--text-primary)] mb-3">
+              <div className="relative w-20 h-20 mx-auto mb-6">
+                <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-[var(--accent)]/20 to-[var(--accent)]/5 blur-xl" />
+                <div className="relative w-20 h-20 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center border border-[var(--border-subtle)]">
+                  <svg className="w-9 h-9 text-[var(--accent)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+                  </svg>
+                </div>
+              </div>
+              <h1 className="text-lg font-semibold text-[var(--text-primary)] mb-2 tracking-tight">
                 Claude Session Manager
               </h1>
               <p className="text-sm text-[var(--text-secondary)] mb-8">
@@ -609,10 +617,14 @@ export default function App() {
               </p>
               <button
                 onClick={handleNewSession}
-                className="px-6 py-2.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-lg text-sm font-medium transition-colors"
+                className="px-6 py-2.5 bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] hover:shadow-[0_0_20px_rgba(240,120,48,0.3)] text-white rounded-lg text-sm font-medium transition-all duration-200"
               >
                 New Session
               </button>
+              <div className="mt-6 flex items-center justify-center gap-4 text-xs text-[var(--text-tertiary)]">
+                <span><kbd className="px-1.5 py-0.5 rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] font-mono text-[10px] border border-[var(--border-subtle)]">⌘N</kbd> New</span>
+                <span><kbd className="px-1.5 py-0.5 rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] font-mono text-[10px] border border-[var(--border-subtle)]">⌘K</kbd> Search</span>
+              </div>
             </div>
           </div>
         ) : (
@@ -623,18 +635,21 @@ export default function App() {
               <div className="flex-1 min-h-0 relative">
               {/* Empty state when no session is selected */}
               {!activeSessionId && activePanel === null && (
-                <div className="absolute inset-0 flex items-center justify-center">
+                <div className="absolute inset-0 flex items-center justify-center animate-fade-in-up">
                   <div className="text-center max-w-sm">
-                    <div className="w-12 h-12 mx-auto mb-4 rounded-xl bg-[var(--bg-tertiary)] flex items-center justify-center">
-                      <svg className="w-6 h-6 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
-                      </svg>
+                    <div className="relative w-20 h-20 mx-auto mb-5">
+                      <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-[var(--accent)]/15 to-transparent blur-xl" />
+                      <div className="relative w-20 h-20 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center border border-[var(--border-subtle)]">
+                        <svg className="w-9 h-9 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+                        </svg>
+                      </div>
                     </div>
-                    <p className="text-sm text-[var(--text-secondary)] mb-1">
+                    <p className="text-sm font-medium text-[var(--text-secondary)] mb-1.5">
                       Select a session from the sidebar
                     </p>
                     <p className="text-xs text-[var(--text-tertiary)]">
-                      or press <kbd className="px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] font-mono text-[10px]">⌘N</kbd> to start a new one
+                      or press <kbd className="px-1.5 py-0.5 rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] font-mono text-[10px] border border-[var(--border-subtle)]">⌘N</kbd> to start a new one
                     </p>
                   </div>
                 </div>
@@ -686,7 +701,7 @@ export default function App() {
 
               {/* PRs panel — always mounted to preserve review state */}
               <div
-                className="absolute inset-0 right-10 bg-[var(--bg-primary)]"
+                className="absolute inset-0 right-11 bg-[var(--bg-primary)]"
                 style={{
                   zIndex: activePanel === "prs" ? 2 : 0,
                   pointerEvents: activePanel === "prs" ? "auto" : "none",
@@ -714,7 +729,7 @@ export default function App() {
               {/* Shell tabs — all mounted, visibility-toggled */}
               {shellTabsForDir(panelDirectory).length > 0 && (
                 <div
-                  className="absolute inset-0 right-10 bg-[var(--bg-primary)] flex flex-col"
+                  className="absolute inset-0 right-11 bg-[var(--bg-primary)] flex flex-col"
                   style={{
                     zIndex: activePanel === "shell" ? 2 : 0,
                     pointerEvents: activePanel === "shell" ? "auto" : "none",
@@ -831,17 +846,17 @@ export default function App() {
 
             {/* Activity bar — vertical icon tabs (right side, stops above input on Claude panel) */}
             <div
-              className={`absolute top-0 right-0 w-10 flex flex-col items-center py-2 gap-1 border-l border-[var(--border-color)] bg-[var(--bg-secondary)] z-10 ${!activeSessionId ? "hidden" : ""}`}
+              className={`absolute top-0 right-0 w-11 flex flex-col items-center py-2 gap-1 border-l border-[var(--border-subtle)] bg-[var(--bg-secondary)]/95 backdrop-blur-sm z-10 ${!activeSessionId ? "hidden" : ""}`}
               style={{ bottom: activePanel === null ? chatInputHeight : 0 }}
             >
               <button
                 onClick={() => setActivePanel(null)}
-                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                className={`relative w-8 h-8 flex items-center justify-center rounded-lg transition-all duration-150 ${
                   activePanel === null
-                    ? "bg-orange-500/20 text-orange-400"
-                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
+                    ? "bg-[var(--accent)]/15 text-[var(--accent)] shadow-[0_0_12px_rgba(240,120,48,0.15)]"
+                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60"
                 }`}
-                title="Claude (⌘J)"
+                data-tooltip="Claude (⌘J)"
               >
                 <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
@@ -854,8 +869,8 @@ export default function App() {
                     invoke("open_in_editor", { editor, filePath: panelDirectory });
                   }
                 }}
-                className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
-                title="Open in Editor (⌘E)"
+                className="w-8 h-8 flex items-center justify-center rounded-lg transition-all duration-150 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60"
+                data-tooltip="Open in Editor (⌘E)"
               >
                 <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
@@ -863,12 +878,12 @@ export default function App() {
               </button>
               <button
                 onClick={() => togglePanel("prs")}
-                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all duration-150 ${
                   activePanel === "prs"
-                    ? "bg-orange-500/20 text-orange-400"
-                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
+                    ? "bg-[var(--accent)]/15 text-[var(--accent)] shadow-[0_0_12px_rgba(240,120,48,0.15)]"
+                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60"
                 }`}
-                title="Pull Requests (⌘P)"
+                data-tooltip="Pull Requests (⌘P)"
               >
                 <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
@@ -876,12 +891,12 @@ export default function App() {
               </button>
               <button
                 onClick={() => togglePanel("shell")}
-                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all duration-150 ${
                   activePanel === "shell"
-                    ? "bg-orange-500/20 text-orange-400"
-                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
+                    ? "bg-[var(--accent)]/15 text-[var(--accent)] shadow-[0_0_12px_rgba(240,120,48,0.15)]"
+                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60"
                 }`}
-                title="Shell (⌘T)"
+                data-tooltip="Shell (⌘T)"
               >
                 <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" />
@@ -893,8 +908,8 @@ export default function App() {
               <ContextPieChart usage={activeUsage} model={activeSession?.model} />
               <button
                 onClick={() => setShowUsagePanel(true)}
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50 transition-colors"
-                title="Usage stats"
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60 transition-all duration-150"
+                data-tooltip="Usage stats"
               >
                 <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
@@ -921,8 +936,8 @@ export default function App() {
 
       {/* Directory picker dialog */}
       {showDirDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 dialog-backdrop" onMouseDown={handleDirCancel}>
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl w-[420px] shadow-2xl flex flex-col overflow-hidden" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dialog-backdrop animate-backdrop" onMouseDown={handleDirCancel}>
+          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-2xl w-[420px] shadow-[0_16px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.04] flex flex-col overflow-hidden animate-scale-in" onMouseDown={(e) => e.stopPropagation()}>
             {/* Search input */}
             <div className="px-4 pt-4 pb-3">
               <div className="relative">
@@ -1212,8 +1227,8 @@ export default function App() {
 
       {/* Worktree creation dialog */}
       {showWorktreeDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 dialog-backdrop" onMouseDown={() => setShowWorktreeDialog(false)}>
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl w-[380px] shadow-2xl flex flex-col overflow-hidden" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dialog-backdrop animate-backdrop" onMouseDown={() => setShowWorktreeDialog(false)}>
+          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-2xl w-[380px] shadow-[0_16px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.04] flex flex-col overflow-hidden animate-scale-in" onMouseDown={(e) => e.stopPropagation()}>
             <div className="px-4 pt-4 pb-2">
               <div className="text-sm font-medium text-[var(--text-primary)] mb-1">New Worktree</div>
               <div className="text-[11px] text-[var(--text-tertiary)] font-mono truncate mb-3">
@@ -1231,7 +1246,7 @@ export default function App() {
                 className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] font-mono transition-colors"
               />
             </div>
-            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-[var(--border-color)]">
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-[var(--border-subtle)]">
               <button
                 onClick={() => setShowWorktreeDialog(false)}
                 className="px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"

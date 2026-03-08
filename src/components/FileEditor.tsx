@@ -336,11 +336,11 @@ export default function FileEditor({ baseDirectory, initialFilePath, onClose }: 
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dialog-backdrop animate-backdrop"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="flex flex-col bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg shadow-2xl overflow-hidden"
+        className="flex flex-col bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-2xl shadow-[0_16px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.04] overflow-hidden animate-scale-in"
         style={{ width: "min(900px, 90vw)", height: "min(700px, 85vh)" }}
         onMouseDown={(e) => e.stopPropagation()}
       >

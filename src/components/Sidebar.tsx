@@ -240,11 +240,11 @@ export default function Sidebar({
 
 
   return (
-    <div className="w-64 h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-2 pt-3 pb-3">
+    <div className="w-64 h-full bg-gradient-to-b from-[var(--bg-secondary)] to-[#10121a] flex flex-col shrink-0 px-3 pt-4 pb-3">
       {/* Header + New Session */}
-      <div className="px-1 pb-2 flex items-center gap-2">
+      <div className="px-1 pb-2.5 flex items-center gap-2">
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          <div className="w-6 h-6 rounded-md bg-[var(--accent)] flex items-center justify-center text-white text-xs font-bold shrink-0">
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#ff9040] to-[#e06020] flex items-center justify-center text-white text-xs font-bold shrink-0 shadow-[0_0_12px_rgba(240,120,48,0.3)]">
             C
           </div>
           <span className="text-xs font-semibold text-[var(--text-primary)] tracking-tight truncate">
@@ -253,7 +253,7 @@ export default function Sidebar({
         </div>
         <button
           onClick={onCreateSession}
-          className="px-2.5 py-1 rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-[11px] font-medium transition-colors shrink-0"
+          className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] hover:shadow-[0_0_12px_rgba(240,120,48,0.3)] text-white text-[11px] font-medium transition-all duration-200 shrink-0"
         >
           + New
         </button>
@@ -280,7 +280,7 @@ export default function Sidebar({
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search sessions..."
-            className="sidebar-search w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-md pl-8 pr-3 py-1 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-colors"
+            className="sidebar-search w-full bg-[var(--bg-primary)]/80 border border-[var(--border-color)] rounded-lg pl-8 pr-3 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] focus:shadow-[0_0_0_3px_rgba(240,120,48,0.1)] transition-all duration-200"
           />
           {contentSearching && (
             <div className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
@@ -289,13 +289,13 @@ export default function Sidebar({
       </div>
 
       {/* View toggle */}
-      <div className="px-1 pb-1.5 flex">
-        <div className="flex bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-md overflow-hidden w-full">
+      <div className="px-1 pb-2 flex">
+        <div className="flex bg-[var(--bg-primary)]/60 border border-[var(--border-subtle)] rounded-lg overflow-hidden w-full">
           <button
             onClick={() => { setViewMode("workspace"); localStorage.setItem("claude-orchestrator-sidebar-view", "workspace"); }}
-            className={`flex-1 text-[10px] py-0.5 transition-colors ${
+            className={`flex-1 text-[11px] py-1 transition-all duration-150 ${
               viewMode === "workspace"
-                ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-medium"
+                ? "bg-[var(--bg-hover)] text-[var(--text-primary)] font-medium shadow-sm"
                 : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
             }`}
           >
@@ -303,9 +303,9 @@ export default function Sidebar({
           </button>
           <button
             onClick={() => { setViewMode("date"); localStorage.setItem("claude-orchestrator-sidebar-view", "date"); }}
-            className={`flex-1 text-[10px] py-0.5 transition-colors ${
+            className={`flex-1 text-[11px] py-1 transition-all duration-150 ${
               viewMode === "date"
-                ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-medium"
+                ? "bg-[var(--bg-hover)] text-[var(--text-primary)] font-medium shadow-sm"
                 : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
             }`}
           >
@@ -380,7 +380,7 @@ export default function Sidebar({
             return (
               <div
                 key={workspace.id}
-                className="mb-1.5 rounded-md ml-0.5"
+                className="mb-2 rounded-md ml-0.5"
                 style={{ borderLeft: `2px solid ${color}` }}
               >
                 {/* Repo header */}

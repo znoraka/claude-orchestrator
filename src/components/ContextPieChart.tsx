@@ -37,7 +37,7 @@ export default function ContextPieChart({ usage, model }: { usage: SessionUsage 
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      <svg width={size} height={size} className="transition-opacity duration-300" style={{ opacity: pct > 0 ? 1 : 0.3 }}>
+      <svg width={size} height={size} className="transition-opacity duration-300" style={{ opacity: pct > 0 ? 1 : 0.3, filter: pct > 0.8 ? `drop-shadow(0 0 6px ${color})` : "none" }}>
         {/* Background ring */}
         <circle
           cx={size / 2} cy={size / 2} r={r}
@@ -66,7 +66,7 @@ export default function ContextPieChart({ usage, model }: { usage: SessionUsage 
       {/* Tooltip */}
       {hover && usage && usage.contextTokens > 0 && (
         <div
-          className="absolute right-full mr-2 top-1/2 -translate-y-1/2 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-xs whitespace-nowrap z-50 shadow-lg"
+          className="absolute right-full mr-2 top-1/2 -translate-y-1/2 bg-[var(--bg-elevated)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-xs whitespace-nowrap z-50 shadow-lg"
         >
           <div className="font-medium text-[var(--text-primary)] mb-1">
             Context: {usage.contextTokens.toLocaleString()} / {maxTokens.toLocaleString()} ({Math.round(pct * 100)}%)

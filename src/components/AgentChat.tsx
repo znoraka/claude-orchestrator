@@ -2111,7 +2111,7 @@ const AgentChat = memo(function AgentChat({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-4 pr-14 py-3 flex flex-col gap-3"
+        className="flex-1 overflow-y-auto px-5 pr-16 py-4 flex flex-col gap-4"
       >
         {/* Skip rendering message DOM for inactive tabs to avoid layout thrash */}
         {isActive ? (
@@ -2174,7 +2174,7 @@ const AgentChat = memo(function AgentChat({
       </div>
 
       {/* Input area */}
-      <div className="border-t border-[var(--border-color)] px-4 py-3 relative flex flex-col gap-2" ref={inputAreaRef}>
+      <div className="border-t border-[var(--border-subtle)] px-4 py-3 relative flex flex-col gap-2" ref={inputAreaRef}>
         {/* Slash command autocomplete */}
         {showSlashMenu && filteredSlashCommands.length > 0 && (
           <div
@@ -2607,7 +2607,7 @@ const MessageBubble = memo(function MessageBubble({
               </button>
             )}
           </div>
-          <div className="max-w-[80%] max-h-96 overflow-y-auto border border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--text-primary)] rounded-2xl rounded-br-md px-5 py-3">
+          <div className="max-w-[80%] max-h-96 overflow-y-auto bg-gradient-to-br from-[var(--accent)]/12 to-[var(--accent)]/6 border border-[var(--accent)]/25 text-[var(--text-primary)] rounded-2xl rounded-br-md px-5 py-3 shadow-sm">
             {visible.map((block, i) => {
               // If this is a plan execution message loaded from JSONL, show short label instead of full plan text
               if (hasPlan && block.type === "text" && block.text && block.text.length > 200) {
@@ -3541,10 +3541,10 @@ function ToolBundleSummaryBar({
   const lastGroupId = bundle.groups[bundle.groups.length - 1].blockId;
 
   return (
-    <div className="border border-[var(--border-color)] rounded-lg overflow-hidden">
+    <div className="border border-[var(--border-subtle)] rounded-lg overflow-hidden shadow-sm">
       <button
         onClick={onToggleBundle}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-all duration-150"
       >
         <svg
           className={`w-3 h-3 shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`}

@@ -119,13 +119,13 @@ export default memo(function SessionTab({
     <div
       onClick={onClick}
       className={`
-        session-tab group relative flex items-center gap-2 px-2 py-1.5 mx-0.5 my-px cursor-pointer
-        rounded-md
+        session-tab group relative flex items-center gap-2 px-2.5 py-2 mx-0.5 my-px cursor-pointer
+        rounded-lg
         ${
           isActive
             ? hasQuestion
-              ? "bg-orange-500/10 text-[var(--text-primary)] ring-1 ring-inset ring-orange-500/40"
-              : "bg-[var(--accent)]/10 text-[var(--text-primary)] ring-1 ring-inset ring-[var(--accent)]/25"
+              ? "bg-orange-500/10 text-[var(--text-primary)] border-l-2 border-l-orange-500"
+              : "bg-[var(--accent)]/8 text-[var(--text-primary)] border-l-2 border-l-[var(--accent)]"
             : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
         }
       `}
@@ -141,7 +141,7 @@ export default memo(function SessionTab({
             <path d="M4.5 2a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 4.5 2Zm7 0a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 11.5 2Z" />
           </svg>
         ) : isBusy ? (
-          <span className="w-2.5 h-2.5 border-[1.5px] border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+          <span className="w-2.5 h-2.5 border-[1.5px] border-[var(--accent)] border-t-transparent rounded-full animate-spin drop-shadow-[0_0_4px_rgba(240,120,48,0.4)]" />
         ) : hasDraft ? (
           <svg className="w-2.5 h-2.5 text-blue-400" viewBox="0 0 16 16" fill="currentColor">
             <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.25.25 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z" />
@@ -236,7 +236,7 @@ export default memo(function SessionTab({
           e.stopPropagation();
           onDelete();
         }}
-        className="opacity-0 group-hover:opacity-100 text-[var(--text-secondary)] hover:text-[var(--danger)] transition-opacity text-xs shrink-0"
+        className="opacity-0 group-hover:opacity-100 text-[var(--text-secondary)] hover:text-[var(--danger)] hover:bg-red-500/10 rounded-md p-0.5 transition-all duration-150 text-xs shrink-0"
         title="Delete session"
       >
         ✕

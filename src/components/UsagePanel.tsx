@@ -46,11 +46,11 @@ export default function UsagePanel({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 dialog-backdrop"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dialog-backdrop animate-backdrop"
       onMouseDown={onClose}
     >
       <div
-        className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl p-6 w-[640px] max-h-[80vh] shadow-2xl flex flex-col gap-4 overflow-hidden"
+        className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-2xl p-6 w-[640px] max-h-[80vh] shadow-[0_16px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.04] flex flex-col gap-4 overflow-hidden animate-scale-in"
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -114,7 +114,7 @@ export default function UsagePanel({ onClose }: { onClose: () => void }) {
               ) : (
                 <table className="w-full text-xs">
                   <thead>
-                    <tr className="text-[var(--text-tertiary)] border-b border-[var(--border-color)]">
+                    <tr className="text-[var(--text-tertiary)] border-b border-[var(--border-color)] bg-[var(--bg-primary)]/50">
                       <th className="text-left py-1.5 font-medium">
                         Directory
                       </th>

@@ -2,20 +2,26 @@
 @import "@xterm/xterm/css/xterm.css";
 
 :root {
-  --bg-primary: #0d1117;
-  --bg-secondary: #161b22;
-  --bg-tertiary: #1c2128;
-  --bg-hover: #21262d;
-  --border-color: #30363d;
-  --text-primary: #c9d1d9;
-  --text-secondary: #8b949e;
-  --text-tertiary: #6e7681;
-  --accent: #e07020;
-  --accent-hover: #f08030;
-  --accent-muted: rgba(224, 112, 32, 0.15);
-  --danger: #da3633;
-  --success: #3fb950;
-  --section-label: #f08030;
+  --bg-primary: #0c0e14;
+  --bg-secondary: #13151e;
+  --bg-tertiary: #1a1d2b;
+  --bg-hover: #222638;
+  --bg-elevated: #1e2235;
+  --border-color: #2a2f42;
+  --border-subtle: #1f2336;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-tertiary: #64748b;
+  --accent: #f07830;
+  --accent-hover: #ff8f40;
+  --accent-muted: rgba(240, 120, 48, 0.12);
+  --accent-glow: rgba(240, 120, 48, 0.25);
+  --danger: #ef4444;
+  --success: #22c55e;
+  --section-label: #f07830;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
 }
 
 * {
@@ -32,6 +38,7 @@ body {
   height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.011em;
 }
 
 #root {
@@ -48,40 +55,98 @@ body {
   overflow-y: auto !important;
 }
 
-/* Scrollbar */
+/* Scrollbar — refined & auto-hiding */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 5px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--border-color);
-  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.15);
+  border-radius: 4px;
+  transition: background 200ms ease;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.3);
 }
 
-/* Sidebar search input */
-.sidebar-search::placeholder {
-  color: var(--text-tertiary);
+/* Focus-visible states */
+*:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 4px rgba(240, 120, 48, 0.4);
 }
 
-/* Session tab transitions */
-.session-tab {
-  transition: background-color 150ms ease, color 150ms ease;
+input:focus-visible, textarea:focus-visible {
+  box-shadow: none;
+  border-color: var(--accent);
 }
 
-/* Toast slide-in animation */
-@keyframes slide-in {
+/* ── Animations ──────────────────────────────────────────────────── */
+
+@keyframes fade-in-up {
   from {
     opacity: 0;
-    transform: translateX(16px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateY(0);
+  }
+}
+.animate-fade-in-up {
+  animation: fade-in-up 200ms ease-out both;
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.animate-scale-in {
+  animation: scale-in 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes backdrop-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.animate-backdrop {
+  animation: backdrop-fade 150ms ease-out both;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 4px rgba(240, 120, 48, 0.2); }
+  50% { box-shadow: 0 0 12px rgba(240, 120, 48, 0.4); }
+}
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent 25%, rgba(255,255,255,0.04) 50%, transparent 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* Toast slide-in animation — with subtle scale */
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
   }
 }
 .animate-slide-in {
@@ -97,7 +162,49 @@ body {
   animation: blink 0.8s ease-in-out infinite;
 }
 
-/* PR comment HTML body styles */
+/* Sidebar search input */
+.sidebar-search::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* Session tab transitions */
+.session-tab {
+  transition: all 150ms ease-out;
+}
+
+/* ── Activity bar tooltips (CSS-only) ────────────────────────────── */
+
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+  box-shadow: var(--shadow-md);
+  z-index: 100;
+}
+
+[data-tooltip]:hover::after {
+  opacity: 1;
+}
+
+/* ── PR comment HTML body styles ─────────────────────────────────── */
+
 .pr-comment-body {
   white-space: normal;
   word-wrap: break-word;
@@ -105,8 +212,8 @@ body {
 .pr-comment-body p { margin: 0.25em 0; }
 .pr-comment-body pre {
   background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
   padding: 0.5em;
   overflow-x: auto;
   margin: 0.25em 0;
@@ -146,7 +253,8 @@ body {
 }
 .pr-comment-body img { max-width: 100%; }
 
-/* Agent chat markdown prose */
+/* ── Agent chat markdown prose ───────────────────────────────────── */
+
 .prose-agent { font-weight: 500; }
 .prose-agent p { margin: 0.75rem 0; line-height: 1.75; }
 .prose-agent ul { list-style: disc; padding-left: 1.25rem; margin: 0.75rem 0; }
@@ -166,17 +274,19 @@ body {
   color: var(--text-secondary);
 }
 .prose-agent pre {
-  background: var(--bg-tertiary);
+  background: #141620;
+  border: 1px solid var(--border-subtle);
   border-radius: 0.5rem;
   padding: 0.75rem;
   margin: 0.5rem 0;
   overflow-x: auto;
   font-size: 0.75rem;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
 }
 .prose-agent pre code { background: none; padding: 0; border-radius: 0; color: var(--text-primary); }
 .prose-agent code {
-  background: #2d333b;
+  background: #1e2235;
   padding: 0.125rem 0.25rem;
   border-radius: 0.25rem;
   color: var(--text-secondary);
@@ -252,4 +362,10 @@ body {
 }
 .image-strip-item:hover .image-strip-remove {
   opacity: 1;
+}
+
+/* ── Dialog backdrop ─────────────────────────────────────────────── */
+
+.dialog-backdrop {
+  backdrop-filter: blur(4px);
 }

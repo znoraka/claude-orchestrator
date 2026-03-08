@@ -30,13 +30,13 @@ function relativeTime(dateStr: string): string {
 function StatusPill({ pr }: { pr: PullRequest }) {
   if (pr.isDraft) {
     return (
-      <span className="px-1.5 py-0.5 text-[10px] rounded bg-gray-700 text-gray-300">
+      <span className="px-1.5 py-0.5 text-[10px] rounded bg-gray-700/60 text-gray-300 border border-gray-600/30">
         Draft
       </span>
     );
   }
   return (
-    <span className="px-1.5 py-0.5 text-[10px] rounded bg-green-900/50 text-green-400">
+    <span className="px-1.5 py-0.5 text-[10px] rounded bg-green-900/40 text-green-400 border border-green-700/30">
       Open
     </span>
   );
