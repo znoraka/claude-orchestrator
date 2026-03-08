@@ -53,7 +53,9 @@ export function deriveWorkspaces(sessions: Session[]): Workspace[] {
   for (const [repo, worktreeMap] of byRepo) {
     const worktrees: Worktree[] = [];
     for (const [dir, dirSessions] of worktreeMap) {
-      const sorted = [...dirSessions].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+      const sorted = [...dirSessions].sort((a, b) =>
+        (b.lastMessageAt - a.lastMessageAt) || (b.createdAt - a.createdAt)
+      );
       const isMain = dir === repo;
       worktrees.push({
         path: dir,
@@ -77,7 +79,12 @@ export function deriveWorkspaces(sessions: Session[]): Workspace[] {
     });
   }
 
-  return workspaces.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+  // Sort workspaces alphabetically by directory name
+  return workspaces.sort((a, b) => {
+    const nameA = (a.directory.split("/").filter(Boolean).pop() || a.directory).toLowerCase();
+    const nameB = (b.directory.split("/").filter(Boolean).pop() || b.directory).toLowerCase();
+    return nameA.localeCompare(nameB);
+  });
 }
 
 export function workspaceForSession(

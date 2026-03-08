@@ -40,6 +40,7 @@ export interface Session {
   status: "running" | "stopped" | "starting";
   createdAt: number;
   lastActiveAt: number;
+  lastMessageAt: number; // updated only when user sends a message (for sidebar sort)
   directory: string;
   provider: AgentProvider;
   model?: string; // model ID used for this session

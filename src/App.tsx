@@ -15,6 +15,7 @@ import { repoRootDir } from "./utils/workspaces";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
 import { AGENT_PROVIDERS, defaultModelForProvider, jsonlDirectory, modelsForProvider, type AgentProvider, type ModelOption, type Session } from "./types";
+import CommandPalette from "./components/CommandPalette";
 
 export interface OpenCodeModel {
   id: string;
@@ -211,6 +212,7 @@ export default function App() {
   const [showFileEditor, setShowFileEditor] = useState(false);
   const [editorFilePath, setEditorFilePath] = useState<string | undefined>();
   const [showDirDialog, setShowDirDialog] = useState(false);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [dirInput, setDirInput] = useState(() =>
     localStorage.getItem("claude-orchestrator-last-dir") || "~"
   );
@@ -411,6 +413,10 @@ export default function App() {
       if (e.metaKey && e.key === "j") {
         e.preventDefault();
         setActivePanel(null);
+      }
+      if (e.metaKey && e.key === "k") {
+        e.preventDefault();
+        setShowCommandPalette((v) => !v);
       }
       if (e.metaKey && e.shiftKey && e.key === "c") {
         e.preventDefault();
@@ -1228,6 +1234,23 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Command palette */}
+      <CommandPalette
+        isOpen={showCommandPalette}
+        onClose={() => setShowCommandPalette(false)}
+        sessions={sessions}
+        workspaces={workspaces}
+        sessionUsage={sessionUsage}
+        activeSessionId={activeSessionId}
+        youngestDescendantMap={youngestDescendantMap}
+        onSelectSession={handleSelectSession}
+        onCreateSession={handleNewSession}
+        onToggleSidebar={() => {}} // sidebar always visible
+        onOpenUsage={() => setShowUsagePanel(true)}
+        onOpenPRs={() => togglePanel("prs")}
+        onOpenShell={() => togglePanel("shell")}
+      />
 
       {/* Worktree creation dialog */}
       {showWorktreeDialog && (

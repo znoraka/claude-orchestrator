@@ -124,8 +124,8 @@ export default memo(function SessionTab({
         ${
           isActive
             ? hasQuestion
-              ? "bg-orange-500/10 text-[var(--text-primary)] border-l-2 border-l-orange-500"
-              : "bg-[var(--accent)]/8 text-[var(--text-primary)] border-l-2 border-l-[var(--accent)]"
+              ? "bg-orange-500/10 text-[var(--text-primary)]"
+              : "bg-[var(--accent)]/8 text-[var(--text-primary)]"
             : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
         }
       `}

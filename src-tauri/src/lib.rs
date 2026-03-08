@@ -135,6 +135,8 @@ struct SessionMeta {
     created_at: f64,
     #[serde(rename = "lastActiveAt")]
     last_active_at: f64,
+    #[serde(default, rename = "lastMessageAt")]
+    last_message_at: f64,
     #[serde(default)]
     directory: String,
     #[serde(default, rename = "homeDirectory", skip_serializing_if = "Option::is_none")]

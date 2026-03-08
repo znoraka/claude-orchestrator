@@ -135,6 +135,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         name: string;
         createdAt: number;
         lastActiveAt: number;
+        lastMessageAt?: number;
         directory: string;
         provider?: string;
         model?: string;
@@ -156,6 +157,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             status: "stopped" as const,
             createdAt: s.createdAt,
             lastActiveAt: s.lastActiveAt,
+            lastMessageAt: s.lastMessageAt || s.lastActiveAt,
             directory: normalizeDir(s.directory),
             provider: (s.provider as Session["provider"]) || "claude-code",
             model: s.model,
@@ -190,6 +192,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       name: s.name,
       createdAt: s.createdAt,
       lastActiveAt: s.lastActiveAt,
+      lastMessageAt: s.lastMessageAt,
       directory: s.directory,
       provider: s.provider || "claude-code",
       model: s.model,
@@ -226,7 +229,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const saveKey = useMemo(
     () =>
       sessions
-        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.provider}:${s.model}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.dangerouslySkipPermissions}:${s.hasTitleBeenGenerated}:${s.permissionMode}:${s.parentSessionId}`)
+        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.provider}:${s.model}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.lastMessageAt}:${s.dangerouslySkipPermissions}:${s.hasTitleBeenGenerated}:${s.permissionMode}:${s.parentSessionId}`)
         .join("|"),
     [sessions]
   );
@@ -296,6 +299,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const root = getRootSession(id, sessionsRef.current);
     const rootId = root.id;
     setActiveSessionId(rootId);
+    // Update lastActiveAt so recency-sorted views (cmd+k) reflect access order
+    dispatch({ type: "UPDATE", id: rootId, patch: { lastActiveAt: Date.now() } });
     const target = sessionsRef.current.find((s) => s.id === rootId);
     if (target) {
       activeSessionInWorkspace.current.set(target.directory || "~", rootId);
@@ -361,6 +366,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         status: "starting",
         createdAt: now,
         lastActiveAt: now,
+        lastMessageAt: now,
         directory: dir,
         provider,
         model: model || undefined,
@@ -472,6 +478,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         patch: {
           status: "starting",
           lastActiveAt: Date.now(),
+          lastMessageAt: Date.now(),
           exitCode: undefined,
           ...(!session.claudeSessionId ? { claudeSessionId } : {}),
         },
@@ -505,7 +512,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const touchSession = useCallback((id: string) => {
-    dispatch({ type: "UPDATE", id, patch: { lastActiveAt: Date.now() } });
+    const now = Date.now();
+    dispatch({ type: "UPDATE", id, patch: { lastActiveAt: now, lastMessageAt: now } });
   }, []);
 
   const updateClaudeSessionId = useCallback((id: string, claudeSessionId: string) => {

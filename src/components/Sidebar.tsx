@@ -21,22 +21,6 @@ interface SidebarProps {
   worktreeBranches?: Map<string, string>;
 }
 
-type ViewMode = "workspace" | "date";
-
-function dateGroup(ts: number): string {
-  const now = new Date();
-  const d = new Date(ts);
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  if (ts >= startOfToday) return "Today";
-  if (ts >= startOfToday - 86400000) return "Yesterday";
-  const dayOfWeek = now.getDay() || 7; // Mon=1..Sun=7
-  if (ts >= startOfToday - (dayOfWeek - 1) * 86400000) return "This Week";
-  if (d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()) return "This Month";
-  return "Older";
-}
-
-const DATE_GROUP_ORDER = ["Today", "Yesterday", "This Week", "This Month", "Older"];
-
 export default function Sidebar({
   workspaces,
   activeSessionId,
@@ -54,10 +38,6 @@ export default function Sidebar({
 }: SidebarProps) {
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>(
-    () => (localStorage.getItem("claude-orchestrator-sidebar-view") as ViewMode) || "workspace"
-  );
-  const [collapsedDateGroups, setCollapsedDateGroups] = useState<Set<string>>(new Set());
   const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(new Set());
   const [collapsedWorktrees, setCollapsedWorktrees] = useState<Set<string>>(new Set());
   const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(new Set());
@@ -153,6 +133,17 @@ export default function Sidebar({
     [filterQ, contentMatchIds]
   );
 
+  const isImportantSession = useCallback(
+    (s: Session): boolean => {
+      if (s.id === activeSessionId) return true;
+      if (unreadSessions?.has(s.id)) return true;
+      const youngest = youngestDescendantMap?.get(s.id);
+      if (s.hasQuestion || youngest?.hasQuestion) return true;
+      return false;
+    },
+    [activeSessionId, unreadSessions, youngestDescendantMap]
+  );
+
   const contentOnlyIds = useMemo(() => {
     if (!filterQ) return new Set<string>();
     return new Set(
@@ -169,30 +160,6 @@ export default function Sidebar({
         .map((s) => s.id)
     );
   }, [allSessions, filterQ, contentMatchIds]);
-
-  // Date-grouped view
-  const dateGroupedSessions = useMemo(() => {
-    let sessions = allSessions.filter((s) => !s.parentSessionId || s.id === activeSessionId);
-    if (filterQ) sessions = sessions.filter(sessionMatchesFilter);
-    const groups = new Map<string, Session[]>();
-    for (const s of sessions) {
-      const g = dateGroup(s.lastActiveAt);
-      if (!groups.has(g)) groups.set(g, []);
-      groups.get(g)!.push(s);
-    }
-    // Sort sessions within each group by lastActiveAt desc
-    for (const arr of groups.values()) arr.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
-    return DATE_GROUP_ORDER.filter((g) => groups.has(g)).map((g) => ({ label: g, sessions: groups.get(g)! }));
-  }, [allSessions, filterQ, sessionMatchesFilter, activeSessionId]);
-
-  const toggleDateGroup = (label: string) => {
-    setCollapsedDateGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(label)) next.delete(label);
-      else next.add(label);
-      return next;
-    });
-  };
 
   const toggleRepo = (repoId: string) => {
     setCollapsedRepos((prev) => {
@@ -288,77 +255,9 @@ export default function Sidebar({
         </div>
       </div>
 
-      {/* View toggle */}
-      <div className="px-1 pb-2 flex">
-        <div className="flex bg-[var(--bg-primary)]/60 border border-[var(--border-subtle)] rounded-lg overflow-hidden w-full">
-          <button
-            onClick={() => { setViewMode("workspace"); localStorage.setItem("claude-orchestrator-sidebar-view", "workspace"); }}
-            className={`flex-1 text-[11px] py-1 transition-all duration-150 ${
-              viewMode === "workspace"
-                ? "bg-[var(--bg-hover)] text-[var(--text-primary)] font-medium shadow-sm"
-                : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-            }`}
-          >
-            Workspaces
-          </button>
-          <button
-            onClick={() => { setViewMode("date"); localStorage.setItem("claude-orchestrator-sidebar-view", "date"); }}
-            className={`flex-1 text-[11px] py-1 transition-all duration-150 ${
-              viewMode === "date"
-                ? "bg-[var(--bg-hover)] text-[var(--text-primary)] font-medium shadow-sm"
-                : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-            }`}
-          >
-            By Date
-          </button>
-        </div>
-      </div>
-
       {/* Tree */}
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {viewMode === "date" ? (
-          dateGroupedSessions.length > 0 ? (
-            dateGroupedSessions.map(({ label, sessions }) => {
-              const isCollapsed = collapsedDateGroups.has(label);
-              return (
-                <div key={label} className="mb-1">
-                  <button
-                    onClick={() => toggleDateGroup(label)}
-                    className="w-full flex items-center gap-1.5 px-2 py-1 rounded-md text-left hover:bg-[var(--bg-hover)] transition-colors"
-                  >
-                    <svg
-                      className={`w-3 h-3 shrink-0 text-[var(--text-tertiary)] transition-transform ${
-                        isCollapsed ? "" : "rotate-90"
-                      }`}
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                    </svg>
-                    <span className="text-[11px] font-semibold text-[var(--text-secondary)] flex-1">
-                      {label}
-                    </span>
-                    <span className="text-[10px] text-[var(--text-tertiary)] shrink-0">
-                      {sessions.length}
-                    </span>
-                  </button>
-                  {!isCollapsed &&
-                    sessions.map((session) => (
-                      <div key={session.id} className="ml-1">
-                        {renderSession(session)}
-                      </div>
-                    ))}
-                </div>
-              );
-            })
-          ) : (
-            <div className="px-3 py-12 text-center">
-              <p className="text-xs text-[var(--text-secondary)] mb-3">No sessions found</p>
-            </div>
-          )
-        ) : workspaces.length > 0 ? (
+        {workspaces.length > 0 ? (
           workspaces.map((workspace) => {
             const repoName = workspace.directory.split("/").filter(Boolean).pop() || workspace.directory;
             const isRepoCollapsed = collapsedRepos.has(workspace.id);
@@ -380,8 +279,7 @@ export default function Sidebar({
             return (
               <div
                 key={workspace.id}
-                className="mb-2 rounded-md ml-0.5"
-                style={{ borderLeft: `2px solid ${color}` }}
+                className="mb-2 rounded-md"
               >
                 {/* Repo header */}
                 <button
@@ -417,6 +315,18 @@ export default function Sidebar({
                     {workspace.worktrees.reduce((n, wt) => n + wt.sessions.length, 0)}
                   </span>
                 </button>
+
+                {/* Important sessions shown even when repo is collapsed */}
+                {isRepoCollapsed && (() => {
+                  const important = filteredWorktrees
+                    .flatMap((wt) => wt.sessions)
+                    .filter((s) => isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
+                  return important.map((session) => (
+                    <div key={session.id} className="ml-1">
+                      {renderSession(session, { hideDirectory: true })}
+                    </div>
+                  ));
+                })()}
 
                 {/* Worktrees */}
                 {!isRepoCollapsed &&
@@ -469,19 +379,33 @@ export default function Sidebar({
                           </span>
                         </button>
 
+                        {/* Important sessions shown even when worktree is collapsed */}
+                        {isWtCollapsed && (() => {
+                          const important = wt.sessions.filter((s) => isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
+                          return important.map((session) => (
+                            <div key={session.id} className="ml-1">
+                              {renderSession(session, { hideDirectory: true })}
+                            </div>
+                          ));
+                        })()}
+
                         {/* Sessions */}
                         {!isWtCollapsed && (() => {
                           const MAX_INACTIVE = 3;
                           const isExpanded = expandedWorktrees.has(wt.path);
                           const topLevel = wt.sessions.filter((s) => !s.parentSessionId || s.id === activeSessionId);
-                          const active = topLevel.filter((s) => s.status === "running" || s.status === "starting");
-                          const inactive = topLevel.filter((s) => s.status === "stopped");
-                          const hasActive = active.length > 0;
-                          // Show: all active + limited inactive (unless expanded or searching)
+                          // topLevel is already sorted by lastActiveAt desc from deriveWorkspaces
                           const showAll = isExpanded || !!filterQ;
-                          const visibleInactive = showAll ? inactive : inactive.slice(0, hasActive ? 0 : MAX_INACTIVE);
-                          const hiddenCount = inactive.length - visibleInactive.length;
-                          const visible = [...active, ...visibleInactive];
+                          let visible: Session[];
+                          if (showAll) {
+                            visible = topLevel;
+                          } else {
+                            const important = topLevel.filter(isImportantSession);
+                            const rest = topLevel.filter((s) => !isImportantSession(s));
+                            const merged = [...new Set([...important, ...rest.slice(0, Math.max(0, MAX_INACTIVE - important.length))])];
+                            visible = merged.sort((a, b) => topLevel.indexOf(a) - topLevel.indexOf(b));
+                          }
+                          const hiddenCount = topLevel.length - visible.length;
 
                           return (
                             <>
@@ -502,7 +426,7 @@ export default function Sidebar({
                                   {hiddenCount} more session{hiddenCount !== 1 ? "s" : ""}…
                                 </button>
                               )}
-                              {isExpanded && inactive.length > MAX_INACTIVE && !filterQ && (
+                              {isExpanded && topLevel.length > MAX_INACTIVE && !filterQ && (
                                 <button
                                   onClick={() => setExpandedWorktrees((prev) => {
                                     const next = new Set(prev);
