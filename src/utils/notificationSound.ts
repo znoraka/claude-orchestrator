@@ -41,12 +41,12 @@ function playTones(frequencies: number[]) {
   });
 }
 
-/** Rising chime (C5 → E5) — agent finished */
+/** Descending chime (E5 → C5) — agent finished */
 export function playDoneSound() {
-  playTones([523.25, 659.25]);
+  playTones([659.25, 523.25]);
 }
 
-/** Descending chime (E5 → C5) — needs attention */
+/** Rising chime (C5 → E5) — needs attention */
 export function playQuestionSound() {
-  playTones([659.25, 523.25]);
+  playTones([523.25, 659.25]);
 }
