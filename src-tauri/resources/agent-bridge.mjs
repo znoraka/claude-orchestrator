@@ -42,6 +42,9 @@ let currentCwd = initialCwd;
 // Mutable model — updated by set_model messages
 let currentModel = config.model || null;
 
+// Mutable reasoning effort — updated by set_reasoning_effort messages
+let currentReasoningEffort = null; // "low" | "medium" | "high" | null
+
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
@@ -60,6 +63,7 @@ log(`cwd exists: ${existsSync(initialCwd || process.cwd())}`);
 let claudeSessionId = resume || null;
 let abortController = null;
 let queryInProgress = false;
+let queryGeneration = 0;
 
 // AskUserQuestion interception: when set, we're waiting for user input
 // via the canUseTool callback (SDK permission prompt protocol).
@@ -98,10 +102,12 @@ process.stdin.on("end", () => {
 
 async function handleStdinMessage(msg) {
   if (msg.type === "abort") {
+    queryGeneration++;  // invalidate the current query's finally block
     if (abortController) {
       abortController.abort();
       abortController = null;
     }
+    queryInProgress = false;  // unblock new messages immediately
     // Also unblock any pending AskUserQuestion / permission wait
     if (askUserResolve) {
       askUserResolve(null);
@@ -126,6 +132,13 @@ async function handleStdinMessage(msg) {
     currentModel = msg.model || null;
     log(`model updated to: ${currentModel}`);
     emit({ type: "model_updated", model: currentModel });
+    return;
+  }
+
+  if (msg.type === "set_reasoning_effort") {
+    currentReasoningEffort = msg.effort || null;
+    log(`reasoning effort updated to: ${currentReasoningEffort}`);
+    emit({ type: "reasoning_effort_updated", effort: currentReasoningEffort });
     return;
   }
 
@@ -175,6 +188,7 @@ async function runQuery(userMessage) {
     return;
   }
 
+  const myGeneration = ++queryGeneration;
   abortController = new AbortController();
   queryInProgress = true;
 
@@ -288,6 +302,10 @@ async function runQuery(userMessage) {
   if (mcpServers && Object.keys(mcpServers).length > 0) options.mcpServers = mcpServers;
   if (allowedTools) options.allowedTools = allowedTools;
   if (currentModel) options.model = currentModel;
+  if (currentReasoningEffort) {
+    const effortMap = { low: 1024, medium: 10000, high: 50000 };
+    options.maxThinkingTokens = effortMap[currentReasoningEffort];
+  }
 
   try {
     log(`query() starting — cwd=${options.cwd}, resume=${claudeSessionId || "(new)"}`);
@@ -325,8 +343,11 @@ async function runQuery(userMessage) {
       emit({ type: "error", error: err.message, stack: err.stack });
     }
   } finally {
-    abortController = null;
-    queryInProgress = false;
+    // Only reset if this query is still the current one (not superseded by abort + new query)
+    if (queryGeneration === myGeneration) {
+      abortController = null;
+      queryInProgress = false;
+    }
   }
 }
 

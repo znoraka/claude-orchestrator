@@ -5,7 +5,7 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import type { Session, SessionUsage } from "../types";
-import { playNotificationSound } from "../utils/notificationSound";
+import { playDoneSound, playQuestionSound } from "../utils/notificationSound";
 import { useAppVisible } from "./useAppVisible";
 
 /**
@@ -44,20 +44,29 @@ export function useBackgroundNotifications(
       const wasBusy = prevBusyRef.current.get(session.id) ?? false;
       const isBusy = usage?.isBusy ?? false;
 
-      // Detect busy -> idle transition for non-active sessions
+      // For child sessions, attribute notifications to the parent
+      const parentId = session.parentSessionId;
+      const parent = parentId ? sessions.find((s) => s.id === parentId) : null;
+      const notifName = parent ? parent.name : session.name;
+      // The "effective active" ID is the parent if this is a child of the active session
+      const effectiveActiveId = parentId === activeSessionId ? activeSessionId : session.id;
+
+      // Detect busy -> idle transition
       // Skip if this session was the active one last tick (user just switched away, e.g. plan fork)
       if (
         wasBusy &&
         !isBusy &&
-        (session.id !== activeSessionId || !appVisible) &&
         session.id !== prevActiveRef.current &&
         session.status === "running"
       ) {
-        sendNotification({
-          title: "Claude finished",
-          body: session.name,
-        });
-        playNotificationSound();
+        // For child sessions: suppress if parent is the active session and app is visible
+        if (effectiveActiveId !== activeSessionId || !appVisible) {
+          sendNotification({
+            title: "Claude finished",
+            body: notifName,
+          });
+        }
+        playDoneSound();
       }
 
       // Detect hasQuestion false -> true transition for non-active sessions
@@ -66,14 +75,15 @@ export function useBackgroundNotifications(
       if (
         !hadQuestion &&
         hasQuestion &&
-        (session.id !== activeSessionId || !appVisible) &&
         (session.status === "running" || session.status === "starting")
       ) {
-        sendNotification({
-          title: "Claude has a question",
-          body: session.name,
-        });
-        playNotificationSound();
+        if (effectiveActiveId !== activeSessionId || !appVisible) {
+          sendNotification({
+            title: "Claude has a question",
+            body: notifName,
+          });
+        }
+        playQuestionSound();
       }
 
       prevBusyRef.current.set(session.id, isBusy);

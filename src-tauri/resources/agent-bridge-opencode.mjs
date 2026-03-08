@@ -98,6 +98,7 @@ let server;
 let bootPromise; // resolves when boot() completes successfully
 let ocSessionId = null; // OpenCode session ID
 let currentMessageId = null; // assistant message being streamed
+let idleTimer = null; // debounce timer for query_complete
 
 // Track user message IDs so we don't emit their parts as assistant content
 const userMessageIds = new Set();
@@ -209,10 +210,16 @@ function handleEvent(event) {
     case "session.status": {
       const status = props.status;
       if (status?.type === "busy") {
-        // Session became busy — nothing to emit, frontend already knows from prompt send
+        // Cancel any pending idle→complete debounce
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
       } else if (status?.type === "idle") {
-        // Session finished processing
-        emitQueryComplete();
+        // Debounce: OpenCode briefly goes idle between steps.
+        // Wait before signaling "done" so the UI doesn't flicker.
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          idleTimer = null;
+          emitQueryComplete();
+        }, 500);
       } else if (status?.type === "retry") {
         // OpenCode is retrying (rate limit, transient error, etc.)
         const attempt = status.attempt || 0;
@@ -523,6 +530,8 @@ process.stdin.on("end", () => {
 
 async function handleStdinMessage(msg) {
   if (msg.type === "abort") {
+    // Cancel any pending idle debounce so we don't emit query_complete after abort
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
     // Unblock any pending permission wait
     if (permissionResolve) {
       permissionResolve(false);

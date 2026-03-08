@@ -28,6 +28,8 @@ interface AgentChatProps {
   onFork?: (systemPrompt: string) => void;
   onForkWithPrompt?: (systemPrompt: string, pendingPrompt: string, planContent?: string) => Promise<string>;
   currentModel?: string;
+  onModelChange?: (modelId: string) => void;
+  activeModels?: import("../types").ModelOption[];
   onInputHeightChange?: (height: number) => void;
   onEditFile?: (filePath: string, line?: number) => void;
   onAvailableModels?: (models: Array<{ id: string; providerID: string; name: string; free: boolean; costIn: number; costOut: number }>) => void;
@@ -35,6 +37,9 @@ interface AgentChatProps {
   onMarkTitleGenerated?: () => void;
   onClearPendingPrompt?: () => void;
   onNavigateToSession?: (sessionId: string) => void;
+  onPermissionModeChange?: (mode: "bypassPermissions" | "plan") => void;
+  parentSession?: { id: string; name: string; claudeSessionId?: string; directory?: string } | null;
+  childSessions?: Array<{ id: string; name: string; claudeSessionId?: string; directory?: string; status: string }>;
 }
 
 /** @deprecated Use modelsForProvider(provider) from types.ts instead */
@@ -68,6 +73,7 @@ interface ChatMessage {
   durationMs?: number;
   forkSessionId?: string;
   forkSessionName?: string;
+  isParentMessage?: boolean;
 }
 
 interface ToolGroup {
@@ -378,12 +384,17 @@ const AgentChat = memo(function AgentChat({
   onFork,
   onForkWithPrompt,
   currentModel = "claude-opus-4-6",
+  onModelChange,
+  activeModels: activeModelsProp,
   onInputHeightChange,
   onAvailableModels,
   onRename,
   onMarkTitleGenerated,
   onClearPendingPrompt,
   onNavigateToSession,
+  onPermissionModeChange,
+  parentSession,
+  childSessions,
 }: AgentChatProps) {
   const isReadOnly = session?.status === "stopped";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -402,6 +413,16 @@ const AgentChat = memo(function AgentChat({
   const [fileReferences, setFileReferences] = useState<FileReference[]>([]);
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [viewingFileRef, setViewingFileRef] = useState<FileReference | null>(null);
+  const [reasoningEffort, setReasoningEffort] = useState<"low" | "medium" | "high">("high");
+  const [openPill, setOpenPill] = useState<"model" | "mode" | "effort" | null>(null);
+  const pillRowRef = useRef<HTMLDivElement>(null);
+  const activeModels = activeModelsProp || modelsForProvider(session?.provider || "claude-code");
+  // For parent sessions with children: route input to the active child
+  const activeChildSessionId = useMemo(
+    () => childSessions?.find(c => c.status === "running" || c.status === "starting")?.id ?? null,
+    [childSessions]
+  );
+  const targetSessionId = activeChildSessionId ?? sessionId;
   // Accumulated usage for bridge-based sessions (OpenCode) — reported to parent for context bar
   const accumulatedUsageRef = useRef({ inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, costUsd: 0, contextTokens: 0 });
   const onUsageUpdateRef = useRef(onUsageUpdate);
@@ -410,6 +431,18 @@ const AgentChat = memo(function AgentChat({
   const isAtBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const inputAreaRef = useRef<HTMLDivElement>(null);
+
+  // Close pill dropdown on outside click
+  useEffect(() => {
+    if (!openPill) return;
+    const handleClick = (e: MouseEvent) => {
+      if (pillRowRef.current && !pillRowRef.current.contains(e.target as Node)) {
+        setOpenPill(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [openPill]);
 
   // Report input area height changes to parent (for activity bar positioning)
   useEffect(() => {
@@ -841,6 +874,11 @@ const AgentChat = memo(function AgentChat({
   // Track whether initial history has loaded to prevent overwriting new messages.
   // Re-run when claudeSessionId changes (e.g., real SDK session ID replaces pre-assigned UUID).
   const lastLoadedClaudeSessionIdRef = useRef<string | null>(null);
+  // Stable key for child sessions to use as useEffect dependency
+  const childSessionsKey = useMemo(
+    () => childSessions?.map(c => `${c.id}:${c.claudeSessionId}`).join(",") ?? "",
+    [childSessions]
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -876,21 +914,60 @@ const AgentChat = memo(function AgentChat({
           .replace(/^\/.*claude-orchestrator-images\/.*$/gm, "")
           .trim();
 
+      // Phase 0: Load parent conversation for forked sessions
+      let parentMessages: ChatMessage[] = [];
+      if (parentSession?.claudeSessionId && parentSession.directory) {
+        try {
+          const parentLines = await invoke<string[]>("get_conversation_jsonl", {
+            claudeSessionId: parentSession.claudeSessionId,
+            directory: parentSession.directory,
+          });
+          if (parentLines.length > 0) {
+            const parsed = await parseHistoryLines(parentLines, sdkMessageToChatMessage);
+            parentMessages = parsed.map(m => ({ ...m, id: `parent-${m.id}`, isParentMessage: true }));
+          }
+        } catch {}
+      }
+
+      // Helper: filter out fork-context system prompt from child messages when parent is loaded
+      const filterForkContext = (msgs: ChatMessage[]): ChatMessage[] => {
+        if (parentMessages.length === 0) return msgs;
+        return msgs.filter(m => {
+          if (m.type !== "user") return true;
+          const text = m.content.filter(b => b.type === "text").map(b => b.text).join("\n");
+          return !text.includes("<fork-context>");
+        });
+      };
+
       // Helper to merge replayed messages into state
       const mergeMessages = (replayed: ChatMessage[]) => {
         if (!mountedRef.current) return;
+        replayed = filterForkContext(replayed);
         if (replayed.length > 0) {
           console.log(`[loadHistory] ${sessionId}: ${replayed.length} messages, first=${replayed[0].type}:${replayed[0].id.substring(0, 20)}, last=${replayed[replayed.length-1].type}:${replayed[replayed.length-1].id.substring(0, 20)}`);
         }
         setMessages((prev) => {
           lastLoadedClaudeSessionIdRef.current = claudeSessionId ?? null;
-          if (prev.length === 0) return replayed;
-          const newMessages = prev.filter((m) => {
+
+          // Separate existing parent messages from own messages to avoid
+          // parent messages leaking into `newMessages` and being appended
+          // after the child messages (which caused the duplication bug).
+          const existingParent = prev.filter(m => m.isParentMessage);
+          const existingOwn = prev.filter(m => !m.isParentMessage);
+          const finalParent = existingParent.length > 0 ? existingParent : parentMessages;
+
+          if (existingOwn.length === 0) {
+            return [...finalParent, ...replayed];
+          }
+
+          const newMessages = existingOwn.filter((m) => {
             if (replayed.some((r) => r.id === m.id)) return false;
             if (m.type === "user") {
               const mText = extractUserText(m.content);
               // Plan placeholder ("Execute the plan.") should be replaced by the real JSONL message
-              if (mText === "Execute the plan." && session?.planContent) return false;
+              if (mText === "Execute the plan." && session?.planContent) {
+                return !replayed.some((r) => r.type === "user");
+              }
               return !replayed.some((r) => {
                 if (r.type !== "user") return false;
                 const rText = extractUserText(r.content);
@@ -899,8 +976,11 @@ const AgentChat = memo(function AgentChat({
             }
             return true;
           });
-          if (newMessages.length === 0) return replayed;
-          return [...replayed, ...newMessages];
+
+          if (newMessages.length === 0) {
+            return [...finalParent, ...replayed];
+          }
+          return [...finalParent, ...replayed, ...newMessages];
         });
       };
 
@@ -932,6 +1012,8 @@ const AgentChat = memo(function AgentChat({
         if (lines.length > 0) {
           const replayed = await parseHistoryLines(lines, sdkMessageToChatMessage);
           mergeMessages(replayed);
+        } else if (parentMessages.length > 0) {
+          mergeMessages([]);
         }
         return;
       }
@@ -948,6 +1030,46 @@ const AgentChat = memo(function AgentChat({
           mergeMessages(replayed);
         } catch {}
       }
+
+      // Phase 3: Load child session messages (for parent sessions with forked children)
+      if (childSessions && childSessions.length > 0) {
+        for (const child of childSessions) {
+          if (!child.claudeSessionId || !child.directory) continue;
+          try {
+            const childLines = await invoke<string[]>("get_conversation_jsonl", {
+              claudeSessionId: child.claudeSessionId,
+              directory: child.directory,
+            });
+            if (!mountedRef.current) return;
+            if (childLines.length > 0) {
+              const parsed = await parseHistoryLines(childLines, sdkMessageToChatMessage);
+              // Filter out fork-context system prompt from child messages
+              const filtered = parsed.filter(m => {
+                if (m.type !== "user") return true;
+                const text = m.content.filter(b => b.type === "text").map(b => b.text).join("\n");
+                return !text.includes("<fork-context>");
+              });
+              // Prefix child message IDs to avoid collisions
+              const childMessages = filtered.map(m => ({
+                ...m,
+                id: `child-${child.id}-${m.id}`,
+              }));
+              // Insert a separator before child messages
+              const separator: ChatMessage = {
+                id: `child-separator-${child.id}`,
+                type: "system",
+                content: [{ type: "text", text: `── Executing plan ──` }],
+                timestamp: Date.now(),
+              };
+              setMessages((prev) => {
+                // Don't add if already present
+                if (prev.some(m => m.id === separator.id)) return prev;
+                return [...prev, separator, ...childMessages];
+              });
+            }
+          } catch {}
+        }
+      }
     }
 
     loadHistory();
@@ -955,7 +1077,7 @@ const AgentChat = memo(function AgentChat({
     return () => {
       mountedRef.current = false;
     };
-  }, [sessionId, session?.claudeSessionId, isActive]);
+  }, [sessionId, session?.claudeSessionId, isActive, childSessionsKey]);
 
   // ── Process SDK messages ─────────────────────────────────────────
 
@@ -1006,31 +1128,39 @@ const AgentChat = memo(function AgentChat({
           type: "user",
           message: { role: "user", content: prompt },
         });
-        invoke("send_agent_message", { sessionId, message: jsonLine }).then(() => {
-          // Generate smart title for OpenCode sessions (no JSONL to watch)
-          if (session?.provider === "opencode" && !titleGeneratedRef.current) {
-            titleGeneratedRef.current = true;
-            invoke<string | null>("generate_title_from_text", { message: prompt.substring(0, 500) })
-              .then((title) => {
-                if (title) {
-                  onRenameRef.current?.(title);
-                  onMarkTitleGeneratedRef.current?.();
-                }
-              })
-              .catch(() => {});
-          }
-        }).catch((err) => {
-          setIsGenerating(false);
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `error-${Date.now()}`,
-              type: "error",
-              content: [{ type: "text", text: `Failed to send: ${err}` }],
-              timestamp: Date.now(),
-            },
-          ]);
-        });
+        const trySendAuto = (attempt: number) => {
+          invoke("send_agent_message", { sessionId, message: jsonLine }).then(() => {
+            // Generate smart title for OpenCode sessions (no JSONL to watch)
+            if (session?.provider === "opencode" && !titleGeneratedRef.current) {
+              titleGeneratedRef.current = true;
+              invoke<string | null>("generate_title_from_text", { message: prompt.substring(0, 500) })
+                .then((title) => {
+                  if (title) {
+                    onRenameRef.current?.(title);
+                    onMarkTitleGeneratedRef.current?.();
+                  }
+                })
+                .catch(() => {});
+            }
+          }).catch((err) => {
+            const errStr = String(err);
+            if (attempt === 0 && errStr.includes("query is already in progress")) {
+              setTimeout(() => trySendAuto(1), 1000);
+              return;
+            }
+            setIsGenerating(false);
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `error-${Date.now()}`,
+                type: "error",
+                content: [{ type: "text", text: `Failed to send: ${err}` }],
+                timestamp: Date.now(),
+              },
+            ]);
+          });
+        };
+        trySendAuto(0);
       }
       return;
     }
@@ -1235,10 +1365,17 @@ const AgentChat = memo(function AgentChat({
 
   useEffect(() => {
     let cancelled = false;
-    let unlistenMessageFn: (() => void) | null = null;
-    let unlistenExitFn: (() => void) | null = null;
+    const unlistenFns: (() => void)[] = [];
 
-    listen<string>(
+    const registerListener = (promise: Promise<() => void>) => {
+      promise.then((fn) => {
+        if (cancelled) fn();
+        else unlistenFns.push(fn);
+      });
+    };
+
+    // Listen to this session's own events
+    registerListener(listen<string>(
       `agent-message-${sessionId}`,
       (event) => {
         if (cancelled || !mountedRef.current) return;
@@ -1247,15 +1384,9 @@ const AgentChat = memo(function AgentChat({
           handleAgentMessage(msg);
         } catch {}
       }
-    ).then((fn) => {
-      if (cancelled) {
-        fn(); // Already unmounted, clean up immediately
-      } else {
-        unlistenMessageFn = fn;
-      }
-    });
+    ));
 
-    listen<string>(
+    registerListener(listen<string>(
       `agent-exit-${sessionId}`,
       (event) => {
         if (cancelled || !mountedRef.current) return;
@@ -1263,20 +1394,51 @@ const AgentChat = memo(function AgentChat({
         const code = parseInt(event.payload, 10);
         onExitRef.current(isNaN(code) ? undefined : code);
       }
-    ).then((fn) => {
-      if (cancelled) {
-        fn();
-      } else {
-        unlistenExitFn = fn;
+    ));
+
+    // Also listen to child session events (merged view)
+    if (childSessions && childSessions.length > 0) {
+      for (const child of childSessions) {
+        registerListener(listen<string>(
+          `agent-message-${child.id}`,
+          (event) => {
+            if (cancelled || !mountedRef.current) return;
+            try {
+              const msg = JSON.parse(event.payload);
+              // Skip system init messages from children — they would overwrite
+              // this (parent) session's claudeSessionId with the child's value.
+              if (msg.type === "system" && msg.subtype === "init") return;
+              // Prefix message IDs from children to avoid collisions
+              if (msg.message && typeof msg.message === "object") {
+                const apiId = msg.message.id;
+                if (apiId) msg.message.id = `child-${child.id}-${apiId}`;
+              }
+              handleAgentMessage(msg);
+            } catch {}
+          }
+        ));
+
+        registerListener(listen<string>(
+          `agent-exit-${child.id}`,
+          () => {
+            if (cancelled || !mountedRef.current) return;
+            // Child exited — stop generating only if no other children are running
+            const otherRunning = childSessions.some(
+              (c) => c.id !== child.id && (c.status === "running" || c.status === "starting")
+            );
+            if (!otherRunning) {
+              setIsGenerating(false);
+            }
+          }
+        ));
       }
-    });
+    }
 
     return () => {
       cancelled = true;
-      unlistenMessageFn?.();
-      unlistenExitFn?.();
+      for (const fn of unlistenFns) fn();
     };
-  }, [sessionId, handleAgentMessage]);
+  }, [sessionId, handleAgentMessage, childSessionsKey]);
 
   // ── Poll OpenCode usage ─────────────────────────────────────────
   useEffect(() => {
@@ -1545,7 +1707,7 @@ const AgentChat = memo(function AgentChat({
         });
         const targetMode = classification === "simple" ? "bypassPermissions" : "plan";
         const modeMsg = JSON.stringify({ type: "set_permission_mode", permissionMode: targetMode });
-        await invoke("send_agent_message", { sessionId, message: modeMsg });
+        await invoke("send_agent_message", { sessionId: targetSessionId, message: modeMsg });
       } catch {
         // Classification failed — keep current mode (plan)
       }
@@ -1556,44 +1718,53 @@ const AgentChat = memo(function AgentChat({
       type: "user",
       message: { role: "user", content },
     });
-    try {
-      await invoke("send_agent_message", { sessionId, message: jsonLine });
+    const trySend = async (attempt: number) => {
+      try {
+        await invoke("send_agent_message", { sessionId: targetSessionId, message: jsonLine });
 
-      // Generate smart title for OpenCode sessions (no JSONL to watch)
-      if (session?.provider === "opencode" && !titleGeneratedRef.current && text) {
-        titleGeneratedRef.current = true;
-        invoke<string | null>("generate_title_from_text", { message: text })
-          .then((title) => {
-            if (title) {
-              onRenameRef.current?.(title);
-              onMarkTitleGeneratedRef.current?.();
-            }
-          })
-          .catch(() => {});
+        // Generate smart title for OpenCode sessions (no JSONL to watch)
+        if (session?.provider === "opencode" && !titleGeneratedRef.current && text) {
+          titleGeneratedRef.current = true;
+          invoke<string | null>("generate_title_from_text", { message: text })
+            .then((title) => {
+              if (title) {
+                onRenameRef.current?.(title);
+                onMarkTitleGeneratedRef.current?.();
+              }
+            })
+            .catch(() => {});
+        }
+      } catch (err) {
+        const errStr = String(err);
+        // Bridge still winding down after abort — retry once after a short delay
+        if (attempt === 0 && errStr.includes("query is already in progress")) {
+          setTimeout(() => trySend(1), 1000);
+          return;
+        }
+        setIsGenerating(false);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `error-${Date.now()}`,
+            type: "error",
+            content: [{ type: "text", text: `Failed to send: ${err}` }],
+            timestamp: Date.now(),
+          },
+        ]);
       }
-    } catch (err) {
-      setIsGenerating(false);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `error-${Date.now()}`,
-          type: "error",
-          content: [{ type: "text", text: `Failed to send: ${err}` }],
-          timestamp: Date.now(),
-        },
-      ]);
-    }
-  }, [inputText, images, sessionId, isReadOnly, editingMessageId, fileReferences, scrollToBottom]);
+    };
+    trySend(0);
+  }, [inputText, images, targetSessionId, isReadOnly, editingMessageId, fileReferences, scrollToBottom]);
 
   const handleAbort = useCallback(() => {
-    invoke("abort_agent", { sessionId }).catch(() => {});
+    invoke("abort_agent", { sessionId: targetSessionId }).catch(() => {});
     // Immediately clear generating state — don't rely on bridge "aborted" event
     // which may not arrive if the SDK hangs or the abort doesn't propagate cleanly
     abortedRef.current = true;
     setIsGenerating(false);
     setCurrentTodo(null);
     accumulatedBlocksRef.current.clear();
-  }, [sessionId]);
+  }, [targetSessionId]);
 
   // Answer an AskUserQuestion by sending the structured answers to the bridge.
   // The bridge's canUseTool callback expects a Record<questionText, answerString>.
@@ -1601,7 +1772,7 @@ const AgentChat = memo(function AgentChat({
     onQuestionChangeRef.current?.(false);
     setPendingQuestion(null);
     const msg = JSON.stringify({ type: "ask_user_answer", answer });
-    invoke("send_agent_message", { sessionId, message: msg }).catch(() => {
+    invoke("send_agent_message", { sessionId: targetSessionId, message: msg }).catch(() => {
       setInputText(Object.values(answer).join(", "));
       inputRef.current?.focus();
     });
@@ -1616,7 +1787,7 @@ const AgentChat = memo(function AgentChat({
         timestamp: Date.now(),
       },
     ]);
-  }, [sessionId]);
+  }, [targetSessionId]);
 
   // Respond to a permission request (plan mode)
   const respondPermission = useCallback((allowed: boolean) => {
@@ -1628,8 +1799,8 @@ const AgentChat = memo(function AgentChat({
       onUsageUpdateRef.current?.({ ...accumulatedUsageRef.current, isBusy: false });
     }
     const msg = JSON.stringify({ type: "permission_response", allowed });
-    invoke("send_agent_message", { sessionId, message: msg }).catch(() => {});
-  }, [sessionId]);
+    invoke("send_agent_message", { sessionId: targetSessionId, message: msg }).catch(() => {});
+  }, [targetSessionId]);
 
   // Allow in a new conversation: fork with plan as pending prompt, deny current
   const allowInNewConversation = useCallback(async () => {
@@ -1956,34 +2127,34 @@ const AgentChat = memo(function AgentChat({
             {hasMore && <div ref={sentinelRef} className="h-1" />}
 
             {deferredMessages.map((msg, idx) => (
-              <MessageBubble
-                key={msg.id}
-                message={msg}
-                toolStates={toolStates}
-                onToggleTool={toggleTool}
-                isLastMessage={idx === deferredMessages.length - 1 && trailingMessages.length === 0}
-                planContent={session?.planContent}
-                onEdit={editMessage}
-                onFork={forkFromMessage}
-                onRetry={retryMessage}
-                onCopy={copyMessage}
-                onNavigateToSession={onNavigateToSession}
-              />
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  toolStates={toolStates}
+                  onToggleTool={toggleTool}
+                  isLastMessage={idx === deferredMessages.length - 1 && trailingMessages.length === 0}
+                  planContent={session?.planContent}
+                  onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
+                  onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
+                  onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
+                  onCopy={copyMessage}
+                  onNavigateToSession={onNavigateToSession}
+                />
             ))}
             {trailingMessages.map((msg, idx) => (
-              <MessageBubble
-                key={msg.id}
-                message={msg}
-                toolStates={toolStates}
-                onToggleTool={toggleTool}
-                isLastMessage={idx === trailingMessages.length - 1}
-                planContent={session?.planContent}
-                onEdit={editMessage}
-                onFork={forkFromMessage}
-                onRetry={retryMessage}
-                onCopy={copyMessage}
-                onNavigateToSession={onNavigateToSession}
-              />
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  toolStates={toolStates}
+                  onToggleTool={toggleTool}
+                  isLastMessage={idx === trailingMessages.length - 1}
+                  planContent={session?.planContent}
+                  onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
+                  onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
+                  onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
+                  onCopy={copyMessage}
+                  onNavigateToSession={onNavigateToSession}
+                />
             ))}
 
             {isGenerating && !pendingPermission && !pendingQuestion && (
@@ -2099,7 +2270,6 @@ const AgentChat = memo(function AgentChat({
               onAllow={() => respondPermission(true)}
               onDeny={() => respondPermission(false)}
               onAllowInNew={allowInNewConversation}
-              contextTokens={accumulatedUsageRef.current.contextTokens}
             />
           </div>
         ) : (
@@ -2172,7 +2342,7 @@ const AgentChat = memo(function AgentChat({
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
-                placeholder={`Message ${modelsForProvider(session?.provider || "claude-code").find((m) => m.id === currentModel)?.name ?? currentModel.split("/").pop() ?? "Agent"}…`}
+                placeholder="Message…"
                 rows={1}
                 className="flex-1 resize-none bg-transparent border-none px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none max-h-32 overflow-y-auto"
                 style={{ minHeight: "20px" }}
@@ -2200,17 +2370,100 @@ const AgentChat = memo(function AgentChat({
                 </button>
               )}
             </div>
+            {/* Pill row: Model, Mode, Effort */}
+            <div ref={pillRowRef} className="flex items-center gap-1.5 mt-1">
+              {/* Model pill */}
+              <div className="relative">
+                <button
+                  onClick={() => setOpenPill(openPill === "model" ? null : "model")}
+                  className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  {activeModels.find((m) => m.id === currentModel)?.name ?? currentModel?.split("/").pop() ?? "Model"}
+                  <svg className="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
+                </button>
+                {openPill === "model" && (
+                  <div className="absolute bottom-full mb-1 left-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 min-w-[180px] max-h-[300px] overflow-y-auto">
+                    {activeModels.map((model) => (
+                      <button
+                        key={model.id}
+                        className={`w-full text-left px-3 py-1.5 text-[11px] transition-colors ${
+                          currentModel === model.id
+                            ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
+                            : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                        }`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          onModelChange?.(model.id);
+                          setOpenPill(null);
+                        }}
+                      >
+                        <div className="font-medium">{model.name}</div>
+                        {model.desc && <div className="text-[10px] text-[var(--text-tertiary)]">{model.desc}</div>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {/* Mode toggle */}
+              <button
+                onClick={async () => {
+                  const newMode = session?.permissionMode === "bypassPermissions" ? "plan" : "bypassPermissions";
+                  onPermissionModeChange?.(newMode);
+                  try {
+                    const msg = JSON.stringify({ type: "set_permission_mode", permissionMode: newMode });
+                    await invoke("send_agent_message", { sessionId: targetSessionId, message: msg });
+                  } catch {}
+                }}
+                className="px-2 py-0.5 text-[11px] rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+              >
+                {session?.permissionMode === "bypassPermissions" ? "Chat" : "Plan"}
+              </button>
+              {/* Effort pill */}
+              <div className="relative">
+                <button
+                  onClick={() => setOpenPill(openPill === "effort" ? null : "effort")}
+                  className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  {reasoningEffort === "low" ? "Low" : reasoningEffort === "medium" ? "Medium" : "High"}
+                  <svg className="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
+                </button>
+                {openPill === "effort" && (
+                  <div className="absolute bottom-full mb-1 left-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 min-w-[100px]">
+                    {(["low", "medium", "high"] as const).map((level) => (
+                      <button
+                        key={level}
+                        className={`w-full text-left px-3 py-1.5 text-[11px] transition-colors ${
+                          reasoningEffort === level
+                            ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
+                            : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                        }`}
+                        onMouseDown={async (e) => {
+                          e.preventDefault();
+                          setReasoningEffort(level);
+                          try {
+                            const msg = JSON.stringify({ type: "set_reasoning_effort", effort: level });
+                            await invoke("send_agent_message", { sessionId: targetSessionId, message: msg });
+                          } catch {}
+                          setOpenPill(null);
+                        }}
+                      >
+                        {level === "low" ? "Low" : level === "medium" ? "Medium" : "High"}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {/* Branch info */}
+              {currentBranch && (
+                <span className="flex items-center gap-1 ml-auto text-[10px] text-[var(--text-tertiary)]">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
+                  </svg>
+                  {currentBranch}
+                </span>
+              )}
+            </div>
           </>
-        )}
-        {currentBranch && (
-          <div className="flex items-center gap-2 mt-1 px-1 text-[10px] text-[var(--text-tertiary)]">
-            <span className="flex items-center gap-1">
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
-              </svg>
-              {currentBranch}
-            </span>
-          </div>
         )}
       </div>
 
@@ -2621,15 +2874,22 @@ function MarkdownContent({ text }: { text: string }) {
 
 function InlinePlanBlock({ content }: { content: string }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [copied, setCopied] = useState(false);
   const title = useMemo(() => {
     const m = content.match(/^#\s+(.+)$/m);
     return m ? m[1] : undefined;
   }, [content]);
+  const handleCopy = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }, [content]);
   return (
     <div className="border border-[var(--border-color)] rounded-lg overflow-hidden w-[80%]">
-      <button
+      <div
         onClick={() => setCollapsed(!collapsed)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors cursor-pointer"
       >
         <svg
           className={`w-3 h-3 shrink-0 transition-transform ${collapsed ? "" : "rotate-90"}`}
@@ -2644,10 +2904,26 @@ function InlinePlanBlock({ content }: { content: string }) {
             {title}
           </span>
         )}
+        <button
+          onClick={handleCopy}
+          className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+          title="Copy plan"
+        >
+          {copied ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+          )}
+        </button>
         <span className="text-xs text-green-400">✓</span>
-      </button>
+      </div>
       {!collapsed && (
-        <div className="border-t border-[var(--border-color)] bg-[var(--bg-secondary)] px-4 pt-3 pb-3 text-sm text-[var(--text-primary)] overflow-y-auto max-h-96">
+        <div className="border-t border-[var(--border-color)] bg-[var(--bg-secondary)] px-4 pt-3 pb-6 text-sm text-[var(--text-primary)] overflow-y-auto max-h-96">
           <MarkdownContent text={content} />
         </div>
       )}
@@ -2902,17 +3178,21 @@ function TodoListView({ todos }: { todos: TodoItem[] }) {
             <path d="M10 3a7 7 0 016.93 6" strokeLinecap="round" />
           </svg>
         ) : (
-          <span className="w-3.5 h-3.5 rounded-full border border-[var(--text-tertiary)] shrink-0" />
+          <span className="block w-3.5 h-3.5 rounded-full border border-[var(--text-tertiary)] shrink-0" />
         );
 
         const textColor = todo.status === "completed"
           ? "text-[var(--text-tertiary)] line-through"
           : todo.status === "in_progress"
-          ? "text-[var(--text-primary)]"
+          ? "text-[var(--text-primary)] font-medium"
           : "text-[var(--text-secondary)]";
 
+        const rowBg = todo.status === "in_progress"
+          ? "bg-[var(--bg-tertiary)] rounded"
+          : "";
+
         return (
-          <div key={i} className="flex items-start gap-2">
+          <div key={i} className={`flex items-start gap-2 px-1.5 py-0.5 -mx-1.5 ${rowBg}`}>
             <div className="mt-0.5">{statusIcon}</div>
             <span className={`text-xs ${textColor}`}>{todo.content}</span>
           </div>
@@ -3164,13 +3444,11 @@ function InlinePermissionComposer({
   onAllow,
   onDeny,
   onAllowInNew,
-  contextTokens,
 }: {
   permission: { toolName: string; input: Record<string, unknown> };
   onAllow: () => void;
   onDeny: () => void;
   onAllowInNew: () => void;
-  contextTokens?: number;
 }) {
   const isExitPlan = permission.toolName === "ExitPlanMode";
   return (
@@ -3194,17 +3472,19 @@ function InlinePermissionComposer({
         </div>
       )}
       <div className="flex gap-2">
-        <button
-          onClick={onAllow}
-          className="px-3 py-1.5 text-xs rounded-md bg-[var(--accent)] text-white hover:opacity-90 font-medium"
-        >
-          {isExitPlan ? (<>Execute here{contextTokens != null && contextTokens > 0 && <span className="text-[10px] opacity-70 ml-1">({Math.round(contextTokens / 200_000 * 100)}% context)</span>}</>) : "Allow"}
-        </button>
+        {!isExitPlan && (
+          <button
+            onClick={onAllow}
+            className="px-3 py-1.5 text-xs rounded-md bg-[var(--accent)] text-white hover:opacity-90 font-medium"
+          >
+            Allow
+          </button>
+        )}
         <button
           onClick={onAllowInNew}
-          className="px-3 py-1.5 text-xs rounded-md bg-[var(--accent)]/80 text-white hover:opacity-90 font-medium"
+          className="px-3 py-1.5 text-xs rounded-md bg-[var(--accent)] text-white hover:opacity-90 font-medium"
         >
-          {isExitPlan ? "Execute in new conversation" : "Allow in new"}
+          {isExitPlan ? "Execute" : "Allow in new"}
         </button>
         <button
           onClick={onDeny}

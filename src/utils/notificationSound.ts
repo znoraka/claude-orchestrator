@@ -11,19 +11,15 @@ function getAudioContext(): AudioContext | null {
   }
 }
 
-export function playNotificationSound() {
+function playTones(frequencies: number[]) {
   const ctx = getAudioContext();
   if (!ctx) return;
 
-  // Resume if suspended (browser autoplay policy)
   if (ctx.state === "suspended") {
     ctx.resume();
   }
 
   const now = ctx.currentTime;
-
-  // Two-tone chime: C5 then E5
-  const frequencies = [523.25, 659.25];
   const noteDuration = 0.12;
   const gap = 0.05;
 
@@ -43,4 +39,14 @@ export function playNotificationSound() {
     osc.start(start);
     osc.stop(start + noteDuration);
   });
+}
+
+/** Rising chime (C5 → E5) — agent finished */
+export function playDoneSound() {
+  playTones([523.25, 659.25]);
+}
+
+/** Descending chime (E5 → C5) — needs attention */
+export function playQuestionSound() {
+  playTones([659.25, 523.25]);
 }

@@ -16566,6 +16566,7 @@ var {
 } = config2;
 var currentCwd = initialCwd;
 var currentModel = config2.model || null;
+var currentReasoningEffort = null;
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
@@ -16578,6 +16579,7 @@ log(`cwd exists: ${existsSync3(initialCwd || process.cwd())}`);
 var claudeSessionId = resume || null;
 var abortController = null;
 var queryInProgress = false;
+var queryGeneration = 0;
 var askUserResolve = null;
 var permissionResolve = null;
 var currentPermissionMode = configPermissionMode || "bypassPermissions";
@@ -16603,10 +16605,12 @@ process.stdin.on("end", () => {
 });
 async function handleStdinMessage(msg) {
   if (msg.type === "abort") {
+    queryGeneration++;
     if (abortController) {
       abortController.abort();
       abortController = null;
     }
+    queryInProgress = false;
     if (askUserResolve) {
       askUserResolve(null);
       askUserResolve = null;
@@ -16628,6 +16632,12 @@ async function handleStdinMessage(msg) {
     currentModel = msg.model || null;
     log(`model updated to: ${currentModel}`);
     emit({ type: "model_updated", model: currentModel });
+    return;
+  }
+  if (msg.type === "set_reasoning_effort") {
+    currentReasoningEffort = msg.effort || null;
+    log(`reasoning effort updated to: ${currentReasoningEffort}`);
+    emit({ type: "reasoning_effort_updated", effort: currentReasoningEffort });
     return;
   }
   if (msg.type === "ask_user_answer") {
@@ -16667,6 +16677,7 @@ async function runQuery(userMessage) {
     emit({ type: "error", error: "A query is already in progress" });
     return;
   }
+  const myGeneration = ++queryGeneration;
   abortController = new AbortController();
   queryInProgress = true;
   let prompt;
@@ -16763,6 +16774,10 @@ async function runQuery(userMessage) {
   if (mcpServers && Object.keys(mcpServers).length > 0) options.mcpServers = mcpServers;
   if (allowedTools) options.allowedTools = allowedTools;
   if (currentModel) options.model = currentModel;
+  if (currentReasoningEffort) {
+    const effortMap = { low: 1024, medium: 1e4, high: 5e4 };
+    options.maxThinkingTokens = effortMap[currentReasoningEffort];
+  }
   try {
     log(`query() starting \u2014 cwd=${options.cwd}, resume=${claudeSessionId || "(new)"}`);
     const q = query({ prompt, options });
@@ -16794,8 +16809,10 @@ ${err.stack}`);
       emit({ type: "error", error: err.message, stack: err.stack });
     }
   } finally {
-    abortController = null;
-    queryInProgress = false;
+    if (queryGeneration === myGeneration) {
+      abortController = null;
+      queryInProgress = false;
+    }
   }
 }
 emit({

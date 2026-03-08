@@ -1715,8 +1715,16 @@ if (config.mode === "list-models") {
       case "session.status": {
         const status = props.status;
         if (status?.type === "busy") {
+          if (idleTimer) {
+            clearTimeout(idleTimer);
+            idleTimer = null;
+          }
         } else if (status?.type === "idle") {
-          emitQueryComplete();
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            idleTimer = null;
+            emitQueryComplete();
+          }, 500);
         } else if (status?.type === "retry") {
           const attempt = status.attempt || 0;
           const retryMsg = status.message || `Retrying (attempt ${attempt})...`;
@@ -1965,6 +1973,7 @@ if (config.mode === "list-models") {
   let bootPromise;
   let ocSessionId = null;
   let currentMessageId = null;
+  let idleTimer = null;
   const userMessageIds = /* @__PURE__ */ new Set();
   const partsById = /* @__PURE__ */ new Map();
   async function boot() {
@@ -2070,6 +2079,10 @@ if (config.mode === "list-models") {
   });
   async function handleStdinMessage(msg) {
     if (msg.type === "abort") {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
       if (permissionResolve) {
         permissionResolve(false);
         permissionResolve = null;

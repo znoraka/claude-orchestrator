@@ -19,6 +19,7 @@ import { useBackgroundNotifications } from "../hooks/useBackgroundNotifications"
 import { useToast } from "../components/Toast";
 import { jsonlDirectory, type AgentProvider, type Session, type SessionUsage, type Workspace } from "../types";
 import { deriveWorkspaces, workspaceForSession, normalizeDir, repoRootDir } from "../utils/workspaces";
+import { getYoungestDescendant, getRootSession } from "../utils/sessionLineage";
 
 const MAX_RUNNING_SESSIONS = 8;
 
@@ -46,7 +47,7 @@ function sessionReducer(state: Session[], action: SessionAction): Session[] {
       );
     case "MARK_STOPPED":
       return state.map((s) =>
-        action.ids.includes(s.id) ? { ...s, status: "stopped" as const } : s
+        action.ids.includes(s.id) ? { ...s, status: "stopped" as const, exitCode: 0 } : s
       );
     case "TICK_ACTIVE_TIMES": {
       const map = new Map(action.updates.map((u) => [u.id, u.activeTime]));
@@ -67,8 +68,10 @@ interface SessionContextValue {
   sortedSessions: Session[];
   workspaces: Workspace[];
   activeSessionId: string | null;
+  effectiveSessionId: string | null;
   activeWorkspaceId: string | null;
   activeWorktreePath: string | null;
+  youngestDescendantMap: Map<string, Session>;
   sessionUsage: Map<string, SessionUsage>;
   todayCost: number;
   todayTokens: number;
@@ -85,7 +88,8 @@ interface SessionContextValue {
     provider?: AgentProvider,
     model?: string,
     permissionMode?: "bypassPermissions" | "plan",
-    planContent?: string
+    planContent?: string,
+    parentSessionId?: string
   ) => Promise<string>;
   createWorktree: (repoDir: string, branchName: string, worktreeName?: string) => Promise<string>;
   removeWorktree: (path: string) => Promise<void>;
@@ -101,6 +105,7 @@ interface SessionContextValue {
   setAgentUsage: (sessionId: string, usage: SessionUsage) => void;
   setSessionDraft: (sessionId: string, hasDraft: boolean) => void;
   setSessionQuestion: (sessionId: string, hasQuestion: boolean) => void;
+  updatePermissionMode: (sessionId: string, mode: "bypassPermissions" | "plan") => void;
   unreadSessions: Set<string>;
 }
 
@@ -140,6 +145,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         activeTime?: number;
         hasTitleBeenGenerated?: boolean;
         planContent?: string;
+        parentSessionId?: string;
       }>
     >("load_sessions")
       .then((saved) => {
@@ -160,6 +166,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             activeTime: s.activeTime || 0,
             hasTitleBeenGenerated: s.hasTitleBeenGenerated,
             planContent: s.planContent,
+            parentSessionId: s.parentSessionId,
           }));
           dispatch({ type: "SET_ALL", sessions: restored });
         }
@@ -193,6 +200,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       activeTime: s.activeTime || 0,
       hasTitleBeenGenerated: s.hasTitleBeenGenerated,
       planContent: s.planContent,
+      parentSessionId: s.parentSessionId,
     }));
   }, []);
 
@@ -218,7 +226,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const saveKey = useMemo(
     () =>
       sessions
-        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.provider}:${s.model}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.dangerouslySkipPermissions}:${s.hasTitleBeenGenerated}`)
+        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.provider}:${s.model}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.dangerouslySkipPermissions}:${s.hasTitleBeenGenerated}:${s.permissionMode}:${s.parentSessionId}`)
         .join("|"),
     [sessions]
   );
@@ -284,14 +292,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // ── Actions ──────────────────────────────────────────────────────
 
   const selectSession = useCallback((id: string) => {
-    setActiveSessionId(id);
-    const session = sessionsRef.current.find((s) => s.id === id);
-    if (session) {
-      // Key by worktree path (session directory) for finer-grained recall
-      activeSessionInWorkspace.current.set(session.directory || "~", id);
-      // Also key by workspace (repo root) so selectWorkspace can fall back
-      const wsId = repoRootDir(session.directory || "~");
-      activeSessionInWorkspace.current.set(wsId, id);
+    // Always resolve to the root ancestor so sidebar highlighting stays consistent
+    const root = getRootSession(id, sessionsRef.current);
+    const rootId = root.id;
+    setActiveSessionId(rootId);
+    const target = sessionsRef.current.find((s) => s.id === rootId);
+    if (target) {
+      activeSessionInWorkspace.current.set(target.directory || "~", rootId);
+      const wsId = repoRootDir(target.directory || "~");
+      activeSessionInWorkspace.current.set(wsId, rootId);
     }
   }, []);
 
@@ -338,7 +347,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       provider: AgentProvider = "claude-code",
       model?: string,
       permissionMode?: "bypassPermissions" | "plan",
-      planContent?: string
+      planContent?: string,
+      parentSessionId?: string
     ) => {
       const dir = normalizeDir(directory);
       const id = uuidv4();
@@ -359,10 +369,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         permissionMode,
         pendingPrompt,
         planContent,
+        parentSessionId,
       };
 
       dispatch({ type: "ADD", session });
-      setActiveSessionId(id);
+      // If this is a child session, keep activeSessionId pointing to the root parent
+      // so sidebar highlighting stays consistent. effectiveSessionId will resolve to the child.
+      if (parentSessionId) {
+        const root = getRootSession(parentSessionId, sessionsRef.current);
+        setActiveSessionId(root.id);
+      } else {
+        setActiveSessionId(id);
+      }
 
       // Save immediately after adding to ensure session is persisted
       // Use setTimeout(0) to ensure dispatch has updated sessionsRef
@@ -430,6 +448,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const markStopped = useCallback((id: string, exitCode?: number) => {
+    const session = sessionsRef.current.find((s) => s.id === id);
+    if (session?.status === "stopped") return; // already stopped (e.g. by enforceMaxSessions)
     dispatch({ type: "UPDATE", id, patch: { status: "stopped", exitCode } });
   }, []);
 
@@ -697,6 +717,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "UPDATE", id: sessionId, patch: { hasQuestion } });
   }, []);
 
+  const updatePermissionMode = useCallback((sessionId: string, mode: "bypassPermissions" | "plan") => {
+    dispatch({ type: "UPDATE", id: sessionId, patch: { permissionMode: mode } });
+  }, []);
+
   // Merge JSONL usage with agent busy state and agent-reported usage
   const sessionUsage = useMemo(() => {
     const merged = new Map<string, SessionUsage>();
@@ -728,6 +752,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         });
       }
     }
+    // Propagate child busy state to parent: if any child is busy, parent appears busy too
+    for (const s of sessions) {
+      if (!s.parentSessionId) continue;
+      const childUsage = merged.get(s.id);
+      if (childUsage?.isBusy || s.status === "running" || s.status === "starting") {
+        const parentUsage = merged.get(s.parentSessionId);
+        if (parentUsage && !parentUsage.isBusy) {
+          merged.set(s.parentSessionId, { ...parentUsage, isBusy: true });
+        } else if (!parentUsage) {
+          merged.set(s.parentSessionId, {
+            inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0, costUsd: 0, contextTokens: 0, isBusy: true,
+          });
+        }
+      }
+    }
     return merged;
   }, [jsonlUsage, agentBusyMap, agentUsageMap]);
 
@@ -748,13 +788,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const wasActive = prevActiveSessionIdRef.current === session.id;
 
       // busy → idle on a non-active session → mark unread
+      // For child sessions, mark the parent as unread instead
       if (wasBusy && !isBusy && !wasActive) {
-        setUnreadSessions((prev) => {
-          if (prev.has(session.id)) return prev;
-          const next = new Set(prev);
-          next.add(session.id);
-          return next;
-        });
+        const targetId = session.parentSessionId && sessionsRef.current.some(s => s.id === session.parentSessionId)
+          ? session.parentSessionId
+          : session.id;
+        const isTargetActive = prevActiveSessionIdRef.current === targetId;
+        if (!isTargetActive) {
+          setUnreadSessions((prev) => {
+            if (prev.has(targetId)) return prev;
+            const next = new Set(prev);
+            next.add(targetId);
+            return next;
+          });
+        }
       }
 
       // When a session becomes busy again, reset its dismissed state
@@ -782,6 +829,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [activeSessionId]);
 
+  // Prune unread set: remove IDs for sessions that no longer exist
+  useEffect(() => {
+    const currentIds = new Set(sessions.map((s) => s.id));
+    setUnreadSessions((prev) => {
+      let changed = false;
+      for (const id of prev) {
+        if (!currentIds.has(id)) { changed = true; break; }
+      }
+      if (!changed) return prev;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (currentIds.has(id)) next.add(id);
+      }
+      return next;
+    });
+  }, [sessions]);
+
   // ── Dock badge: show count of sessions needing attention ─────────
   useEffect(() => {
     let count = unreadSessions.size;
@@ -801,6 +865,26 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     () => [...sessions].sort((a, b) => b.lastActiveAt - a.lastActiveAt),
     [sessions]
   );
+
+  // Map each root session to its youngest descendant
+  const youngestDescendantMap = useMemo(() => {
+    const map = new Map<string, Session>();
+    const roots = sessions.filter((s) => !s.parentSessionId);
+    for (const root of roots) {
+      const youngest = getYoungestDescendant(root.id, sessions);
+      if (youngest.id !== root.id) {
+        map.set(root.id, youngest);
+      }
+    }
+    return map;
+  }, [sessions]);
+
+  // The effective session to display: youngest descendant of activeSessionId
+  const effectiveSessionId = useMemo(() => {
+    if (!activeSessionId) return null;
+    const youngest = getYoungestDescendant(activeSessionId, sessions);
+    return youngest.id;
+  }, [activeSessionId, sessions]);
 
   const workspaces = useMemo(() => deriveWorkspaces(sessions), [sessions]);
 
@@ -845,8 +929,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       sortedSessions,
       workspaces,
       activeSessionId,
+      effectiveSessionId,
       activeWorkspaceId,
       activeWorktreePath,
+      youngestDescendantMap,
       sessionUsage,
       todayCost,
       todayTokens,
@@ -868,6 +954,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setAgentUsage,
       setSessionDraft,
       setSessionQuestion,
+      updatePermissionMode,
       unreadSessions,
     }),
     [
@@ -875,8 +962,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       sortedSessions,
       workspaces,
       activeSessionId,
+      effectiveSessionId,
       activeWorkspaceId,
       activeWorktreePath,
+      youngestDescendantMap,
       sessionUsage,
       todayCost,
       todayTokens,
@@ -898,6 +987,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setAgentUsage,
       setSessionDraft,
       setSessionQuestion,
+      updatePermissionMode,
       unreadSessions,
     ]
   );

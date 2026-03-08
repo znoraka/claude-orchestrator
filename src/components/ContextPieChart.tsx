@@ -1,7 +1,17 @@
 import { useState } from "react";
 import type { SessionUsage } from "../types";
 
-const MAX_TOKENS = 200_000;
+const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "claude-opus-4-6": 1_000_000,
+  "claude-sonnet-4-6": 1_000_000,
+  "claude-haiku-4-5-20251001": 200_000,
+};
+const DEFAULT_CONTEXT_WINDOW = 200_000;
+
+function contextWindowForModel(model?: string): number {
+  if (!model) return DEFAULT_CONTEXT_WINDOW;
+  return MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
+}
 
 function getColor(pct: number) {
   if (pct > 0.95) return "rgba(239,68,68,0.8)";
@@ -10,9 +20,10 @@ function getColor(pct: number) {
   return "rgba(148,163,184,0.35)";
 }
 
-export default function ContextPieChart({ usage }: { usage: SessionUsage | undefined }) {
+export default function ContextPieChart({ usage, model }: { usage: SessionUsage | undefined; model?: string }) {
   const [hover, setHover] = useState(false);
-  const pct = usage && usage.contextTokens > 0 ? usage.contextTokens / MAX_TOKENS : 0;
+  const maxTokens = Math.max(contextWindowForModel(model), usage?.contextTokens ?? 0);
+  const pct = usage && usage.contextTokens > 0 ? usage.contextTokens / maxTokens : 0;
   const color = getColor(pct);
   const size = 28;
   const stroke = 4;
@@ -58,7 +69,7 @@ export default function ContextPieChart({ usage }: { usage: SessionUsage | undef
           className="absolute right-full mr-2 top-1/2 -translate-y-1/2 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-3 py-2 text-xs whitespace-nowrap z-50 shadow-lg"
         >
           <div className="font-medium text-[var(--text-primary)] mb-1">
-            Context: {usage.contextTokens.toLocaleString()} / {MAX_TOKENS.toLocaleString()} ({Math.round(pct * 100)}%)
+            Context: {usage.contextTokens.toLocaleString()} / {maxTokens.toLocaleString()} ({Math.round(pct * 100)}%)
           </div>
           <div className="text-[var(--text-tertiary)] space-y-0.5">
             <div>Input: {usage.inputTokens.toLocaleString()}</div>

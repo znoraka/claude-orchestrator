@@ -155,6 +155,8 @@ struct SessionMeta {
     model: Option<String>,
     #[serde(default, rename = "planContent", skip_serializing_if = "Option::is_none")]
     plan_content: Option<String>,
+    #[serde(default, rename = "parentSessionId", skip_serializing_if = "Option::is_none")]
+    parent_session_id: Option<String>,
 }
 
 fn sessions_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {

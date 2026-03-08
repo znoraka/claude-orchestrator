@@ -10,6 +10,7 @@ interface SidebarProps {
   activeSessionId: string | null;
   activeWorktreePath: string | null;
   sessionUsage: Map<string, SessionUsage>;
+  youngestDescendantMap?: Map<string, Session>;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
   onCreateWorktree: (repoDir: string) => void;
@@ -49,6 +50,7 @@ export default function Sidebar({
   shellProcessDirs,
   unreadSessions,
   worktreeBranches,
+  youngestDescendantMap,
 }: SidebarProps) {
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -82,6 +84,22 @@ export default function Sidebar({
     () => workspaces.flatMap((w) => w.worktrees.flatMap((wt) => wt.sessions)),
     [workspaces]
   );
+
+  // Parent/child fork maps for SessionTab indicators
+  const { parentNameMap, childCountMap } = useMemo(() => {
+    const nameMap = new Map<string, string>();
+    for (const s of allSessions) nameMap.set(s.id, s.name);
+
+    const pMap = new Map<string, string>(); // child id → parent name
+    const cMap = new Map<string, number>(); // parent id → child count
+    for (const s of allSessions) {
+      if (s.parentSessionId) {
+        pMap.set(s.id, nameMap.get(s.parentSessionId) || "Unknown");
+        cMap.set(s.parentSessionId, (cMap.get(s.parentSessionId) || 0) + 1);
+      }
+    }
+    return { parentNameMap: pMap, childCountMap: cMap };
+  }, [allSessions]);
 
   useEffect(() => {
     const q = filter.trim();
@@ -154,7 +172,7 @@ export default function Sidebar({
 
   // Date-grouped view
   const dateGroupedSessions = useMemo(() => {
-    let sessions = allSessions;
+    let sessions = allSessions.filter((s) => !s.parentSessionId || s.id === activeSessionId);
     if (filterQ) sessions = sessions.filter(sessionMatchesFilter);
     const groups = new Map<string, Session[]>();
     for (const s of sessions) {
@@ -165,7 +183,7 @@ export default function Sidebar({
     // Sort sessions within each group by lastActiveAt desc
     for (const arr of groups.values()) arr.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
     return DATE_GROUP_ORDER.filter((g) => groups.has(g)).map((g) => ({ label: g, sessions: groups.get(g)! }));
-  }, [allSessions, filterQ, sessionMatchesFilter]);
+  }, [allSessions, filterQ, sessionMatchesFilter, activeSessionId]);
 
   const toggleDateGroup = (label: string) => {
     setCollapsedDateGroups((prev) => {
@@ -192,6 +210,32 @@ export default function Sidebar({
       else next.add(wtPath);
       return next;
     });
+  };
+
+  const renderSession = (session: Session, extraProps: Partial<import("./SessionTab").SessionTabProps> = {}) => {
+    // For sessions with children, show the youngest descendant's usage & status indicators
+    const youngest = youngestDescendantMap?.get(session.id);
+    const displayUsage = youngest ? sessionUsage.get(youngest.id) : sessionUsage.get(session.id);
+    const displaySession = youngest
+      ? { ...session, hasQuestion: youngest.hasQuestion, hasDraft: youngest.hasDraft, status: youngest.status }
+      : session;
+
+    return (
+      <SessionTab
+        key={session.id}
+        session={displaySession}
+        isActive={session.id === activeSessionId}
+        usage={displayUsage}
+        contentOnly={contentOnlyIds.has(session.id)}
+        unread={unreadSessions?.has(session.id)}
+        parentName={parentNameMap.get(session.id)}
+        childCount={childCountMap.get(session.id)}
+        onClick={() => onSelectSession(session.id)}
+        onRename={(name) => onRenameSession(session.id, name)}
+        onDelete={() => onDeleteSession(session.id)}
+        {...extraProps}
+      />
+    );
   };
 
 
@@ -303,16 +347,7 @@ export default function Sidebar({
                   {!isCollapsed &&
                     sessions.map((session) => (
                       <div key={session.id} className="ml-1">
-                        <SessionTab
-                          session={session}
-                          isActive={session.id === activeSessionId}
-                          usage={sessionUsage.get(session.id)}
-                          contentOnly={contentOnlyIds.has(session.id)}
-                          unread={unreadSessions?.has(session.id)}
-                          onClick={() => onSelectSession(session.id)}
-                          onRename={(name) => onRenameSession(session.id, name)}
-                          onDelete={() => onDeleteSession(session.id)}
-                        />
+                        {renderSession(session)}
                       </div>
                     ))}
                 </div>
@@ -438,8 +473,9 @@ export default function Sidebar({
                         {!isWtCollapsed && (() => {
                           const MAX_INACTIVE = 3;
                           const isExpanded = expandedWorktrees.has(wt.path);
-                          const active = wt.sessions.filter((s) => s.status === "running" || s.status === "starting");
-                          const inactive = wt.sessions.filter((s) => s.status === "stopped");
+                          const topLevel = wt.sessions.filter((s) => !s.parentSessionId || s.id === activeSessionId);
+                          const active = topLevel.filter((s) => s.status === "running" || s.status === "starting");
+                          const inactive = topLevel.filter((s) => s.status === "stopped");
                           const hasActive = active.length > 0;
                           // Show: all active + limited inactive (unless expanded or searching)
                           const showAll = isExpanded || !!filterQ;
@@ -451,17 +487,7 @@ export default function Sidebar({
                             <>
                               {visible.map((session) => (
                                 <div key={session.id} className="ml-1">
-                                  <SessionTab
-                                    session={session}
-                                    isActive={session.id === activeSessionId}
-                                    usage={sessionUsage.get(session.id)}
-                                    contentOnly={contentOnlyIds.has(session.id)}
-                                    unread={unreadSessions?.has(session.id)}
-                                    hideDirectory
-                                    onClick={() => onSelectSession(session.id)}
-                                    onRename={(name) => onRenameSession(session.id, name)}
-                                    onDelete={() => onDeleteSession(session.id)}
-                                  />
+                                  {renderSession(session, { hideDirectory: true })}
                                 </div>
                               ))}
                               {hiddenCount > 0 && (

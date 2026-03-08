@@ -54,6 +54,7 @@ export interface Session {
   exitCode?: number; // last process exit code (non-zero = error)
   hasDraft?: boolean; // true when user has typed text in the input but not sent it
   hasQuestion?: boolean; // true when the agent called AskUserQuestion and is waiting for an answer
+  parentSessionId?: string; // ID of parent session (set when forked from plan mode)
 }
 
 /** The directory where the session's JSONL was created (homeDirectory if the
