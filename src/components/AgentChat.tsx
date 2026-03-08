@@ -1994,6 +1994,21 @@ const AgentChat = memo(function AgentChat({
     return () => document.removeEventListener("paste", handler);
   }, [addImageFromFile, isActive]);
 
+  // Listen for orchestrator-commit event (Cmd+Shift+C)
+  useEffect(() => {
+    if (!isActive) return;
+    const handler = () => {
+      const hasCommitCommand = slashCommands.some((cmd) => cmd.name === "commit");
+      if (hasCommitCommand) {
+        sendMessage("/commit");
+      } else {
+        sendMessage("Look at the current git diff and create a commit with an appropriate message. Stage relevant files if needed.");
+      }
+    };
+    window.addEventListener("orchestrator-commit", handler);
+    return () => window.removeEventListener("orchestrator-commit", handler);
+  }, [isActive, slashCommands, sendMessage]);
+
   const removeImage = useCallback((id: string) => {
     setImages((prev) => prev.filter((img) => img.id !== id));
   }, []);

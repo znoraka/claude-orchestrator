@@ -894,10 +894,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const activeWorktreePath = useMemo(() => {
-    if (!activeSessionId) return null;
-    const session = sessions.find((s) => s.id === activeSessionId);
+    if (!effectiveSessionId) return null;
+    const session = sessions.find((s) => s.id === effectiveSessionId);
     return session?.directory ?? null;
-  }, [activeSessionId, sessions]);
+  }, [effectiveSessionId, sessions]);
 
   // Today's usage — refreshed on JSONL file changes + a slow fallback interval
   const [todayCost, setTodayCost] = useState(0);

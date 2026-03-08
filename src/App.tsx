@@ -296,8 +296,8 @@ export default function App() {
   }, []);
 
   const activeSession = useMemo(
-    () => sessions.find((s) => s.id === activeSessionId) ?? null,
-    [sessions, activeSessionId]
+    () => sessions.find((s) => s.id === effectiveSessionId) ?? null,
+    [sessions, effectiveSessionId]
   );
 
   const activeProvider: AgentProvider = activeSession?.provider || "claude-code";
@@ -411,6 +411,10 @@ export default function App() {
       if (e.metaKey && e.key === "j") {
         e.preventDefault();
         setActivePanel(null);
+      }
+      if (e.metaKey && e.shiftKey && e.key === "c") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("orchestrator-commit"));
       }
     };
     document.addEventListener("keydown", handleKeyDown);
