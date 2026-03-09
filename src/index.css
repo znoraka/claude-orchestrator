@@ -121,8 +121,8 @@ input:focus-visible, textarea:focus-visible {
 }
 
 @keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 4px rgba(240, 120, 48, 0.2); }
-  50% { box-shadow: 0 0 12px rgba(240, 120, 48, 0.4); }
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
 }
 .animate-pulse-glow {
   animation: pulse-glow 2s ease-in-out infinite;

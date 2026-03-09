@@ -99,10 +99,11 @@ export default memo(function SessionTab({
   const hasQuestion = session.hasQuestion && isRunning;
   const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
   const hasDraft = session.hasDraft && isRunning;
+  const isDone = session.status === "stopped" && (session.exitCode === undefined || session.exitCode === 0);
 
   // Row-level background tints for attention states
   const rowBg = hasQuestion
-    ? "bg-orange-500/8"
+    ? "bg-orange-500/12 animate-pulse-glow"
     : hasError
     ? "bg-red-500/5"
     : isActive
@@ -117,8 +118,10 @@ export default memo(function SessionTab({
         rounded-md transition-colors
         ${rowBg}
         ${isActive
-          ? "border-l-2 border-[var(--accent)] text-[var(--text-primary)]"
-          : "border-l-2 border-transparent text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+          ? "shadow-[inset_2px_0_0_var(--accent)] text-[var(--text-primary)]"
+          : hasQuestion
+          ? "shadow-[inset_2px_0_0_rgb(251,146,60)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+          : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
         }
       `}
     >

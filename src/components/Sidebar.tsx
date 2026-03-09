@@ -291,7 +291,7 @@ export default function Sidebar({
                 <button
                   onClick={() => toggleRepo(workspace.id)}
                   className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left bg-[var(--bg-tertiary)]/60 hover:bg-[var(--bg-tertiary)] transition-colors group"
-                  style={{ borderLeft: `3px solid ${color}` }}
+                  style={{ boxShadow: `inset 3px 0 0 ${color}` }}
                 >
                   <svg
                     className={`w-2.5 h-2.5 shrink-0 text-[var(--text-tertiary)] transition-transform ${
