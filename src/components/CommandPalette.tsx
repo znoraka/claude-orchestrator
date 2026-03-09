@@ -436,9 +436,9 @@ export default function CommandPalette({
                           </span>
                         )}
                         {session.name}
-                        {session.provider && session.provider !== "claude-code" && (
+                        {session.provider && (
                           <span className="ml-1.5 text-[9px] px-1 py-px rounded bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] uppercase tracking-wider font-semibold align-middle">
-                            {session.provider === "opencode" ? "OC" : session.provider}
+                            {session.provider === "opencode" ? "OC" : session.provider === "claude-code" ? "CC" : session.provider}
                           </span>
                         )}
                       </span>

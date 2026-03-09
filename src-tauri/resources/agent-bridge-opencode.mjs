@@ -172,6 +172,7 @@ let server;
 let bootPromise; // resolves when boot() completes successfully
 let ocSessionId = null; // OpenCode session ID
 let currentMessageId = null; // assistant message being streamed
+let currentReasoningEffort = null;
 let idleTimer = null; // debounce timer for query_complete
 
 // Track user message IDs so we don't emit their parts as assistant content
@@ -333,9 +334,7 @@ function handleEvent(event) {
         // Emit cost/usage info if the message has completed
         if (info.time?.completed) {
           emit({
-            type: "result",
-            subtype: "result",
-            result: "",
+            type: "usage",
             cost_usd: info.cost || 0,
             usage: {
               input_tokens: info.tokens?.input || 0,
@@ -411,22 +410,8 @@ function handleEvent(event) {
     }
 
     case "message.part.removed": {
-      // A part was removed — emit an empty block to clear it in the UI.
-      // The frontend's block accumulator will replace the existing block with empty content.
       const part = props.part;
       if (!part) break;
-      const msgId = part.messageID || currentMessageId || `msg-${Date.now()}`;
-      // Emit empty text to effectively clear the removed part
-      emit({
-        type: "assistant",
-        message: {
-          id: msgId,
-          role: "assistant",
-          content: [{ type: "text", text: "" }],
-          model: "",
-          stop_reason: null,
-        },
-      });
       partsById.delete(part.id);
       break;
     }
@@ -789,6 +774,13 @@ async function handleStdinMessage(msg) {
     return;
   }
 
+  if (msg.type === "set_reasoning_effort") {
+    currentReasoningEffort = msg.effort || null;
+    log(`reasoning effort updated to: ${currentReasoningEffort}`);
+    emit({ type: "reasoning_effort_updated", effort: currentReasoningEffort });
+    return;
+  }
+
   if (msg.type === "get_usage") {
     // Query the OpenCode server for usage/session status info
     try {
@@ -876,6 +868,12 @@ async function sendPrompt(userMessage) {
       if (config.systemPrompt) parts.push(config.systemPrompt);
       if (currentPermissionMode === "plan") parts.push(PLAN_MODE_SYSTEM_PROMPT);
       if (parts.length > 0) promptBody.system = parts.join("\n\n");
+    }
+
+    // Include reasoning effort / variant if set
+    if (currentReasoningEffort) {
+      promptBody.variant = currentReasoningEffort;
+      log(`Using reasoning effort variant: ${currentReasoningEffort}`);
     }
 
     // Include model selection if set

@@ -1821,9 +1821,7 @@ if (config.mode === "list-models") {
           currentMessageId = info.id;
           if (info.time?.completed) {
             emit({
-              type: "result",
-              subtype: "result",
-              result: "",
+              type: "usage",
               cost_usd: info.cost || 0,
               usage: {
                 input_tokens: info.tokens?.input || 0,
@@ -1884,17 +1882,6 @@ if (config.mode === "list-models") {
       case "message.part.removed": {
         const part = props.part;
         if (!part) break;
-        const msgId = part.messageID || currentMessageId || `msg-${Date.now()}`;
-        emit({
-          type: "assistant",
-          message: {
-            id: msgId,
-            role: "assistant",
-            content: [{ type: "text", text: "" }],
-            model: "",
-            stop_reason: null
-          }
-        });
         partsById.delete(part.id);
         break;
       }
@@ -2088,6 +2075,7 @@ if (config.mode === "list-models") {
   let bootPromise;
   let ocSessionId = null;
   let currentMessageId = null;
+  let currentReasoningEffort = null;
   let idleTimer = null;
   const userMessageIds = /* @__PURE__ */ new Set();
   const partsById = /* @__PURE__ */ new Map();
@@ -2300,6 +2288,12 @@ if (config.mode === "list-models") {
       emit({ type: "model_updated", model: config.model });
       return;
     }
+    if (msg.type === "set_reasoning_effort") {
+      currentReasoningEffort = msg.effort || null;
+      log(`reasoning effort updated to: ${currentReasoningEffort}`);
+      emit({ type: "reasoning_effort_updated", effort: currentReasoningEffort });
+      return;
+    }
     if (msg.type === "get_usage") {
       try {
         await bootPromise;
@@ -2368,6 +2362,10 @@ if (config.mode === "list-models") {
         if (config.systemPrompt) parts.push(config.systemPrompt);
         if (currentPermissionMode === "plan") parts.push(PLAN_MODE_SYSTEM_PROMPT);
         if (parts.length > 0) promptBody.system = parts.join("\n\n");
+      }
+      if (currentReasoningEffort) {
+        promptBody.variant = currentReasoningEffort;
+        log(`Using reasoning effort variant: ${currentReasoningEffort}`);
       }
       if (config.model) {
         const slash = config.model.indexOf("/");

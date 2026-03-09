@@ -20,6 +20,7 @@ export function useConversationTitles(
 ) {
   const smartStateRef = useRef<Map<string, TitleState>>(new Map());
   const smartPendingRef = useRef<Set<string>>(new Set());
+  const retryCountRef = useRef<Map<string, number>>(new Map());
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const appVisible = useAppVisible();
@@ -77,10 +78,21 @@ export function useConversationTitles(
             renameSession(session.id, title);
             markTitleGenerated(session.id);
             smartStateRef.current.set(session.id, { titled: true });
+          } else {
+            const count = (retryCountRef.current.get(session.id) ?? 0) + 1;
+            retryCountRef.current.set(session.id, count);
+            if (count >= 3) {
+              smartStateRef.current.set(session.id, { titled: true });
+            }
           }
         })
         .catch(() => {
           smartPendingRef.current.delete(session.id);
+          const count = (retryCountRef.current.get(session.id) ?? 0) + 1;
+          retryCountRef.current.set(session.id, count);
+          if (count >= 3) {
+            smartStateRef.current.set(session.id, { titled: true });
+          }
         });
     };
 

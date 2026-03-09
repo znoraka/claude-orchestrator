@@ -339,11 +339,6 @@ input:focus-visible, textarea:focus-visible {
   padding: 0.25rem 0.5rem;
 }
 
-/* Thinking blocks — OpenCode-style inline "Thinking:" label */
-.thinking-block .prose-agent > :first-child > em:first-child {
-  color: #d97706;
-  font-style: italic;
-}
 
 /* Image strip (thumbnail bar above terminal bottom) */
 .image-strip {

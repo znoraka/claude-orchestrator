@@ -947,17 +947,29 @@ const AgentChat = memo(function AgentChat({
 
       // Phase 0: Load parent conversation for forked sessions
       let parentMessages: ChatMessage[] = [];
-      if (parentSession?.claudeSessionId && parentSession.directory) {
-        try {
-          const parentLines = await invoke<string[]>("get_conversation_jsonl", {
-            claudeSessionId: parentSession.claudeSessionId,
-            directory: parentSession.directory,
-          });
-          if (parentLines.length > 0) {
-            const parsed = await parseHistoryLines(parentLines, sdkMessageToChatMessage);
-            parentMessages = parsed.map(m => ({ ...m, id: `parent-${m.id}`, isParentMessage: true }));
-          }
-        } catch {}
+      if (parentSession) {
+        if (parentSession.claudeSessionId && parentSession.directory) {
+          try {
+            const parentLines = await invoke<string[]>("get_conversation_jsonl", {
+              claudeSessionId: parentSession.claudeSessionId,
+              directory: parentSession.directory,
+            });
+            if (parentLines.length > 0) {
+              const parsed = await parseHistoryLines(parentLines, sdkMessageToChatMessage);
+              parentMessages = parsed.map(m => ({ ...m, id: `parent-${m.id}`, isParentMessage: true }));
+            }
+          } catch {}
+        }
+        // Fallback: load from agent history (OpenCode sessions don't write Claude JSONL files)
+        if (parentMessages.length === 0) {
+          try {
+            const histLines = await invoke<string[]>("get_agent_history", { sessionId: parentSession.id });
+            if (histLines.length > 0) {
+              const parsed = await parseHistoryLines(histLines, sdkMessageToChatMessage);
+              parentMessages = parsed.map(m => ({ ...m, id: `parent-${m.id}`, isParentMessage: true }));
+            }
+          } catch {}
+        }
       }
 
       // Helper: filter out fork-context system prompt from child messages when parent is loaded
@@ -1065,12 +1077,22 @@ const AgentChat = memo(function AgentChat({
       // Phase 3: Load child session messages (for parent sessions with forked children)
       if (childSessions && childSessions.length > 0) {
         for (const child of childSessions) {
-          if (!child.claudeSessionId || !child.directory) continue;
           try {
-            const childLines = await invoke<string[]>("get_conversation_jsonl", {
-              claudeSessionId: child.claudeSessionId,
-              directory: child.directory,
-            });
+            let childLines: string[] = [];
+            if (child.claudeSessionId && child.directory) {
+              try {
+                childLines = await invoke<string[]>("get_conversation_jsonl", {
+                  claudeSessionId: child.claudeSessionId,
+                  directory: child.directory,
+                });
+              } catch {}
+            }
+            // Fallback: agent history for OpenCode child sessions
+            if (childLines.length === 0) {
+              try {
+                childLines = await invoke<string[]>("get_agent_history", { sessionId: child.id });
+              } catch {}
+            }
             if (!mountedRef.current) return;
             if (childLines.length > 0) {
               const parsed = await parseHistoryLines(childLines, sdkMessageToChatMessage);
@@ -1276,6 +1298,27 @@ const AgentChat = memo(function AgentChat({
       return;
     }
 
+    // Usage-only update (OpenCode mid-turn completions — no stop)
+    if (msgType === "usage") {
+      const result = msg as Record<string, unknown>;
+      const resultUsage = result.usage as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
+      if (resultUsage) {
+        const inp = resultUsage.input_tokens || 0;
+        const out = resultUsage.output_tokens || 0;
+        const cr = resultUsage.cache_read_input_tokens || 0;
+        const cc = resultUsage.cache_creation_input_tokens || 0;
+        const acc = accumulatedUsageRef.current;
+        acc.inputTokens += inp;
+        acc.outputTokens += out;
+        acc.cacheReadInputTokens += cr;
+        acc.cacheCreationInputTokens += cc;
+        acc.contextTokens = inp + cr + cc;
+        acc.costUsd += (result.cost_usd as number) || 0;
+        onUsageUpdateRef.current?.({ ...acc, isBusy: true });
+      }
+      return;
+    }
+
     // Result message
     if (msgType === "result") {
       stopGenerating();
@@ -1328,6 +1371,7 @@ const AgentChat = memo(function AgentChat({
       setCurrentTodo(null);
       setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
+      onUsageUpdateRef.current?.({ ...accumulatedUsageRef.current, isBusy: false });
       // Restore plan mode for next message (may have been switched to bypass by auto-classify)
       if (session?.permissionMode === "plan") {
         const restoreMsg = JSON.stringify({ type: "set_permission_mode", permissionMode: "plan" });
@@ -2641,6 +2685,8 @@ const MessageBubble = memo(function MessageBubble({
   planContent?: string;
   onNavigateToSession?: (sessionId: string) => void;
 }) {
+  const [copied, setCopied] = useState(false);
+
   // Defensive: ensure content is always an array (API can return string)
   const content = Array.isArray(message.content)
     ? message.content
@@ -2714,14 +2760,20 @@ const MessageBubble = memo(function MessageBubble({
             {/* Copy */}
             {onCopy && (
               <button
-                onClick={() => onCopy(message.id)}
+                onClick={() => { onCopy(message.id); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
                 className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
                 title="Copy message"
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                </svg>
+                {copied ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                )}
               </button>
             )}
           </div>
@@ -3093,6 +3145,38 @@ function ImageWithLightbox({ src, thumbnail }: { src: string; thumbnail?: boolea
   );
 }
 
+// ── Thinking block (collapsible) ───────────────────────────────────
+
+function ThinkingBlock({ thinking }: { thinking: string }) {
+  const [open, setOpen] = useState(false);
+  const summary = thinking.replace(/\s+/g, " ").trim().slice(0, 100);
+  return (
+    <div className="border border-[var(--border-color)] rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
+      >
+        <svg
+          className={`w-3 h-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
+          viewBox="0 0 24 24"
+          fill="currentColor"
+        >
+          <path d="M9 18l6-6-6-6" />
+        </svg>
+        <span className="text-xs font-medium text-sky-400">Thinking</span>
+        {!open && summary && (
+          <span className="text-xs text-[var(--text-tertiary)] truncate flex-1 font-mono">{summary}</span>
+        )}
+      </button>
+      {open && (
+        <div className="border-t border-[var(--border-color)] bg-[var(--bg-secondary)] max-h-96 overflow-y-auto px-3 py-2">
+          <MarkdownContent text={thinking} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Content block rendering ────────────────────────────────────────
 
 function ContentBlockView({ block }: { block: ContentBlock }) {
@@ -3101,20 +3185,7 @@ function ContentBlockView({ block }: { block: ContentBlock }) {
   }
 
   if (block.type === "thinking" && block.thinking) {
-    const text = block.thinking.trimStart();
-    const headingMatch = text.match(/^(#{1,3})\s+(.*)/);
-    let prefixed: string;
-    if (headingMatch) {
-      const rest = text.indexOf("\n") >= 0 ? text.slice(text.indexOf("\n")) : "";
-      prefixed = `${headingMatch[1]} *Thinking:* ${headingMatch[2]}${rest}`;
-    } else {
-      prefixed = `*Thinking:* ${text}`;
-    }
-    return (
-      <div className="thinking-block">
-        <MarkdownContent text={prefixed} />
-      </div>
-    );
+    return <ThinkingBlock thinking={block.thinking} />;
   }
 
   if (block.type === "image" && block.source) {

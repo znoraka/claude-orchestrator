@@ -92,7 +92,7 @@ const SessionPanel = memo(function SessionPanel({
   const handleQuestionChange = useCallback((hasQuestion: boolean) => setSessionQuestion(session.id, hasQuestion), [session.id, setSessionQuestion]);
   const handleClaudeSessionId = useCallback((claudeSessionId: string) => updateClaudeSessionId(session.id, claudeSessionId), [session.id, updateClaudeSessionId]);
   const handleResume = useCallback(() => restartSession(session.id), [session.id, restartSession]);
-  const handleFork = useCallback((systemPrompt: string) => createSession(`Fork of ${session.name}`, session.directory, session.dangerouslySkipPermissions, systemPrompt, undefined, undefined, undefined, undefined, undefined, session.id), [session.name, session.directory, session.dangerouslySkipPermissions, session.id, createSession]);
+  const handleFork = useCallback((systemPrompt: string) => createSession(`Fork of ${session.name}`, session.directory, session.dangerouslySkipPermissions, systemPrompt), [session.name, session.directory, session.dangerouslySkipPermissions, createSession]);
   const handleForkWithPrompt = useCallback((systemPrompt: string, pendingPrompt: string, planContent?: string) => createSession(`Execute: ${session.name}`, session.directory, false, systemPrompt, pendingPrompt, session.provider, session.model, "bypassPermissions", planContent, session.id), [session.name, session.directory, session.provider, session.model, session.id, createSession]);
   const handleRename = useCallback((name: string) => renameSession(session.id, name), [session.id, renameSession]);
   const handleMarkTitleGenerated = useCallback(() => markTitleGenerated(session.id), [session.id, markTitleGenerated]);

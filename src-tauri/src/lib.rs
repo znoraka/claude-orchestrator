@@ -1614,20 +1614,9 @@ async fn generate_smart_title(
         None => return Ok(None),
     };
 
-    // Build body with text and optional images
     let text = user_msg.get("text").and_then(|t| t.as_str()).unwrap_or("");
-    let images = user_msg.get("images").and_then(|i| i.as_array());
-    let body = if let Some(imgs) = images {
-        if imgs.is_empty() {
-            serde_json::json!({ "message": text })
-        } else {
-            serde_json::json!({ "message": text, "images": imgs })
-        }
-    } else {
-        serde_json::json!({ "message": text })
-    };
-
-    call_title_server(port, body.to_string()).await
+    let body = serde_json::json!({ "message": text }).to_string();
+    call_title_server(port, body).await
 }
 
 #[tauri::command]
@@ -1704,6 +1693,19 @@ async fn classify_prompt(
     call_classify_server(port, truncated).await
 }
 
+fn is_image_path(line: &str) -> bool {
+    let t = line.trim();
+    let has_img_prefix = t.starts_with("/var/folders/")
+        || t.starts_with("/tmp/")
+        || t.starts_with("/var/tmp/");
+    let has_img_ext = t.ends_with(".png")
+        || t.ends_with(".jpg")
+        || t.ends_with(".jpeg")
+        || t.ends_with(".gif")
+        || t.ends_with(".webp");
+    has_img_prefix && has_img_ext
+}
+
 fn extract_first_user_message(claude_session_id: &str, directory: &str) -> Result<Option<serde_json::Value>, String> {
     let jsonl_path = jsonl_path_for(claude_session_id, directory)?;
 
@@ -1729,12 +1731,20 @@ fn extract_first_user_message(claude_session_id: &str, directory: &str) -> Resul
                     .get("message")
                     .and_then(|m| m.get("content"))
                 {
-                    // Collect text and image blocks from content
+                    // Collect text blocks only; images are not sent to the title server
                     let mut texts = Vec::new();
-                    let mut images = Vec::new();
+                    let mut has_images = false;
 
                     if let Some(s) = content.as_str() {
-                        texts.push(s.to_string());
+                        let filtered: Vec<&str> = s.lines()
+                            .filter(|line| !is_image_path(line))
+                            .collect();
+                        let filtered_text = filtered.join("\n");
+                        if !filtered_text.is_empty() {
+                            texts.push(filtered_text);
+                        } else if s.lines().any(is_image_path) {
+                            has_images = true;
+                        }
                     } else if let Some(arr) = content.as_array() {
                         for block in arr {
                             let block_type = block.get("type").and_then(|t| t.as_str());
@@ -1743,10 +1753,7 @@ fn extract_first_user_message(claude_session_id: &str, directory: &str) -> Resul
                                     texts.push(text.to_string());
                                 }
                             } else if block_type == Some("image") {
-                                // Preserve full image block (limit to 3)
-                                if images.len() < 3 {
-                                    images.push(block.clone());
-                                }
+                                has_images = true;
                             }
                         }
                     }
@@ -1755,15 +1762,15 @@ fn extract_first_user_message(claude_session_id: &str, directory: &str) -> Resul
                     if combined_text.starts_with("<command-message>") {
                         continue;
                     }
-                    if combined_text.is_empty() && images.is_empty() {
-                        continue;
-                    }
 
-                    let truncated: String = combined_text.chars().take(500).collect();
-                    return Ok(Some(serde_json::json!({
-                        "text": truncated,
-                        "images": images
-                    })));
+                    // Use placeholder when message is image-only
+                    let text = if combined_text.is_empty() {
+                        if has_images { "[Image]".to_string() } else { continue; }
+                    } else {
+                        combined_text.chars().take(500).collect()
+                    };
+
+                    return Ok(Some(serde_json::json!({ "text": text })));
                 }
             }
         }

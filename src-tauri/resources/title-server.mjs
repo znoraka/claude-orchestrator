@@ -115,9 +115,30 @@ async function runSdkQuery(systemPrompt, userMessage) {
   }
 }
 
+const BAD_TITLE_PHRASES = [
+  "ready to generate",
+  "provide a user message",
+  "i'll read",
+  "i will read",
+  "cannot generate",
+  "no user message",
+  "please provide",
+  "let me read",
+];
+
 async function generateTitle(userMessage) {
   log(`Calling SDK query() for title generation`);
-  return await runSdkQuery(TITLE_SYSTEM_PROMPT, userMessage);
+  const raw = await runSdkQuery(TITLE_SYSTEM_PROMPT, userMessage);
+  const lower = raw.toLowerCase();
+  if (BAD_TITLE_PHRASES.some((p) => lower.includes(p))) {
+    log(`Discarding bad title: ${raw}`);
+    return "";
+  }
+  if (raw.split(/\s+/).length > 12) {
+    log(`Discarding too-long title: ${raw}`);
+    return "";
+  }
+  return raw;
 }
 
 async function classifyPrompt(userMessage) {

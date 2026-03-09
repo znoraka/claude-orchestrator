@@ -778,8 +778,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }
       }
     }
+    // Force stopped sessions to never appear busy
+    for (const s of sessions) {
+      if (s.status === "stopped") {
+        const existing = merged.get(s.id);
+        if (existing?.isBusy) {
+          merged.set(s.id, { ...existing, isBusy: false });
+        }
+      }
+    }
     return merged;
-  }, [jsonlUsage, agentBusyMap, agentUsageMap]);
+  }, [jsonlUsage, agentBusyMap, agentUsageMap, sessions]);
 
   useBackgroundNotifications(sessions, sessionUsage, activeSessionId);
 
@@ -852,6 +861,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       for (const id of prev) {
         if (currentIds.has(id)) next.add(id);
       }
+      return next;
+    });
+  }, [sessions]);
+
+  // Clear unread for stopped sessions (e.g. killed by session limit)
+  useEffect(() => {
+    const stoppedIds = sessions.filter(s => s.status === "stopped").map(s => s.id);
+    if (stoppedIds.length === 0) return;
+    setUnreadSessions((prev) => {
+      let changed = false;
+      for (const id of stoppedIds) {
+        if (prev.has(id)) { changed = true; break; }
+      }
+      if (!changed) return prev;
+      const next = new Set(prev);
+      for (const id of stoppedIds) next.delete(id);
       return next;
     });
   }, [sessions]);
