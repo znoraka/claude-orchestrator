@@ -99,7 +99,6 @@ export default memo(function SessionTab({
   const hasQuestion = session.hasQuestion && isRunning;
   const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
   const hasDraft = session.hasDraft && isRunning;
-  const isDone = session.status === "stopped" && (session.exitCode === undefined || session.exitCode === 0);
 
   // Row-level background tints for attention states
   const rowBg = hasQuestion

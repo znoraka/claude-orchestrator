@@ -16,6 +16,7 @@ interface CommandPaletteProps {
   onOpenUsage: () => void;
   onOpenPRs: () => void;
   onOpenShell: () => void;
+  unreadSessions?: Set<string>;
 }
 
 interface ResultItem {
@@ -29,6 +30,7 @@ interface ResultItem {
   // SessionTab-style data
   parentName?: string;
   childCount?: number;
+  unread?: boolean;
 }
 
 const DATE_GROUP_ORDER = ["Today", "Yesterday", "This Week", "This Month", "Older"];
@@ -84,6 +86,7 @@ export default function CommandPalette({
   onOpenUsage,
   onOpenPRs,
   onOpenShell,
+  unreadSessions,
 }: CommandPaletteProps) {
   void _workspaces;
   const [query, setQuery] = useState("");
@@ -197,6 +200,7 @@ export default function CommandPalette({
           usage: displayUsage,
           parentName: parentNameMap.get(s.id),
           childCount: childCountMap.get(s.id),
+          unread: unreadSessions?.has(s.id),
         });
       }
     }
@@ -210,7 +214,7 @@ export default function CommandPalette({
     }
 
     return items;
-  }, [query, sessions, commands, activeSessionId, sessionUsage, youngestDescendantMap, parentNameMap, childCountMap]);
+  }, [query, sessions, commands, activeSessionId, sessionUsage, youngestDescendantMap, parentNameMap, childCountMap, unreadSessions]);
 
   useEffect(() => {
     setSelectedIndex((i) => Math.min(i, Math.max(0, results.length - 1)));
@@ -382,15 +386,22 @@ export default function CommandPalette({
                 const hasQuestion = session.hasQuestion && isRunning;
                 const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
                 const hasDraft = session.hasDraft && isRunning;
+                const unread = item.unread;
+
+                const rowBg = hasQuestion
+                  ? "bg-orange-500/12 animate-pulse-glow"
+                  : hasError
+                  ? "bg-red-500/5"
+                  : "";
 
                 return (
                   <div
                     key={item.id}
                     data-index={gi}
                     onClick={() => executeItem(item)}
-                    className="mx-1 flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 my-px transition-colors"
+                    className={`mx-1 flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 my-px transition-colors ${rowBg}`}
                     style={{
-                      background: isSelected ? "var(--accent-muted)" : "transparent",
+                      background: isSelected ? "var(--accent-muted)" : undefined,
                       borderLeft: isSelected ? "2px solid var(--accent)" : "2px solid transparent",
                     }}
                   >
@@ -410,6 +421,8 @@ export default function CommandPalette({
                         <svg className="w-2.5 h-2.5 text-blue-400" viewBox="0 0 16 16" fill="currentColor">
                           <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.25.25 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z" />
                         </svg>
+                      ) : unread ? (
+                        <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />
                       ) : null}
                     </span>
 

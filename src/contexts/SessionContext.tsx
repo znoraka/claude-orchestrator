@@ -357,7 +357,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     ) => {
       const dir = normalizeDir(directory);
       const id = uuidv4();
-      const claudeSessionId = uuidv4();
       const now = Date.now();
       const sessionCount = sessionsRef.current.length;
       const session: Session = {
@@ -370,7 +369,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         directory: dir,
         provider,
         model: model || undefined,
-        claudeSessionId,
         dangerouslySkipPermissions,
         permissionMode,
         pendingPrompt,
@@ -396,7 +394,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         await invoke("create_agent_session", {
           sessionId: id,
           directory: dir,
-          claudeSessionId,
+          claudeSessionId: null,
           resume: false,
           systemPrompt: extraSystemPrompt || null,
           provider,

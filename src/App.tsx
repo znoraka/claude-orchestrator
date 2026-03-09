@@ -1267,6 +1267,7 @@ export default function App() {
         onOpenUsage={() => setShowUsagePanel(true)}
         onOpenPRs={() => togglePanel("prs")}
         onOpenShell={() => togglePanel("shell")}
+        unreadSessions={unreadSessions}
       />
 
       {/* Worktree creation dialog */}
