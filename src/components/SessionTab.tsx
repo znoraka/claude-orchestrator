@@ -147,47 +147,49 @@ export default memo(function SessionTab({
 
       {/* Name + details */}
       <div className="flex-1 min-w-0">
-        {isEditing ? (
-          <input
-            ref={inputRef}
-            value={editName}
-            onChange={(e) => setEditName(e.target.value)}
-            onBlur={handleSubmitRename}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleSubmitRename();
-              if (e.key === "Escape") setIsEditing(false);
-            }}
-            className="bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-1.5 py-0.5 text-xs w-full outline-none focus:border-[var(--accent)]"
-            onClick={(e) => e.stopPropagation()}
-          />
-        ) : (
-          <span
-            className={`text-xs truncate block leading-snug ${
-              isActive || unread ? "font-medium text-[var(--text-primary)]" : ""
-            }`}
-            onDoubleClick={(e) => {
-              e.stopPropagation();
-              setEditName(session.name);
-              setIsEditing(true);
-            }}
-          >
-            {session.name}
-            {childCount !== undefined && childCount > 0 && (
-              <span className="inline-flex items-center gap-0.5 ml-1.5 text-[9px] px-1 py-px rounded bg-blue-500/15 text-blue-400 font-medium align-middle"
-                    title={`${childCount} execution session${childCount !== 1 ? "s" : ""}`}>
-                <svg className="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75v-.878a2.25 2.25 0 1 1 1.5 0v.878a2.25 2.25 0 0 1-2.25 2.25h-1.5v2.128a2.251 2.251 0 1 1-1.5 0V8.5h-1.5A2.25 2.25 0 0 1 3.5 6.25v-.878a2.25 2.25 0 1 1 1.5 0Z" />
-                </svg>
-                {childCount}
-              </span>
-            )}
-            {contentOnly && (
-              <span className="ml-1.5 text-[9px] px-1 py-px rounded bg-[var(--accent)]/10 text-[var(--accent)] font-medium align-middle">
-                match
-              </span>
-            )}
-          </span>
-        )}
+        <div className="flex items-center gap-1 min-w-0">
+          {isEditing ? (
+            <input
+              ref={inputRef}
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              onBlur={handleSubmitRename}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSubmitRename();
+                if (e.key === "Escape") setIsEditing(false);
+              }}
+              className="bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-1.5 py-0.5 text-xs w-full outline-none focus:border-[var(--accent)]"
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <span
+              className={`text-xs truncate leading-snug ${
+                isActive || unread ? "font-medium text-[var(--text-primary)]" : ""
+              }`}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                setEditName(session.name);
+                setIsEditing(true);
+              }}
+            >
+              {session.name}
+            </span>
+          )}
+          {childCount !== undefined && childCount > 0 && (
+            <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] px-1 py-px rounded bg-blue-500/15 text-blue-400 font-medium"
+                  title={`${childCount} execution session${childCount !== 1 ? "s" : ""}`}>
+              <svg className="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75v-.878a2.25 2.25 0 1 1 1.5 0v.878a2.25 2.25 0 0 1-2.25 2.25h-1.5v2.128a2.251 2.251 0 1 1-1.5 0V8.5h-1.5A2.25 2.25 0 0 1 3.5 6.25v-.878a2.25 2.25 0 1 1 1.5 0Z" />
+              </svg>
+              {childCount}
+            </span>
+          )}
+          {contentOnly && (
+            <span className="shrink-0 text-[9px] px-1 py-px rounded bg-[var(--accent)]/10 text-[var(--accent)] font-medium">
+              match
+            </span>
+          )}
+        </div>
 
         {/* Parent name — visible when active */}
         {isActive && parentName && (
