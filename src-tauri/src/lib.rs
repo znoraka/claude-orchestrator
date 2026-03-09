@@ -3635,6 +3635,23 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let state = window.app_handle().state::<AppState>();
+                if let Ok(mgr) = state.pty_manager.lock() {
+                    mgr.kill_all();
+                }
+                if let Ok(mgr) = state.agent_manager.lock() {
+                    mgr.kill_all();
+                }
+                if let Ok(mut child) = state._title_server_child.lock() {
+                    if let Some(mut c) = child.take() {
+                        let _ = c.kill();
+                    }
+                }
+                window.app_handle().exit(0);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             create_shell_pty_session,
             pty_has_child_process,

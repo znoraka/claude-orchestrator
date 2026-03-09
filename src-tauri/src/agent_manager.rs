@@ -231,6 +231,14 @@ impl AgentManager {
     }
 
     /// Kill the bridge process and clean up.
+    pub fn kill_all(&self) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            for (_id, mut session) in sessions.drain() {
+                let _ = session.child.kill();
+            }
+        }
+    }
+
     pub fn destroy_session(&self, session_id: &str) -> Result<(), String> {
         let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         if let Some(mut session) = sessions.remove(session_id) {

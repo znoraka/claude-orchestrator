@@ -255,6 +255,12 @@ impl PtyManager {
     }
 
     #[allow(dead_code)]
+    pub fn kill_all(&self) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.drain();
+        }
+    }
+
     pub fn destroy_session(&self, session_id: &str) -> Result<(), String> {
         let mut sessions = self
             .sessions
