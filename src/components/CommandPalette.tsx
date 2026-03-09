@@ -141,7 +141,7 @@ export default function CommandPalette({
     }
 
     // Filter out child sessions (like sidebar's by-date tab)
-    let filtered = sessions.filter((s) => !s.parentSessionId || s.id === activeSessionId);
+    let filtered = sessions.filter((s) => !s.parentSessionId);
 
     if (isStatusMode && search) {
       const statusMap: Record<string, (s: Session) => boolean> = {

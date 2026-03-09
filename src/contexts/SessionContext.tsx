@@ -317,7 +317,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setActiveSessionId(lastSession);
     } else {
       const wsSessions = current
-        .filter((s) => repoRootDir(s.directory || "~") === workspaceId)
+        .filter((s) => repoRootDir(s.directory || "~") === workspaceId && !s.parentSessionId)
         .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
       if (wsSessions.length > 0) {
         setActiveSessionId(wsSessions[0].id);
@@ -333,7 +333,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setActiveSessionId(lastSession);
     } else {
       const wtSessions = current
-        .filter((s) => (s.directory || "~") === worktreePath)
+        .filter((s) => (s.directory || "~") === worktreePath && !s.parentSessionId)
         .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
       if (wtSessions.length > 0) {
         setActiveSessionId(wtSessions[0].id);
@@ -427,7 +427,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setActiveSessionId((prev) => {
         if (prev !== id) return prev;
         const remaining = sessionsRef.current
-          .filter((s) => s.id !== id)
+          .filter((s) => s.id !== id && !s.parentSessionId)
           .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
         return remaining.length > 0 ? remaining[0].id : null;
       });
@@ -481,7 +481,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           ...(!session.claudeSessionId ? { claudeSessionId } : {}),
         },
       });
-      setActiveSessionId(id);
+      // Always resolve to root so sidebar never shows a child as top-level
+      const root = getRootSession(id, sessionsRef.current);
+      setActiveSessionId(root.id);
 
       // When resuming a worktree session, use the original (home) directory
       // so Claude CLI can find the JSONL in the correct project folder.
@@ -645,7 +647,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         if (!otherInOldWs) activeSessionInWorkspace.current.delete(oldWsId);
       }
 
-      setActiveSessionId(fromSessionId);
+      // Always resolve to root so sidebar never shows a child as top-level
+      const rootSession = getRootSession(fromSessionId, sessionsRef.current);
+      setActiveSessionId(rootSession.id);
     });
 
     return () => {

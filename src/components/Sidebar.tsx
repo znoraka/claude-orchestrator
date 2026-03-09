@@ -391,7 +391,7 @@ export default function Sidebar({
                         {(!isWtCollapsed || !hasMultipleWorktrees) && (() => {
                           const MAX_INACTIVE = 3;
                           const isExpanded = expandedWorktrees.has(wt.path);
-                          const topLevel = wt.sessions.filter((s) => !s.parentSessionId || s.id === activeSessionId);
+                          const topLevel = wt.sessions.filter((s) => !s.parentSessionId);
                           const showAll = isExpanded || !!filterQ;
                           let visible: Session[];
                           if (showAll) {
