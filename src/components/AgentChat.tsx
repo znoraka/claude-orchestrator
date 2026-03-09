@@ -2154,7 +2154,7 @@ const AgentChat = memo(function AgentChat({
                   message={msg}
                   toolStates={toolStates}
                   onToggleTool={toggleTool}
-                  isLastMessage={idx === deferredMessages.length - 1 && trailingMessages.length === 0}
+                  isLastMessage={isGenerating && idx === deferredMessages.length - 1 && trailingMessages.length === 0}
                   planContent={session?.planContent}
                   onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
                   onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
@@ -2169,7 +2169,7 @@ const AgentChat = memo(function AgentChat({
                   message={msg}
                   toolStates={toolStates}
                   onToggleTool={toggleTool}
-                  isLastMessage={idx === trailingMessages.length - 1}
+                  isLastMessage={isGenerating && idx === trailingMessages.length - 1}
                   planContent={session?.planContent}
                   onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
                   onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
