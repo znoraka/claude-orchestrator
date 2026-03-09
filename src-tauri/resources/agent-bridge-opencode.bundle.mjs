@@ -1669,10 +1669,77 @@ var log = (msg) => {
 var config = JSON.parse(process.argv[2] || "{}");
 var { sessionId, cwd: initialCwd, permissionMode: configPermissionMode } = config;
 var currentCwd = initialCwd;
+var PLAN_MODE_SYSTEM_PROMPT = `You are in PLAN MODE. Your job is to analyze the user's request and produce a detailed implementation plan \u2014 do NOT execute the plan.
+
+RULES:
+- You MAY read files, search code, explore the codebase, and use any read-only tools to gather context.
+- You MUST NOT make any modifications: no writing files, no editing files, no running destructive commands, no creating/deleting anything.
+- After gathering enough context, output a structured plan with:
+  1. A summary of the approach
+  2. The specific files to create or modify
+  3. Step-by-step implementation details
+  4. Any risks or considerations
+
+Think carefully, explore thoroughly, and be specific in your plan.`;
 var currentPermissionMode = configPermissionMode || "bypassPermissions";
 var permissionResolve = null;
+var askUserResolve = null;
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
+}
+var KNOWN_COSTS = [
+  // OpenAI
+  ["o1-mini", 1.1, 4.4],
+  ["o1", 15, 60],
+  ["o3-mini", 1.1, 4.4],
+  ["o3", 2, 8],
+  ["o4-mini", 1.1, 4.4],
+  ["gpt-4o-mini", 0.15, 0.6],
+  ["gpt-4o", 2.5, 10],
+  ["gpt-4.1-nano", 0.1, 0.4],
+  ["gpt-4.1-mini", 0.4, 1.6],
+  ["gpt-4.1", 2, 8],
+  // Anthropic
+  ["claude-opus-4", 15, 75],
+  ["claude-sonnet-4", 3, 15],
+  ["claude-haiku-4", 1, 5],
+  ["claude-opus-4.5", 5, 25],
+  ["claude-sonnet-4.5", 3, 15],
+  ["claude-opus-4.6", 5, 25],
+  ["claude-sonnet-4.6", 3, 15],
+  // Google
+  ["gemini-2.5-pro", 1.25, 10],
+  ["gemini-2.5-flash-lite", 0.1, 0.4],
+  ["gemini-2.5-flash", 0.3, 2.5],
+  ["gemini-2.0-flash", 0.1, 0.4],
+  ["gemini-3.1-pro", 2, 12],
+  ["gemini-3-flash", 0.5, 3],
+  // Mistral
+  ["codestral", 0.3, 0.9],
+  ["devstral", 0.4, 2],
+  ["mistral-large", 0.5, 1.5],
+  ["mistral-medium", 0.4, 2],
+  ["mistral-small", 0.35, 0.56],
+  // DeepSeek
+  ["deepseek-chat", 0.28, 0.42],
+  ["deepseek-reasoner", 0.28, 0.42],
+  // xAI
+  ["grok-4-fast", 0.2, 0.5],
+  ["grok-4", 3, 15],
+  ["grok-3-mini", 0.3, 0.5],
+  ["grok-3", 3, 15],
+  // Groq-hosted
+  ["llama-4-maverick", 0.2, 0.6],
+  ["llama-4-scout", 0.11, 0.34],
+  ["llama-3.3-70b", 0.59, 0.79],
+  ["llama-3.1-8b", 0.05, 0.08]
+];
+function lookupCost(modelId) {
+  const lower = modelId.toLowerCase();
+  for (const [pattern, costIn, costOut] of KNOWN_COSTS) {
+    if (lower.includes(pattern)) return { input: costIn, output: costOut };
+  }
+  return null;
 }
 if (config.mode === "list-models") {
   (async () => {
@@ -1682,19 +1749,20 @@ if (config.mode === "list-models") {
       const client2 = createOpencodeClient({ baseUrl: server.url, directory: process.cwd() });
       const result = await client2.provider.list();
       const providers = result.data?.all || [];
+      const connected = new Set(result.data?.connected || []);
       const models = [];
       for (const provider of providers) {
+        if (!connected.has(provider.id)) continue;
         for (const model of Object.values(provider.models || {})) {
           if (!model.capabilities?.toolcall) continue;
-          if (model.providerID !== "opencode") continue;
-          if (model.cost?.input !== 0 || model.cost?.output !== 0) continue;
+          const fallback = lookupCost(model.id);
           models.push({
             id: model.id,
             providerID: model.providerID,
             name: model.name || model.id,
-            free: true,
-            costIn: 0,
-            costOut: 0
+            free: false,
+            costIn: model.cost?.input || fallback?.input || 0,
+            costOut: model.cost?.output || fallback?.output || 0
           });
         }
       }
@@ -1784,32 +1852,33 @@ if (config.mode === "list-models") {
       case "permission.updated": {
         const permission = props;
         log(`Permission requested: ${permission.type} \u2014 ${permission.title} (mode=${currentPermissionMode})`);
-        if (currentPermissionMode === "bypassPermissions") {
-          client2.postSessionIdPermissionsPermissionId({
-            path: {
-              id: permission.sessionID,
-              permissionId: permission.id
-            },
-            body: { allow: true }
-          }).catch((err) => log(`Failed to approve permission: ${err.message}`));
-        } else {
+        const isQuestion = permission.type === "question" || permission.title === "question";
+        if (isQuestion) {
+          const questions = permission.metadata?.questions || [];
           emit({
-            type: "permission_request",
-            toolName: permission.title || permission.type || "unknown",
-            input: permission.metadata || {}
+            type: "ask_user_question",
+            questions
           });
           const sid = permission.sessionID;
           const pid = permission.id;
           new Promise((resolve) => {
-            permissionResolve = resolve;
-          }).then((allowed) => {
-            log(`Permission ${pid}: ${allowed ? "allow" : "deny"}`);
+            askUserResolve = resolve;
+          }).then((answer) => {
+            log(`Question ${pid} answered: ${JSON.stringify(answer).substring(0, 100)}`);
             client2.postSessionIdPermissionsPermissionId({
               path: { id: sid, permissionId: pid },
-              body: { allow: !!allowed }
-            }).catch((err) => log(`Failed to respond to permission: ${err.message}`));
+              body: { allow: true, answer }
+            }).catch((err) => log(`Failed to respond to question: ${err.message}`));
           });
+          break;
         }
+        client2.postSessionIdPermissionsPermissionId({
+          path: {
+            id: permission.sessionID,
+            permissionId: permission.id
+          },
+          body: { allow: true }
+        }).catch((err) => log(`Failed to approve permission: ${err.message}`));
         break;
       }
       case "message.part.removed": {
@@ -1965,7 +2034,24 @@ if (config.mode === "list-models") {
   }, emitQueryComplete = function() {
     currentMessageId = null;
     partsById.clear();
-    emit({ type: "query_complete" });
+    if (currentPermissionMode === "plan") {
+      emit({
+        type: "permission_request",
+        toolName: "ExitPlanMode",
+        input: {}
+      });
+      new Promise((resolve) => {
+        permissionResolve = resolve;
+      }).then((allowed) => {
+        if (allowed) {
+          currentPermissionMode = "bypassPermissions";
+          emit({ type: "permission_mode_updated", permissionMode: currentPermissionMode });
+        }
+        emit({ type: "query_complete" });
+      });
+    } else {
+      emit({ type: "query_complete" });
+    }
   };
   handleEvent2 = handleEvent, emitPartAsAssistantMessage2 = emitPartAsAssistantMessage, emitQueryComplete2 = emitQueryComplete;
   let client2;
@@ -2020,19 +2106,20 @@ if (config.mode === "list-models") {
     try {
       const result = await client2.provider.list();
       const providers = result.data?.all || [];
+      const connected = new Set(result.data?.connected || []);
       const unique = [];
       for (const provider of providers) {
+        if (!connected.has(provider.id)) continue;
         for (const model of Object.values(provider.models || {})) {
           if (!model.capabilities?.toolcall) continue;
-          if (model.providerID !== "opencode") continue;
-          if (model.cost?.input !== 0 || model.cost?.output !== 0) continue;
+          const fallback = lookupCost(model.id);
           unique.push({
             id: model.id,
             providerID: model.providerID,
             name: model.name || model.id,
-            free: true,
-            costIn: 0,
-            costOut: 0
+            free: false,
+            costIn: model.cost?.input || fallback?.input || 0,
+            costOut: model.cost?.output || fallback?.output || 0
           });
         }
       }
@@ -2087,6 +2174,10 @@ if (config.mode === "list-models") {
         permissionResolve(false);
         permissionResolve = null;
       }
+      if (askUserResolve) {
+        askUserResolve(null);
+        askUserResolve = null;
+      }
       if (ocSessionId) {
         try {
           await client2.session.abort({ path: { id: ocSessionId } });
@@ -2137,10 +2228,10 @@ if (config.mode === "list-models") {
       return;
     }
     if (msg.type === "ask_user_answer") {
-      const answer = msg.answer || {};
-      const answerText = Object.entries(answer).map(([q, a]) => `${q}: ${a}`).join("\n");
-      if (answerText) {
-        await sendPrompt(answerText);
+      if (askUserResolve) {
+        log(`Resolving ask_user_question with: ${JSON.stringify(msg.answer).substring(0, 100)}`);
+        askUserResolve(msg.answer);
+        askUserResolve = null;
       }
       return;
     }
@@ -2188,6 +2279,12 @@ if (config.mode === "list-models") {
       const promptBody = {
         parts: [{ type: "text", text }]
       };
+      {
+        const parts = [];
+        if (config.systemPrompt) parts.push(config.systemPrompt);
+        if (currentPermissionMode === "plan") parts.push(PLAN_MODE_SYSTEM_PROMPT);
+        if (parts.length > 0) promptBody.system = parts.join("\n\n");
+      }
       if (config.model) {
         const slash = config.model.indexOf("/");
         if (slash > 0) {

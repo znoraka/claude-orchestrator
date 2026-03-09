@@ -12,7 +12,9 @@ const MAX_HISTORY_MESSAGES: usize = 10_000;
 /// Directory where bridge output is persisted for session restore.
 fn history_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".claude-orchestrator").join("history")
+    PathBuf::from(home)
+        .join(".claude-orchestrator")
+        .join("history")
 }
 
 fn history_file_for(session_id: &str) -> PathBuf {
@@ -26,7 +28,6 @@ pub struct AgentSession {
 
 pub struct AgentManager {
     sessions: Arc<Mutex<HashMap<String, AgentSession>>>,
-    /// Accumulated JSON-line messages per session (for scrollback-like replay).
     history: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
@@ -91,7 +92,10 @@ impl AgentManager {
             bridge_cwd
         };
 
-        eprintln!("[agent_manager] node: {}, bridge: {}, cwd: {}", node_bin, bridge_script_path, bridge_cwd);
+        eprintln!(
+            "[agent_manager] node: {}, bridge: {}, cwd: {}",
+            node_bin, bridge_script_path, bridge_cwd
+        );
 
         let mut child = Command::new(&node_bin)
             .arg(bridge_script_path)
@@ -103,7 +107,12 @@ impl AgentManager {
             .env("PATH", path_env)
             .env("HOME", &home)
             .spawn()
-            .map_err(|e| format!("Failed to spawn agent bridge (node={}, cwd={}): {}", node_bin, bridge_cwd, e))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to spawn agent bridge (node={}, cwd={}): {}",
+                    node_bin, bridge_cwd, e
+                )
+            })?;
 
         let stdin = child
             .stdin
@@ -222,6 +231,25 @@ impl AgentManager {
             .stdin
             .flush()
             .map_err(|e| format!("Failed to flush agent stdin: {}", e))?;
+        drop(sessions);
+
+        // Store user message in history (memory)
+        if let Ok(mut hist) = self.history.lock() {
+            let entry = hist.entry(session_id.to_string()).or_insert_with(Vec::new);
+            entry.push(json_line.to_string());
+        }
+
+        // Persist user message to disk
+        let hist_path = history_file_for(session_id);
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&hist_path)
+        {
+            let _ = writeln!(file, "{}", json_line);
+            let _ = file.flush();
+        }
+
         Ok(())
     }
 

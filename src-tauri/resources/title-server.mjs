@@ -14,12 +14,21 @@
 import { createServer } from "http";
 import { appendFileSync } from "fs";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { createOpencodeServer, createOpencodeClient } from "@opencode-ai/sdk";
 
 // Remove CLAUDECODE env to avoid "nested session" check in the Claude CLI
 delete process.env.CLAUDECODE;
 
 const config = JSON.parse(process.argv[2] || "{}");
 const claudeCliPath = config.claudeCliPath || "claude";
+const opencodeCliPath = config.opencodeCliPath || "opencode";
+
+if (opencodeCliPath && opencodeCliPath !== "opencode") {
+  const opencodeDir = opencodeCliPath.substring(0, opencodeCliPath.lastIndexOf("/"));
+  if (opencodeDir) {
+    process.env.PATH = opencodeDir + ":" + process.env.PATH;
+  }
+}
 
 const logFile = "/tmp/title-server-debug.log";
 const log = (msg) => {
@@ -29,6 +38,41 @@ const log = (msg) => {
 };
 
 const MODEL = "claude-haiku-4-5-20251001";
+
+let freeModel = null;
+
+async function getFreeModel() {
+  if (freeModel) return freeModel;
+  try {
+    const port = await new Promise((resolve, reject) => {
+      const srv = createServer();
+      srv.listen(0, "127.0.0.1", () => {
+        const p = srv.address().port;
+        srv.close(() => resolve(p));
+      });
+      srv.on("error", reject);
+    });
+    const server = await createOpencodeServer({ port, timeout: 30_000 });
+    const client = createOpencodeClient({ baseUrl: server.url, directory: process.cwd() });
+    const result = await client.provider.list();
+    const providers = result.data?.all || [];
+    for (const provider of providers) {
+      for (const model of Object.values(provider.models || {})) {
+        if (model.providerID !== "opencode") continue;
+        if (model.capabilities?.toolcall && model.cost?.input === 0 && model.cost?.output === 0) {
+          freeModel = model.id;
+          log(`Found free model: ${freeModel}`);
+          return freeModel;
+        }
+      }
+    }
+    log("No free model found, using default");
+    return MODEL;
+  } catch (err) {
+    log(`Failed to get free model: ${err.message}`);
+    return MODEL;
+  }
+}
 
 const TITLE_SYSTEM_PROMPT = "You are a title generator. Given a user message, respond with ONLY a 4-5 word title summarizing the request. No quotes, no punctuation, no explanation.";
 

@@ -44,15 +44,88 @@ const { sessionId, cwd: initialCwd, permissionMode: configPermissionMode } = con
 
 let currentCwd = initialCwd;
 
+const PLAN_MODE_SYSTEM_PROMPT = `You are in PLAN MODE. Your job is to analyze the user's request and produce a detailed implementation plan — do NOT execute the plan.
+
+RULES:
+- You MAY read files, search code, explore the codebase, and use any read-only tools to gather context.
+- You MUST NOT make any modifications: no writing files, no editing files, no running destructive commands, no creating/deleting anything.
+- After gathering enough context, output a structured plan with:
+  1. A summary of the approach
+  2. The specific files to create or modify
+  3. Step-by-step implementation details
+  4. Any risks or considerations
+
+Think carefully, explore thoroughly, and be specific in your plan.`;
+
 // Mutable permission mode — can be toggled at runtime via set_permission_mode
 let currentPermissionMode = configPermissionMode || "bypassPermissions";
 
 // Permission prompt interception (for plan mode): when set, we're waiting
 // for the user to approve/deny a tool use.
 let permissionResolve = null;
+let askUserResolve = null;
 
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
+}
+
+// ── Fallback pricing (USD per million tokens) ────────────────────────
+// Used when OpenCode reports 0/0 cost for a model.
+// Entries are matched as substrings against the model ID (case-insensitive).
+const KNOWN_COSTS = [
+  // OpenAI
+  ["o1-mini",              1.10,   4.40],
+  ["o1",                  15.00,  60.00],
+  ["o3-mini",              1.10,   4.40],
+  ["o3",                   2.00,   8.00],
+  ["o4-mini",              1.10,   4.40],
+  ["gpt-4o-mini",          0.15,   0.60],
+  ["gpt-4o",               2.50,  10.00],
+  ["gpt-4.1-nano",         0.10,   0.40],
+  ["gpt-4.1-mini",         0.40,   1.60],
+  ["gpt-4.1",              2.00,   8.00],
+  // Anthropic
+  ["claude-opus-4",       15.00,  75.00],
+  ["claude-sonnet-4",      3.00,  15.00],
+  ["claude-haiku-4",       1.00,   5.00],
+  ["claude-opus-4.5",      5.00,  25.00],
+  ["claude-sonnet-4.5",    3.00,  15.00],
+  ["claude-opus-4.6",      5.00,  25.00],
+  ["claude-sonnet-4.6",    3.00,  15.00],
+  // Google
+  ["gemini-2.5-pro",       1.25,  10.00],
+  ["gemini-2.5-flash-lite",0.10,   0.40],
+  ["gemini-2.5-flash",     0.30,   2.50],
+  ["gemini-2.0-flash",     0.10,   0.40],
+  ["gemini-3.1-pro",       2.00,  12.00],
+  ["gemini-3-flash",       0.50,   3.00],
+  // Mistral
+  ["codestral",            0.30,   0.90],
+  ["devstral",             0.40,   2.00],
+  ["mistral-large",        0.50,   1.50],
+  ["mistral-medium",       0.40,   2.00],
+  ["mistral-small",        0.35,   0.56],
+  // DeepSeek
+  ["deepseek-chat",        0.28,   0.42],
+  ["deepseek-reasoner",    0.28,   0.42],
+  // xAI
+  ["grok-4-fast",          0.20,   0.50],
+  ["grok-4",               3.00,  15.00],
+  ["grok-3-mini",          0.30,   0.50],
+  ["grok-3",               3.00,  15.00],
+  // Groq-hosted
+  ["llama-4-maverick",     0.20,   0.60],
+  ["llama-4-scout",        0.11,   0.34],
+  ["llama-3.3-70b",        0.59,   0.79],
+  ["llama-3.1-8b",         0.05,   0.08],
+];
+
+function lookupCost(modelId) {
+  const lower = modelId.toLowerCase();
+  for (const [pattern, costIn, costOut] of KNOWN_COSTS) {
+    if (lower.includes(pattern)) return { input: costIn, output: costOut };
+  }
+  return null;
 }
 
 // ── List-models mode: boot, fetch models, print, exit ────────────────
@@ -64,19 +137,20 @@ if (config.mode === "list-models") {
       const client = createOpencodeClient({ baseUrl: server.url, directory: process.cwd() });
       const result = await client.provider.list();
       const providers = result.data?.all || [];
+      const connected = new Set(result.data?.connected || []);
       const models = [];
       for (const provider of providers) {
+        if (!connected.has(provider.id)) continue;
         for (const model of Object.values(provider.models || {})) {
           if (!model.capabilities?.toolcall) continue;
-          if (model.providerID !== "opencode") continue;
-          if (model.cost?.input !== 0 || model.cost?.output !== 0) continue;
+          const fallback = lookupCost(model.id);
           models.push({
             id: model.id,
             providerID: model.providerID,
             name: model.name || model.id,
-            free: true,
-            costIn: 0,
-            costOut: 0,
+            free: false,
+            costIn: model.cost?.input || fallback?.input || 0,
+            costOut: model.cost?.output || fallback?.output || 0,
           });
         }
       }
@@ -157,20 +231,20 @@ async function fetchAndEmitModels() {
   try {
     const result = await client.provider.list();
     const providers = result.data?.all || [];
-    // Only include genuinely free models from the opencode provider
+    const connected = new Set(result.data?.connected || []);
     const unique = [];
     for (const provider of providers) {
+      if (!connected.has(provider.id)) continue;
       for (const model of Object.values(provider.models || {})) {
         if (!model.capabilities?.toolcall) continue;
-        if (model.providerID !== "opencode") continue;
-        if (model.cost?.input !== 0 || model.cost?.output !== 0) continue;
+        const fallback = lookupCost(model.id);
         unique.push({
           id: model.id,
           providerID: model.providerID,
           name: model.name || model.id,
-          free: true,
-          costIn: 0,
-          costOut: 0,
+          free: false,
+          costIn: model.cost?.input || fallback?.input || 0,
+          costOut: model.cost?.output || fallback?.output || 0,
         });
       }
     }
@@ -291,35 +365,40 @@ function handleEvent(event) {
       const permission = props;
       log(`Permission requested: ${permission.type} — ${permission.title} (mode=${currentPermissionMode})`);
 
-      if (currentPermissionMode === "bypassPermissions") {
-        // Auto-approve all permissions
-        client.postSessionIdPermissionsPermissionId({
-          path: {
-            id: permission.sessionID,
-            permissionId: permission.id,
-          },
-          body: { allow: true },
-        }).catch((err) => log(`Failed to approve permission: ${err.message}`));
-      } else {
-        // Plan mode — forward to the frontend and wait for user response
+      // Check if this is a question permission
+      const isQuestion = permission.type === "question" || permission.title === "question";
+      
+      if (isQuestion) {
+        // Handle question tool — emit ask_user_question to frontend
+        const questions = permission.metadata?.questions || [];
         emit({
-          type: "permission_request",
-          toolName: permission.title || permission.type || "unknown",
-          input: permission.metadata || {},
+          type: "ask_user_question",
+          questions: questions,
         });
-        // Wait for the user to approve/deny, then respond to OpenCode
+        // Wait for the user to answer, then respond to OpenCode
         const sid = permission.sessionID;
         const pid = permission.id;
         new Promise((resolve) => {
-          permissionResolve = resolve;
-        }).then((allowed) => {
-          log(`Permission ${pid}: ${allowed ? "allow" : "deny"}`);
+          askUserResolve = resolve;
+        }).then((answer) => {
+          log(`Question ${pid} answered: ${JSON.stringify(answer).substring(0, 100)}`);
           client.postSessionIdPermissionsPermissionId({
             path: { id: sid, permissionId: pid },
-            body: { allow: !!allowed },
-          }).catch((err) => log(`Failed to respond to permission: ${err.message}`));
+            body: { allow: true, answer: answer },
+          }).catch((err) => log(`Failed to respond to question: ${err.message}`));
         });
+        break;
       }
+
+      // In both bypass and plan mode, auto-approve all permissions.
+      // Plan mode constrains the agent via system prompt, not by blocking tool use.
+      client.postSessionIdPermissionsPermissionId({
+        path: {
+          id: permission.sessionID,
+          permissionId: permission.id,
+        },
+        body: { allow: true },
+      }).catch((err) => log(`Failed to approve permission: ${err.message}`));
       break;
     }
 
@@ -500,7 +579,29 @@ function emitPartAsAssistantMessage(part, delta) {
 function emitQueryComplete() {
   currentMessageId = null;
   partsById.clear();
-  emit({ type: "query_complete" });
+
+  if (currentPermissionMode === "plan") {
+    // Emit synthetic ExitPlanMode permission request — triggers the frontend's
+    // "Plan ready — how do you want to proceed?" UI
+    emit({
+      type: "permission_request",
+      toolName: "ExitPlanMode",
+      input: {},
+    });
+    // Wait for user response
+    new Promise((resolve) => {
+      permissionResolve = resolve;
+    }).then((allowed) => {
+      if (allowed) {
+        // User accepted the plan — switch to bypass mode so the next prompt executes
+        currentPermissionMode = "bypassPermissions";
+        emit({ type: "permission_mode_updated", permissionMode: currentPermissionMode });
+      }
+      emit({ type: "query_complete" });
+    });
+  } else {
+    emit({ type: "query_complete" });
+  }
 }
 
 // ── Stdin handling ──────────────────────────────────────────────────
@@ -536,6 +637,10 @@ async function handleStdinMessage(msg) {
     if (permissionResolve) {
       permissionResolve(false);
       permissionResolve = null;
+    }
+    if (askUserResolve) {
+      askUserResolve(null);
+      askUserResolve = null;
     }
     if (ocSessionId) {
       try {
@@ -597,13 +702,11 @@ async function handleStdinMessage(msg) {
   }
 
   if (msg.type === "ask_user_answer") {
-    // User answered an AskUserQuestion — send the answer as a follow-up prompt
-    const answer = msg.answer || {};
-    const answerText = Object.entries(answer)
-      .map(([q, a]) => `${q}: ${a}`)
-      .join("\n");
-    if (answerText) {
-      await sendPrompt(answerText);
+    // User answered an AskUserQuestion — resolve the pending question promise
+    if (askUserResolve) {
+      log(`Resolving ask_user_question with: ${JSON.stringify(msg.answer).substring(0, 100)}`);
+      askUserResolve(msg.answer);
+      askUserResolve = null;
     }
     return;
   }
@@ -665,6 +768,14 @@ async function sendPrompt(userMessage) {
     const promptBody = {
       parts: [{ type: "text", text }],
     };
+
+    // Inject system prompt: combine config.systemPrompt + plan mode instructions
+    {
+      const parts = [];
+      if (config.systemPrompt) parts.push(config.systemPrompt);
+      if (currentPermissionMode === "plan") parts.push(PLAN_MODE_SYSTEM_PROMPT);
+      if (parts.length > 0) promptBody.system = parts.join("\n\n");
+    }
 
     // Include model selection if set
     if (config.model) {

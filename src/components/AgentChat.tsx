@@ -403,6 +403,17 @@ const AgentChat = memo(function AgentChat({
   const [isGenerating, setIsGenerating] = useState(false);
   const abortedRef = useRef(false);
   const generationStartRef = useRef<number>(0);
+  const isGeneratingRef = useRef(false);
+  const isGeneratingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopGenerating = useCallback(() => {
+    if (isGeneratingTimeoutRef.current) {
+      clearTimeout(isGeneratingTimeoutRef.current);
+    }
+    isGeneratingTimeoutRef.current = setTimeout(() => {
+      isGeneratingRef.current = false;
+      setIsGenerating(false);
+    }, 150);
+  }, []);
   const [currentTodo, setCurrentTodo] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] = useState<{ toolName: string; input: Record<string, unknown> } | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<{ blockId: string; questions: AskQuestion[] } | null>(null);
@@ -416,7 +427,21 @@ const AgentChat = memo(function AgentChat({
   const [reasoningEffort, setReasoningEffort] = useState<"low" | "medium" | "high">("high");
   const [openPill, setOpenPill] = useState<"model" | "mode" | "effort" | null>(null);
   const pillRowRef = useRef<HTMLDivElement>(null);
+  const [modelSearchTerm, setModelSearchTerm] = useState("");
+  const modelSearchRef = useRef<HTMLInputElement>(null);
+
   const activeModels = activeModelsProp || modelsForProvider(session?.provider || "claude-code");
+
+  const filteredModels = useMemo(() => {
+    if (!modelSearchTerm) return activeModels;
+    const term = modelSearchTerm.toLowerCase();
+    return activeModels.filter(m =>
+      m.name.toLowerCase().includes(term) ||
+      m.id.toLowerCase().includes(term) ||
+      m.desc?.toLowerCase().includes(term)
+    );
+  }, [activeModels, modelSearchTerm]);
+
   // For parent sessions with children: route input to the active child
   const activeChildSessionId = useMemo(
     () => childSessions?.find(c => c.status === "running" || c.status === "starting")?.id ?? null,
@@ -434,7 +459,14 @@ const AgentChat = memo(function AgentChat({
 
   // Close pill dropdown on outside click
   useEffect(() => {
-    if (!openPill) return;
+    if (!openPill) {
+      setModelSearchTerm("");
+      return;
+    }
+    if (openPill === "model") {
+      // Small timeout to allow the dropdown to render before focusing
+      setTimeout(() => modelSearchRef.current?.focus(), 50);
+    }
     const handleClick = (e: MouseEvent) => {
       if (pillRowRef.current && !pillRowRef.current.contains(e.target as Node)) {
         setOpenPill(null);
@@ -1123,6 +1155,7 @@ const AgentChat = memo(function AgentChat({
         ]);
         abortedRef.current = false;
         generationStartRef.current = Date.now();
+        isGeneratingRef.current = true;
         setIsGenerating(true);
         const jsonLine = JSON.stringify({
           type: "user",
@@ -1148,7 +1181,7 @@ const AgentChat = memo(function AgentChat({
               setTimeout(() => trySendAuto(1), 1000);
               return;
             }
-            setIsGenerating(false);
+            stopGenerating();
             setMessages((prev) => [
               ...prev,
               {
@@ -1173,7 +1206,10 @@ const AgentChat = memo(function AgentChat({
       if (abortedRef.current) {
         return;
       }
-      setIsGenerating(true);
+      if (!isGeneratingRef.current) {
+        isGeneratingRef.current = true;
+        setIsGenerating(true);
+      }
       const messageObj = msg.message as Record<string, unknown> | undefined;
       const content = normalizeContent(messageObj?.content);
       const apiMsgId = messageObj?.id as string | undefined;
@@ -1245,7 +1281,7 @@ const AgentChat = memo(function AgentChat({
 
     // Result message
     if (msgType === "result") {
-      setIsGenerating(false);
+      stopGenerating();
       setCurrentTodo(null);
       setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
@@ -1291,7 +1327,7 @@ const AgentChat = memo(function AgentChat({
 
     // Query complete
     if (msgType === "query_complete") {
-      setIsGenerating(false);
+      stopGenerating();
       setCurrentTodo(null);
       setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
@@ -1305,7 +1341,7 @@ const AgentChat = memo(function AgentChat({
 
     // Abort
     if (msgType === "aborted") {
-      setIsGenerating(false);
+      stopGenerating();
       setCurrentTodo(null);
       setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
@@ -1314,7 +1350,7 @@ const AgentChat = memo(function AgentChat({
 
     // Error
     if (msgType === "error") {
-      setIsGenerating(false);
+      stopGenerating();
       setCurrentTodo(null);
       setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
@@ -1349,6 +1385,16 @@ const AgentChat = memo(function AgentChat({
           title: "Plan ready",
           body: session?.name || "A session needs your approval",
         });
+      }
+      return;
+    }
+
+    // Question request (from OpenCode bridge)
+    if (msgType === "ask_user_question") {
+      const questions = (msg.questions as AskQuestion[]) || [];
+      if (questions.length > 0) {
+        setPendingQuestion({ blockId: `ask-${Date.now()}`, questions });
+        onQuestionChangeRef.current?.(true);
       }
       return;
     }
@@ -1390,7 +1436,7 @@ const AgentChat = memo(function AgentChat({
       `agent-exit-${sessionId}`,
       (event) => {
         if (cancelled || !mountedRef.current) return;
-        setIsGenerating(false);
+        stopGenerating();
         const code = parseInt(event.payload, 10);
         onExitRef.current(isNaN(code) ? undefined : code);
       }
@@ -1427,7 +1473,7 @@ const AgentChat = memo(function AgentChat({
               (c) => c.id !== child.id && (c.status === "running" || c.status === "starting")
             );
             if (!otherRunning) {
-              setIsGenerating(false);
+              stopGenerating();
             }
           }
         ));
@@ -1684,6 +1730,7 @@ const AgentChat = memo(function AgentChat({
     setFileReferences([]);
     abortedRef.current = false;
     generationStartRef.current = Date.now();
+    isGeneratingRef.current = true;
     setIsGenerating(true);
     onActivityRef.current(); // Update session timestamp when user sends a message
 
@@ -1692,7 +1739,7 @@ const AgentChat = memo(function AgentChat({
       try {
         await onResumeRef.current();
       } catch (err) {
-        setIsGenerating(false);
+        stopGenerating();
         setMessages((prev) => [
           ...prev,
           {
@@ -1748,7 +1795,7 @@ const AgentChat = memo(function AgentChat({
           setTimeout(() => trySend(1), 1000);
           return;
         }
-        setIsGenerating(false);
+        stopGenerating();
         setMessages((prev) => [
           ...prev,
           {
@@ -1765,9 +1812,12 @@ const AgentChat = memo(function AgentChat({
 
   const handleAbort = useCallback(() => {
     invoke("abort_agent", { sessionId: targetSessionId }).catch(() => {});
-    // Immediately clear generating state — don't rely on bridge "aborted" event
-    // which may not arrive if the SDK hangs or the abort doesn't propagate cleanly
     abortedRef.current = true;
+    if (isGeneratingTimeoutRef.current) {
+      clearTimeout(isGeneratingTimeoutRef.current);
+      isGeneratingTimeoutRef.current = null;
+    }
+    isGeneratingRef.current = false;
     setIsGenerating(false);
     setCurrentTodo(null);
     accumulatedBlocksRef.current.clear();
@@ -1802,7 +1852,7 @@ const AgentChat = memo(function AgentChat({
     onQuestionChangeRef.current?.(false);
     if (!allowed) {
       // Deny ends the agent turn — stop spinner immediately
-      setIsGenerating(false);
+      stopGenerating();
       onUsageUpdateRef.current?.({ ...accumulatedUsageRef.current, isBusy: false });
     }
     const msg = JSON.stringify({ type: "permission_response", allowed });
@@ -2404,25 +2454,50 @@ const AgentChat = memo(function AgentChat({
                   <svg className="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
                 </button>
                 {openPill === "model" && (
-                  <div className="absolute bottom-full mb-1 left-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 min-w-[180px] max-h-[300px] overflow-y-auto">
-                    {activeModels.map((model) => (
-                      <button
-                        key={model.id}
-                        className={`w-full text-left px-3 py-1.5 text-[11px] transition-colors ${
-                          currentModel === model.id
-                            ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
-                            : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
-                        }`}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          onModelChange?.(model.id);
-                          setOpenPill(null);
-                        }}
-                      >
-                        <div className="font-medium">{model.name}</div>
-                        {model.desc && <div className="text-[10px] text-[var(--text-tertiary)]">{model.desc}</div>}
-                      </button>
-                    ))}
+                  <div className="absolute bottom-full mb-1 left-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 min-w-[200px] max-h-[300px] overflow-hidden flex flex-col">
+                    <div className="p-2 border-b border-[var(--border-color)]">
+                      <div className="relative">
+                        <input
+                          ref={modelSearchRef}
+                          type="text"
+                          value={modelSearchTerm}
+                          onChange={(e) => setModelSearchTerm(e.target.value)}
+                          placeholder="Search models..."
+                          className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded px-2 py-1 text-[11px] outline-none focus:border-[var(--accent)]"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && filteredModels.length > 0) {
+                              onModelChange?.(filteredModels[0].id);
+                              setOpenPill(null);
+                            }
+                            if (e.key === "Escape") setOpenPill(null);
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className="overflow-y-auto flex-1">
+                      {filteredModels.length === 0 ? (
+                        <div className="px-3 py-2 text-[10px] text-[var(--text-tertiary)] italic">No models found</div>
+                      ) : (
+                        filteredModels.map((model) => (
+                          <button
+                            key={model.id}
+                            className={`w-full text-left px-3 py-1.5 text-[11px] transition-colors ${
+                              currentModel === model.id
+                                ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
+                                : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                            }`}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              onModelChange?.(model.id);
+                              setOpenPill(null);
+                            }}
+                          >
+                            <div className="font-medium">{model.name}</div>
+                            {model.desc && <div className="text-[10px] text-[var(--text-tertiary)]">{model.desc}</div>}
+                          </button>
+                        ))
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

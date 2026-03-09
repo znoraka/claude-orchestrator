@@ -16542,10 +16542,684 @@ function query({
   return queryInstance;
 }
 
+// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/gen/core/serverSentEvents.gen.js
+var createSseClient = ({ onSseError, onSseEvent, responseTransformer, responseValidator, sseDefaultRetryDelay, sseMaxRetryAttempts, sseMaxRetryDelay, sseSleepFn, url, ...options }) => {
+  let lastEventId;
+  const sleep = sseSleepFn ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const createStream = async function* () {
+    let retryDelay = sseDefaultRetryDelay ?? 3e3;
+    let attempt = 0;
+    const signal = options.signal ?? new AbortController().signal;
+    while (true) {
+      if (signal.aborted)
+        break;
+      attempt++;
+      const headers = options.headers instanceof Headers ? options.headers : new Headers(options.headers);
+      if (lastEventId !== void 0) {
+        headers.set("Last-Event-ID", lastEventId);
+      }
+      try {
+        const response = await fetch(url, { ...options, headers, signal });
+        if (!response.ok)
+          throw new Error(`SSE failed: ${response.status} ${response.statusText}`);
+        if (!response.body)
+          throw new Error("No body in SSE response");
+        const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+        let buffer = "";
+        const abortHandler = () => {
+          try {
+            reader.cancel();
+          } catch {
+          }
+        };
+        signal.addEventListener("abort", abortHandler);
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done)
+              break;
+            buffer += value;
+            const chunks = buffer.split("\n\n");
+            buffer = chunks.pop() ?? "";
+            for (const chunk of chunks) {
+              const lines = chunk.split("\n");
+              const dataLines = [];
+              let eventName;
+              for (const line of lines) {
+                if (line.startsWith("data:")) {
+                  dataLines.push(line.replace(/^data:\s*/, ""));
+                } else if (line.startsWith("event:")) {
+                  eventName = line.replace(/^event:\s*/, "");
+                } else if (line.startsWith("id:")) {
+                  lastEventId = line.replace(/^id:\s*/, "");
+                } else if (line.startsWith("retry:")) {
+                  const parsed = Number.parseInt(line.replace(/^retry:\s*/, ""), 10);
+                  if (!Number.isNaN(parsed)) {
+                    retryDelay = parsed;
+                  }
+                }
+              }
+              let data;
+              let parsedJson = false;
+              if (dataLines.length) {
+                const rawData = dataLines.join("\n");
+                try {
+                  data = JSON.parse(rawData);
+                  parsedJson = true;
+                } catch {
+                  data = rawData;
+                }
+              }
+              if (parsedJson) {
+                if (responseValidator) {
+                  await responseValidator(data);
+                }
+                if (responseTransformer) {
+                  data = await responseTransformer(data);
+                }
+              }
+              onSseEvent?.({
+                data,
+                event: eventName,
+                id: lastEventId,
+                retry: retryDelay
+              });
+              if (dataLines.length) {
+                yield data;
+              }
+            }
+          }
+        } finally {
+          signal.removeEventListener("abort", abortHandler);
+          reader.releaseLock();
+        }
+        break;
+      } catch (error2) {
+        onSseError?.(error2);
+        if (sseMaxRetryAttempts !== void 0 && attempt >= sseMaxRetryAttempts) {
+          break;
+        }
+        const backoff = Math.min(retryDelay * 2 ** (attempt - 1), sseMaxRetryDelay ?? 3e4);
+        await sleep(backoff);
+      }
+    }
+  };
+  const stream = createStream();
+  return { stream };
+};
+
+// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/gen/core/auth.gen.js
+var getAuthToken = async (auth, callback) => {
+  const token = typeof callback === "function" ? await callback(auth) : callback;
+  if (!token) {
+    return;
+  }
+  if (auth.scheme === "bearer") {
+    return `Bearer ${token}`;
+  }
+  if (auth.scheme === "basic") {
+    return `Basic ${btoa(token)}`;
+  }
+  return token;
+};
+
+// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/gen/core/bodySerializer.gen.js
+var jsonBodySerializer = {
+  bodySerializer: (body) => JSON.stringify(body, (_key, value) => typeof value === "bigint" ? value.toString() : value)
+};
+
+// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/gen/core/pathSerializer.gen.js
+var separatorArrayExplode = (style) => {
+  switch (style) {
+    case "label":
+      return ".";
+    case "matrix":
+      return ";";
+    case "simple":
+      return ",";
+    default:
+      return "&";
+  }
+};
+var separatorArrayNoExplode = (style) => {
+  switch (style) {
+    case "form":
+      return ",";
+    case "pipeDelimited":
+      return "|";
+    case "spaceDelimited":
+      return "%20";
+    default:
+      return ",";
+  }
+};
+var separatorObjectExplode = (style) => {
+  switch (style) {
+    case "label":
+      return ".";
+    case "matrix":
+      return ";";
+    case "simple":
+      return ",";
+    default:
+      return "&";
+  }
+};
+var serializeArrayParam = ({ allowReserved, explode, name, style, value }) => {
+  if (!explode) {
+    const joinedValues2 = (allowReserved ? value : value.map((v) => encodeURIComponent(v))).join(separatorArrayNoExplode(style));
+    switch (style) {
+      case "label":
+        return `.${joinedValues2}`;
+      case "matrix":
+        return `;${name}=${joinedValues2}`;
+      case "simple":
+        return joinedValues2;
+      default:
+        return `${name}=${joinedValues2}`;
+    }
+  }
+  const separator = separatorArrayExplode(style);
+  const joinedValues = value.map((v) => {
+    if (style === "label" || style === "simple") {
+      return allowReserved ? v : encodeURIComponent(v);
+    }
+    return serializePrimitiveParam({
+      allowReserved,
+      name,
+      value: v
+    });
+  }).join(separator);
+  return style === "label" || style === "matrix" ? separator + joinedValues : joinedValues;
+};
+var serializePrimitiveParam = ({ allowReserved, name, value }) => {
+  if (value === void 0 || value === null) {
+    return "";
+  }
+  if (typeof value === "object") {
+    throw new Error("Deeply-nested arrays/objects aren\u2019t supported. Provide your own `querySerializer()` to handle these.");
+  }
+  return `${name}=${allowReserved ? value : encodeURIComponent(value)}`;
+};
+var serializeObjectParam = ({ allowReserved, explode, name, style, value, valueOnly }) => {
+  if (value instanceof Date) {
+    return valueOnly ? value.toISOString() : `${name}=${value.toISOString()}`;
+  }
+  if (style !== "deepObject" && !explode) {
+    let values = [];
+    Object.entries(value).forEach(([key, v]) => {
+      values = [...values, key, allowReserved ? v : encodeURIComponent(v)];
+    });
+    const joinedValues2 = values.join(",");
+    switch (style) {
+      case "form":
+        return `${name}=${joinedValues2}`;
+      case "label":
+        return `.${joinedValues2}`;
+      case "matrix":
+        return `;${name}=${joinedValues2}`;
+      default:
+        return joinedValues2;
+    }
+  }
+  const separator = separatorObjectExplode(style);
+  const joinedValues = Object.entries(value).map(([key, v]) => serializePrimitiveParam({
+    allowReserved,
+    name: style === "deepObject" ? `${name}[${key}]` : key,
+    value: v
+  })).join(separator);
+  return style === "label" || style === "matrix" ? separator + joinedValues : joinedValues;
+};
+
+// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/gen/core/utils.gen.js
+var PATH_PARAM_RE = /\{[^{}]+\}/g;
+var defaultPathSerializer = ({ path, url: _url2 }) => {
+  let url = _url2;
+  const matches = _url2.match(PATH_PARAM_RE);
+  if (matches) {
+    for (const match of matches) {
+      let explode = false;
+      let name = match.substring(1, match.length - 1);
+      let style = "simple";
+      if (name.endsWith("*")) {
+        explode = true;
+        name = name.substring(0, name.length - 1);
+      }
+      if (name.startsWith(".")) {
+        name = name.substring(1);
+        style = "label";
+      } else if (name.startsWith(";")) {
+        name = name.substring(1);
+        style = "matrix";
+      }
+      const value = path[name];
+      if (value === void 0 || value === null) {
+        continue;
+      }
+      if (Array.isArray(value)) {
+        url = url.replace(match, serializeArrayParam({ explode, name, style, value }));
+        continue;
+      }
+      if (typeof value === "object") {
+        url = url.replace(match, serializeObjectParam({
+          explode,
+          name,
+          style,
+          value,
+          valueOnly: true
+        }));
+        continue;
+      }
+      if (style === "matrix") {
+        url = url.replace(match, `;${serializePrimitiveParam({
+          name,
+          value
+        })}`);
+        continue;
+      }
+      const replaceValue = encodeURIComponent(style === "label" ? `.${value}` : value);
+      url = url.replace(match, replaceValue);
+    }
+  }
+  return url;
+};
+var getUrl = ({ baseUrl, path, query: query2, querySerializer, url: _url2 }) => {
+  const pathUrl = _url2.startsWith("/") ? _url2 : `/${_url2}`;
+  let url = (baseUrl ?? "") + pathUrl;
+  if (path) {
+    url = defaultPathSerializer({ path, url });
+  }
+  let search = query2 ? querySerializer(query2) : "";
+  if (search.startsWith("?")) {
+    search = search.substring(1);
+  }
+  if (search) {
+    url += `?${search}`;
+  }
+  return url;
+};
+
+// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/gen/client/utils.gen.js
+var createQuerySerializer = ({ allowReserved, array: array2, object } = {}) => {
+  const querySerializer = (queryParams) => {
+    const search = [];
+    if (queryParams && typeof queryParams === "object") {
+      for (const name in queryParams) {
+        const value = queryParams[name];
+        if (value === void 0 || value === null) {
+          continue;
+        }
+        if (Array.isArray(value)) {
+          const serializedArray = serializeArrayParam({
+            allowReserved,
+            explode: true,
+            name,
+            style: "form",
+            value,
+            ...array2
+          });
+          if (serializedArray)
+            search.push(serializedArray);
+        } else if (typeof value === "object") {
+          const serializedObject = serializeObjectParam({
+            allowReserved,
+            explode: true,
+            name,
+            style: "deepObject",
+            value,
+            ...object
+          });
+          if (serializedObject)
+            search.push(serializedObject);
+        } else {
+          const serializedPrimitive = serializePrimitiveParam({
+            allowReserved,
+            name,
+            value
+          });
+          if (serializedPrimitive)
+            search.push(serializedPrimitive);
+        }
+      }
+    }
+    return search.join("&");
+  };
+  return querySerializer;
+};
+var getParseAs = (contentType) => {
+  if (!contentType) {
+    return "stream";
+  }
+  const cleanContent = contentType.split(";")[0]?.trim();
+  if (!cleanContent) {
+    return;
+  }
+  if (cleanContent.startsWith("application/json") || cleanContent.endsWith("+json")) {
+    return "json";
+  }
+  if (cleanContent === "multipart/form-data") {
+    return "formData";
+  }
+  if (["application/", "audio/", "image/", "video/"].some((type) => cleanContent.startsWith(type))) {
+    return "blob";
+  }
+  if (cleanContent.startsWith("text/")) {
+    return "text";
+  }
+  return;
+};
+var checkForExistence = (options, name) => {
+  if (!name) {
+    return false;
+  }
+  if (options.headers.has(name) || options.query?.[name] || options.headers.get("Cookie")?.includes(`${name}=`)) {
+    return true;
+  }
+  return false;
+};
+var setAuthParams = async ({ security, ...options }) => {
+  for (const auth of security) {
+    if (checkForExistence(options, auth.name)) {
+      continue;
+    }
+    const token = await getAuthToken(auth, options.auth);
+    if (!token) {
+      continue;
+    }
+    const name = auth.name ?? "Authorization";
+    switch (auth.in) {
+      case "query":
+        if (!options.query) {
+          options.query = {};
+        }
+        options.query[name] = token;
+        break;
+      case "cookie":
+        options.headers.append("Cookie", `${name}=${token}`);
+        break;
+      case "header":
+      default:
+        options.headers.set(name, token);
+        break;
+    }
+  }
+};
+var buildUrl = (options) => getUrl({
+  baseUrl: options.baseUrl,
+  path: options.path,
+  query: options.query,
+  querySerializer: typeof options.querySerializer === "function" ? options.querySerializer : createQuerySerializer(options.querySerializer),
+  url: options.url
+});
+var mergeConfigs = (a, b) => {
+  const config3 = { ...a, ...b };
+  if (config3.baseUrl?.endsWith("/")) {
+    config3.baseUrl = config3.baseUrl.substring(0, config3.baseUrl.length - 1);
+  }
+  config3.headers = mergeHeaders(a.headers, b.headers);
+  return config3;
+};
+var mergeHeaders = (...headers) => {
+  const mergedHeaders = new Headers();
+  for (const header of headers) {
+    if (!header || typeof header !== "object") {
+      continue;
+    }
+    const iterator = header instanceof Headers ? header.entries() : Object.entries(header);
+    for (const [key, value] of iterator) {
+      if (value === null) {
+        mergedHeaders.delete(key);
+      } else if (Array.isArray(value)) {
+        for (const v of value) {
+          mergedHeaders.append(key, v);
+        }
+      } else if (value !== void 0) {
+        mergedHeaders.set(key, typeof value === "object" ? JSON.stringify(value) : value);
+      }
+    }
+  }
+  return mergedHeaders;
+};
+var Interceptors = class {
+  _fns;
+  constructor() {
+    this._fns = [];
+  }
+  clear() {
+    this._fns = [];
+  }
+  getInterceptorIndex(id) {
+    if (typeof id === "number") {
+      return this._fns[id] ? id : -1;
+    } else {
+      return this._fns.indexOf(id);
+    }
+  }
+  exists(id) {
+    const index = this.getInterceptorIndex(id);
+    return !!this._fns[index];
+  }
+  eject(id) {
+    const index = this.getInterceptorIndex(id);
+    if (this._fns[index]) {
+      this._fns[index] = null;
+    }
+  }
+  update(id, fn) {
+    const index = this.getInterceptorIndex(id);
+    if (this._fns[index]) {
+      this._fns[index] = fn;
+      return id;
+    } else {
+      return false;
+    }
+  }
+  use(fn) {
+    this._fns = [...this._fns, fn];
+    return this._fns.length - 1;
+  }
+};
+var createInterceptors = () => ({
+  error: new Interceptors(),
+  request: new Interceptors(),
+  response: new Interceptors()
+});
+var defaultQuerySerializer = createQuerySerializer({
+  allowReserved: false,
+  array: {
+    explode: true,
+    style: "form"
+  },
+  object: {
+    explode: true,
+    style: "deepObject"
+  }
+});
+var defaultHeaders = {
+  "Content-Type": "application/json"
+};
+var createConfig = (override = {}) => ({
+  ...jsonBodySerializer,
+  headers: defaultHeaders,
+  parseAs: "auto",
+  querySerializer: defaultQuerySerializer,
+  ...override
+});
+
+// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/gen/client/client.gen.js
+var createClient = (config3 = {}) => {
+  let _config = mergeConfigs(createConfig(), config3);
+  const getConfig = () => ({ ..._config });
+  const setConfig = (config4) => {
+    _config = mergeConfigs(_config, config4);
+    return getConfig();
+  };
+  const interceptors = createInterceptors();
+  const beforeRequest = async (options) => {
+    const opts = {
+      ..._config,
+      ...options,
+      fetch: options.fetch ?? _config.fetch ?? globalThis.fetch,
+      headers: mergeHeaders(_config.headers, options.headers),
+      serializedBody: void 0
+    };
+    if (opts.security) {
+      await setAuthParams({
+        ...opts,
+        security: opts.security
+      });
+    }
+    if (opts.requestValidator) {
+      await opts.requestValidator(opts);
+    }
+    if (opts.body && opts.bodySerializer) {
+      opts.serializedBody = opts.bodySerializer(opts.body);
+    }
+    if (opts.serializedBody === void 0 || opts.serializedBody === "") {
+      opts.headers.delete("Content-Type");
+    }
+    const url = buildUrl(opts);
+    return { opts, url };
+  };
+  const request = async (options) => {
+    const { opts, url } = await beforeRequest(options);
+    const requestInit = {
+      redirect: "follow",
+      ...opts,
+      body: opts.serializedBody
+    };
+    let request2 = new Request(url, requestInit);
+    for (const fn of interceptors.request._fns) {
+      if (fn) {
+        request2 = await fn(request2, opts);
+      }
+    }
+    const _fetch = opts.fetch;
+    let response = await _fetch(request2);
+    for (const fn of interceptors.response._fns) {
+      if (fn) {
+        response = await fn(response, request2, opts);
+      }
+    }
+    const result = {
+      request: request2,
+      response
+    };
+    if (response.ok) {
+      if (response.status === 204 || response.headers.get("Content-Length") === "0") {
+        return opts.responseStyle === "data" ? {} : {
+          data: {},
+          ...result
+        };
+      }
+      const parseAs = (opts.parseAs === "auto" ? getParseAs(response.headers.get("Content-Type")) : opts.parseAs) ?? "json";
+      let data;
+      switch (parseAs) {
+        case "arrayBuffer":
+        case "blob":
+        case "formData":
+        case "json":
+        case "text":
+          data = await response[parseAs]();
+          break;
+        case "stream":
+          return opts.responseStyle === "data" ? response.body : {
+            data: response.body,
+            ...result
+          };
+      }
+      if (parseAs === "json") {
+        if (opts.responseValidator) {
+          await opts.responseValidator(data);
+        }
+        if (opts.responseTransformer) {
+          data = await opts.responseTransformer(data);
+        }
+      }
+      return opts.responseStyle === "data" ? data : {
+        data,
+        ...result
+      };
+    }
+    const textError = await response.text();
+    let jsonError;
+    try {
+      jsonError = JSON.parse(textError);
+    } catch {
+    }
+    const error2 = jsonError ?? textError;
+    let finalError = error2;
+    for (const fn of interceptors.error._fns) {
+      if (fn) {
+        finalError = await fn(error2, response, request2, opts);
+      }
+    }
+    finalError = finalError || {};
+    if (opts.throwOnError) {
+      throw finalError;
+    }
+    return opts.responseStyle === "data" ? void 0 : {
+      error: finalError,
+      ...result
+    };
+  };
+  const makeMethod = (method) => {
+    const fn = (options) => request({ ...options, method });
+    fn.sse = async (options) => {
+      const { opts, url } = await beforeRequest(options);
+      return createSseClient({
+        ...opts,
+        body: opts.body,
+        headers: opts.headers,
+        method,
+        url
+      });
+    };
+    return fn;
+  };
+  return {
+    buildUrl,
+    connect: makeMethod("CONNECT"),
+    delete: makeMethod("DELETE"),
+    get: makeMethod("GET"),
+    getConfig,
+    head: makeMethod("HEAD"),
+    interceptors,
+    options: makeMethod("OPTIONS"),
+    patch: makeMethod("PATCH"),
+    post: makeMethod("POST"),
+    put: makeMethod("PUT"),
+    request,
+    setConfig,
+    trace: makeMethod("TRACE")
+  };
+};
+
+// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/gen/core/params.gen.js
+var extraPrefixesMap = {
+  $body_: "body",
+  $headers_: "headers",
+  $path_: "path",
+  $query_: "query"
+};
+var extraPrefixes = Object.entries(extraPrefixesMap);
+
+// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/gen/client.gen.js
+var client = createClient(createConfig({
+  baseUrl: "http://localhost:4096"
+}));
+
 // src-tauri/resources/title-server.mjs
 delete process.env.CLAUDECODE;
 var config2 = JSON.parse(process.argv[2] || "{}");
 var claudeCliPath = config2.claudeCliPath || "claude";
+var opencodeCliPath = config2.opencodeCliPath || "opencode";
+if (opencodeCliPath && opencodeCliPath !== "opencode") {
+  const opencodeDir = opencodeCliPath.substring(0, opencodeCliPath.lastIndexOf("/"));
+  if (opencodeDir) {
+    process.env.PATH = opencodeDir + ":" + process.env.PATH;
+  }
+}
 var logFile = "/tmp/title-server-debug.log";
 var log = (msg) => {
   const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}

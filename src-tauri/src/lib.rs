@@ -363,6 +363,7 @@ async fn create_agent_session(
                 "cwd": &directory,
                 "systemPrompt": system_prompt,
                 "model": model,
+                "permissionMode": permission_mode,
             })
         };
         let config_json = config.to_string();
@@ -3591,8 +3592,10 @@ pub fn run() {
                         return;
                     };
                     let claude_cli = resolve_bin("claude");
+                    let opencode_cli = resolve_bin("opencode");
                     let title_config = serde_json::json!({
                         "claudeCliPath": claude_cli,
+                        "opencodeCliPath": opencode_cli,
                     });
                     match std::process::Command::new(&node_bin)
                         .arg(title_script.to_string_lossy().as_ref())
