@@ -16,6 +16,7 @@ import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
 import { AGENT_PROVIDERS, defaultModelForProvider, jsonlDirectory, modelsForProvider, type AgentProvider, type ModelOption, type Session } from "./types";
 import CommandPalette from "./components/CommandPalette";
+import { useUpdater } from "./hooks/useUpdater";
 
 export interface OpenCodeModel {
   id: string;
@@ -168,6 +169,8 @@ export default function App() {
     updatePermissionMode,
     unreadSessions,
   } = useSessionContext();
+
+  const { update, installing, install, dismiss } = useUpdater();
 
   // Recent directories helpers
   const MAX_RECENT_DIRS = 8;
@@ -588,7 +591,21 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen bg-[var(--bg-primary)]">
+    <div className="flex flex-col h-screen w-screen bg-[var(--bg-primary)]">
+      {update && (
+        <div className="flex items-center justify-between px-4 py-2 bg-blue-600 text-white text-sm shrink-0">
+          <span>Update available: v{update.version}</span>
+          <div className="flex gap-2">
+            <button onClick={install} disabled={installing} className="px-3 py-0.5 bg-white text-blue-600 rounded font-medium hover:bg-blue-50 disabled:opacity-50">
+              {installing ? "Installing..." : "Update & Restart"}
+            </button>
+            <button onClick={dismiss} className="px-2 py-0.5 text-white/80 hover:text-white">
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="flex flex-1 min-h-0">
       {/* Left sidebar */}
       <Sidebar
         workspaces={workspaces}
@@ -1291,6 +1308,7 @@ export default function App() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

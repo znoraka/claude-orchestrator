@@ -10,8 +10,8 @@ lerna-debug.log*
 node_modules
 dist
 
-# Bundled MCP server (build artifact)
-src-tauri/resources/mcp-server.bundle.mjs
+# Bundled resources (build artifacts)
+src-tauri/resources/*.bundle.mjs
 dist-ssr
 *.local
 
@@ -25,3 +25,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Worktrees
+.worktrees/
+
+# Signing secrets
+.env.signing

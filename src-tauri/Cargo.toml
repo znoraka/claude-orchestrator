@@ -3,6 +3,7 @@ name = "claude-orchestrator"
 version = "0.1.0"
 description = "Claude Session Manager"
 authors = ["you"]
+license = "MIT"
 edition = "2021"
 
 [lib]
@@ -31,4 +32,6 @@ tauri-plugin-notification = "2"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSDockTile"] }
 objc2-foundation = "0.3"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 

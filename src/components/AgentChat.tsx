@@ -1482,6 +1482,12 @@ const AgentChat = memo(function AgentChat({
     return hasInstructionalPatterns && (hasNumberedList || lines.length >= 5);
   }
 
+  function looksLikeBackgroundTaskNotification(text: string): boolean {
+    // Background task completion messages injected by the SDK follow a pattern:
+    // line1: task ID, line2: toolu_..., line3: .output path, line4: completed
+    return /^[a-z0-9]+\ntoolu_/.test(text) && text.includes("completed");
+  }
+
   function sdkMessageToChatMessage(msg: Record<string, unknown>, isHistoryReplay = false): ChatMessage | null {
     const msgType = msg.type as string;
 
@@ -1514,6 +1520,7 @@ const AgentChat = memo(function AgentChat({
       if (visibleBlocks.length === 0) return null;
       // Skip messages that look like Task/Agent tool prompts
       const textContent = visibleBlocks.find((b) => b.type === "text")?.text || "";
+      if (looksLikeBackgroundTaskNotification(textContent)) return null;
       if (looksLikeTaskPrompt(textContent)) {
         // Don't filter out the plan execution message
         const isPlanMessage = session?.planContent && textContent.length > 200 &&
