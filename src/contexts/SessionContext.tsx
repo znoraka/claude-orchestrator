@@ -799,7 +799,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
       // busy → idle on a non-active session → mark unread
       // For child sessions, mark the parent as unread instead
-      if (wasBusy && !isBusy && !wasActive) {
+      if (wasBusy && !isBusy && !wasActive && session.status !== "stopped") {
         const targetId = session.parentSessionId && sessionsRef.current.some(s => s.id === session.parentSessionId)
           ? session.parentSessionId
           : session.id;
