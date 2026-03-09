@@ -318,7 +318,7 @@ export default function Sidebar({
                     .flatMap((wt) => wt.sessions)
                     .filter((s) => isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
                   return important.map((session) => (
-                    <div key={session.id} className="pl-5">
+                    <div key={session.id}>
                       {renderSession(session, { hideDirectory: true })}
                     </div>
                   ));
@@ -381,7 +381,7 @@ export default function Sidebar({
                         {isWtCollapsed && hasMultipleWorktrees && (() => {
                           const important = wt.sessions.filter((s) => isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
                           return important.map((session) => (
-                            <div key={session.id} className="pl-5">
+                            <div key={session.id}>
                               {renderSession(session, { hideDirectory: true })}
                             </div>
                           ));
@@ -419,7 +419,7 @@ export default function Sidebar({
                                 </button>
                               )}
                               {visible.map((session) => (
-                                <div key={session.id} className="pl-5">
+                                <div key={session.id}>
                                   {renderSession(session, { hideDirectory: true })}
                                 </div>
                               ))}

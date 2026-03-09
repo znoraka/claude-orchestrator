@@ -113,7 +113,7 @@ export default memo(function SessionTab({
     <div
       onClick={onClick}
       className={`
-        session-tab group relative flex items-center gap-2 pl-2 pr-1.5 py-1.5 cursor-pointer
+        session-tab group relative flex items-center gap-2 pl-6 pr-1.5 py-1.5 cursor-pointer
         rounded-md transition-colors
         ${rowBg}
         ${isActive
@@ -124,8 +124,8 @@ export default memo(function SessionTab({
         }
       `}
     >
-      {/* Status indicator */}
-      <span className="shrink-0 w-3 h-3 flex items-center justify-center">
+      {/* Status indicator — absolutely positioned in the left padding area */}
+      <span className="absolute left-1.5 top-1/2 -translate-y-1/2 w-3 h-3 flex items-center justify-center">
         {hasError ? (
           <svg className="w-3 h-3 text-red-400" viewBox="0 0 16 16" fill="currentColor">
             <path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575ZM8 5a.75.75 0 0 0-.75.75v2.5a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8 5Zm1 6a1 1 0 1 0-2 0 1 1 0 0 0 2 0Z" />
