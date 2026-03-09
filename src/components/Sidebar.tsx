@@ -223,7 +223,7 @@ export default function Sidebar({
 
 
   return (
-    <div className="w-64 h-full bg-gradient-to-b from-[var(--bg-secondary)] to-[#10121a] flex flex-col shrink-0 px-2 pt-3 pb-3">
+    <div className="w-64 h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-2 pt-3 pb-3">
       {/* Search + New button merged into one row */}
       <div className="pb-2 flex items-center gap-1.5">
         <div className="relative flex-1 min-w-0">
@@ -245,7 +245,7 @@ export default function Sidebar({
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search sessions..."
-            className="sidebar-search w-full bg-[var(--bg-primary)]/80 border border-[var(--border-color)] rounded-lg pl-7 pr-3 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] focus:shadow-[0_0_0_3px_rgba(240,120,48,0.1)] transition-all duration-200"
+            className="sidebar-search w-full bg-[var(--bg-primary)]/80 border border-[var(--border-color)] rounded-lg pl-7 pr-3 py-2 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] focus:shadow-[0_0_0_3px_rgba(240,120,48,0.1)] transition-all duration-200"
           />
           {contentSearching && (
             <div className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
@@ -253,7 +253,7 @@ export default function Sidebar({
         </div>
         <button
           onClick={onCreateSession}
-          className="w-7 h-7 rounded-lg bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] hover:shadow-[0_0_12px_rgba(240,120,48,0.3)] text-white text-sm font-medium transition-all duration-200 shrink-0 flex items-center justify-center"
+          className="w-7 h-7 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-medium transition-all duration-200 shrink-0 flex items-center justify-center"
           title="New session"
         >
           +
@@ -261,7 +261,7 @@ export default function Sidebar({
       </div>
 
       {/* Tree */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5">
         {workspaces.length > 0 ? (
           workspaces.map((workspace, wsIdx) => {
             const repoName = workspace.directory.split("/").filter(Boolean).pop() || workspace.directory;
@@ -290,9 +290,9 @@ export default function Sidebar({
                 {/* Workspace header — bold section bar */}
                 <button
                   onClick={() => toggleRepo(workspace.id)}
-                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left bg-[var(--bg-tertiary)]/60 hover:bg-[var(--bg-tertiary)] transition-colors group"
-                  style={{ boxShadow: `inset 3px 0 0 ${color}` }}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left hover:bg-[var(--bg-hover)]/50 transition-colors group"
                 >
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
                   <svg
                     className={`w-2.5 h-2.5 shrink-0 text-[var(--text-tertiary)] transition-transform ${
                       isRepoCollapsed ? "" : "rotate-90"

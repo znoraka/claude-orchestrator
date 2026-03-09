@@ -2133,7 +2133,7 @@ const AgentChat = memo(function AgentChat({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-5 pr-16 py-4 flex flex-col gap-4"
+        className="flex-1 overflow-y-auto px-5 pr-16 py-4 flex flex-col gap-5"
       >
         {/* Skip rendering message DOM for inactive tabs to avoid layout thrash */}
         {isActive ? (
@@ -2196,7 +2196,7 @@ const AgentChat = memo(function AgentChat({
       </div>
 
       {/* Input area */}
-      <div className="border-t border-[var(--border-subtle)] px-4 py-3 relative flex flex-col gap-2" ref={inputAreaRef}>
+      <div className="border-t border-[var(--border-subtle)] px-5 py-4 bg-[var(--bg-secondary)]/40 relative flex flex-col gap-2" ref={inputAreaRef}>
         {/* Slash command autocomplete */}
         {showSlashMenu && filteredSlashCommands.length > 0 && (
           <div
@@ -2346,7 +2346,7 @@ const AgentChat = memo(function AgentChat({
             )}
 
             <div className="flex gap-2 items-end">
-              <div className="flex-1 flex items-end min-h-[38px] bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg focus-within:border-[var(--accent)] transition-colors">
+              <div className="flex-1 flex items-end min-h-[38px] bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl focus-within:border-[var(--accent)] transition-colors">
               {sessionDir && (
                 <button
                   onClick={() => setShowFilePicker(true)}
@@ -2393,7 +2393,7 @@ const AgentChat = memo(function AgentChat({
               )}
             </div>
             {/* Pill row: Model, Mode, Effort */}
-            <div ref={pillRowRef} className="flex items-center gap-1.5 mt-1">
+            <div ref={pillRowRef} className="flex items-center gap-1.5 mt-1 opacity-80 hover:opacity-100 transition-opacity">
               {/* Model pill */}
               <div className="relative">
                 <button
@@ -2629,7 +2629,7 @@ const MessageBubble = memo(function MessageBubble({
               </button>
             )}
           </div>
-          <div className="max-w-[80%] max-h-96 overflow-y-auto bg-gradient-to-br from-[var(--accent)]/12 to-[var(--accent)]/6 border border-[var(--accent)]/25 text-[var(--text-primary)] rounded-2xl rounded-br-md px-5 py-3 shadow-sm">
+          <div className="max-w-[80%] max-h-96 overflow-y-auto bg-[var(--bg-tertiary)] border border-[var(--border-color)] text-[var(--text-primary)] rounded-2xl rounded-br-md px-5 py-3 shadow-sm">
             {visible.map((block, i) => {
               // If this is a plan execution message loaded from JSONL, show short label instead of full plan text
               if (hasPlan && block.type === "text" && block.text && block.text.length > 200) {

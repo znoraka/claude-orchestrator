@@ -629,8 +629,7 @@ export default function App() {
           <div className="flex items-center justify-center h-full animate-fade-in-up">
             <div className="text-center">
               <div className="relative w-20 h-20 mx-auto mb-6">
-                <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-[var(--accent)]/20 to-[var(--accent)]/5 blur-xl" />
-                <div className="relative w-20 h-20 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center border border-[var(--border-subtle)]">
+                <div className="w-20 h-20 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center border border-[var(--border-subtle)]">
                   <svg className="w-9 h-9 text-[var(--accent)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
                   </svg>
@@ -644,7 +643,7 @@ export default function App() {
               </p>
               <button
                 onClick={handleNewSession}
-                className="px-6 py-2.5 bg-gradient-to-r from-[var(--accent)] to-[var(--accent-hover)] hover:shadow-[0_0_20px_rgba(240,120,48,0.3)] text-white rounded-lg text-sm font-medium transition-all duration-200"
+                className="px-6 py-2.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-lg text-sm font-medium transition-all duration-200"
               >
                 New Session
               </button>
@@ -658,6 +657,17 @@ export default function App() {
           <div className="absolute inset-0">
             {/* Content area */}
             <div className="absolute inset-0 flex flex-col">
+              {/* Content header bar */}
+              {activeSessionId && activePanel === null && activeSession && (
+                <div className="h-9 flex items-center gap-2 px-4 border-b border-[var(--border-subtle)] bg-[var(--bg-secondary)]/60 text-xs shrink-0">
+                  <span className="text-[var(--text-tertiary)]">{panelDirectory.split("/").filter(Boolean).pop() || panelDirectory}</span>
+                  <span className="text-[var(--text-tertiary)]">/</span>
+                  <span className="text-[var(--text-primary)] font-medium">{activeSession.name || "Untitled"}</span>
+                  {dialogBranches.get(panelDirectory) && (
+                    <span className="ml-auto px-2 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] font-mono text-[10px]">{dialogBranches.get(panelDirectory)}</span>
+                  )}
+                </div>
+              )}
               {/* Panel content */}
               <div className="flex-1 min-h-0 relative">
               {/* Empty state when no session is selected */}
@@ -665,8 +675,7 @@ export default function App() {
                 <div className="absolute inset-0 flex items-center justify-center animate-fade-in-up">
                   <div className="text-center max-w-sm">
                     <div className="relative w-20 h-20 mx-auto mb-5">
-                      <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-[var(--accent)]/15 to-transparent blur-xl" />
-                      <div className="relative w-20 h-20 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center border border-[var(--border-subtle)]">
+                      <div className="w-20 h-20 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center border border-[var(--border-subtle)]">
                         <svg className="w-9 h-9 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
                         </svg>
@@ -880,7 +889,7 @@ export default function App() {
                 onClick={() => setActivePanel(null)}
                 className={`relative w-8 h-8 flex items-center justify-center rounded-lg transition-all duration-150 ${
                   activePanel === null
-                    ? "bg-[var(--accent)]/15 text-[var(--accent)] shadow-[0_0_12px_rgba(240,120,48,0.15)]"
+                    ? "bg-[var(--accent)]/15 text-[var(--accent)]"
                     : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60"
                 }`}
                 data-tooltip="Claude (⌘J)"
@@ -907,7 +916,7 @@ export default function App() {
                 onClick={() => togglePanel("prs")}
                 className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all duration-150 ${
                   activePanel === "prs"
-                    ? "bg-[var(--accent)]/15 text-[var(--accent)] shadow-[0_0_12px_rgba(240,120,48,0.15)]"
+                    ? "bg-[var(--accent)]/15 text-[var(--accent)]"
                     : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60"
                 }`}
                 data-tooltip="Pull Requests (⌘P)"
@@ -920,7 +929,7 @@ export default function App() {
                 onClick={() => togglePanel("shell")}
                 className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all duration-150 ${
                   activePanel === "shell"
-                    ? "bg-[var(--accent)]/15 text-[var(--accent)] shadow-[0_0_12px_rgba(240,120,48,0.15)]"
+                    ? "bg-[var(--accent)]/15 text-[var(--accent)]"
                     : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60"
                 }`}
                 data-tooltip="Shell (⌘T)"
