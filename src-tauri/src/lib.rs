@@ -364,6 +364,7 @@ async fn create_agent_session(
                 "systemPrompt": system_prompt,
                 "model": model,
                 "permissionMode": permission_mode,
+                "ocSessionId": if resume { claude_session_id.as_deref() } else { None::<&str> },
             })
         };
         let config_json = config.to_string();

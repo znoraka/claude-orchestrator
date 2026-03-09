@@ -100,7 +100,7 @@ function groupToolBlocks(blocks: ContentBlock[], messageId: string): GroupedBloc
   // Collect tool_use IDs to hide (e.g. ToolSearch — internal plumbing, no user value)
   const hiddenToolIds = new Set<string>();
   for (const block of blocks) {
-    if (block.type === "tool_use" && (block.name === "ToolSearch" || block.name === "AskUserQuestion") && block.id) {
+    if (block.type === "tool_use" && (block.name === "ToolSearch" || block.name === "AskUserQuestion" || block.name === "question") && block.id) {
       hiddenToolIds.add(block.id);
     }
   }
@@ -206,7 +206,7 @@ function bundleConsecutiveToolGroups(grouped: GroupedBlocks, isLastMessage: bool
 // Serial tool calls produce: assistant(tool_use) → user(tool_result) → assistant(tool_use) → ...
 // This merges those into a single virtual assistant message so bundling works across turns.
 
-const NON_VISUAL_BLOCK_TYPES = new Set(["thinking", "redacted_thinking", "tool_result"]);
+const NON_VISUAL_BLOCK_TYPES = new Set(["redacted_thinking", "tool_result"]);
 
 function isToolOnlyAssistant(msg: ChatMessage): boolean {
   if (msg.type !== "assistant") return false;
@@ -316,8 +316,6 @@ function parseHistoryLines(
                   ? existing.findIndex((b: ContentBlock) => b.type === "tool_use" && b.id === block.id)
                   : block.type === "text"
                   ? existing.findIndex((b: ContentBlock) => b.type === "text")
-                  : block.type === "thinking"
-                  ? existing.findIndex((b: ContentBlock) => b.type === "thinking")
                   : -1;
                 if (matchIdx !== -1) {
                   existing[matchIdx] = block;
@@ -620,6 +618,7 @@ const AgentChat = memo(function AgentChat({
   const partialRef = useRef<ContentBlock[]>([]);
   const currentBlockIndexRef = useRef(-1);
   const mountedRef = useRef(true);
+  const sdkHistoryLoadedRef = useRef(false);
   const pendingPromptConsumedRef = useRef(false);
 
   // Stable refs for callback props to avoid dependency cascades.
@@ -1227,8 +1226,6 @@ const AgentChat = memo(function AgentChat({
             ? merged.findIndex((b) => b.type === "tool_use" && b.id === block.id)
             : block.type === "text"
             ? merged.findIndex((b) => b.type === "text")
-            : block.type === "thinking"
-            ? merged.findIndex((b) => b.type === "thinking")
             : -1;
           if (matchIdx !== -1) {
             merged[matchIdx] = block; // Update existing block in place
@@ -1396,6 +1393,30 @@ const AgentChat = memo(function AgentChat({
         setPendingQuestion({ blockId: `ask-${Date.now()}`, questions });
         onQuestionChangeRef.current?.(true);
       }
+      return;
+    }
+
+    // User message from SDK history replay (OpenCode session resumption)
+    if (msgType === "user_history") {
+      const messageObj = msg.message as Record<string, unknown> | undefined;
+      const content = normalizeContent(messageObj?.content);
+      if (content) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: (messageObj?.id as string) || `user-history-${Date.now()}`,
+            type: "user",
+            content,
+            timestamp: Date.now(),
+          },
+        ]);
+      }
+      return;
+    }
+
+    // SDK history fully loaded — mark so we skip JSONL replay
+    if (msgType === "history_loaded") {
+      sdkHistoryLoadedRef.current = true;
       return;
     }
 
@@ -3080,15 +3101,19 @@ function ContentBlockView({ block }: { block: ContentBlock }) {
   }
 
   if (block.type === "thinking" && block.thinking) {
+    const text = block.thinking.trimStart();
+    const headingMatch = text.match(/^(#{1,3})\s+(.*)/);
+    let prefixed: string;
+    if (headingMatch) {
+      const rest = text.indexOf("\n") >= 0 ? text.slice(text.indexOf("\n")) : "";
+      prefixed = `${headingMatch[1]} *Thinking:* ${headingMatch[2]}${rest}`;
+    } else {
+      prefixed = `*Thinking:* ${text}`;
+    }
     return (
-      <details className="text-xs text-[var(--text-tertiary)] mb-1">
-        <summary className="cursor-pointer hover:text-[var(--text-secondary)] select-none">
-          Thinking…
-        </summary>
-        <div className="mt-1 pl-3 border-l border-[var(--border-color)]">
-          <MarkdownContent text={block.thinking} />
-        </div>
-      </details>
+      <div className="thinking-block">
+        <MarkdownContent text={prefixed} />
+      </div>
     );
   }
 

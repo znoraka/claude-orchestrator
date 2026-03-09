@@ -216,6 +216,14 @@ async function boot() {
     emit({ type: "error", error: `Failed to subscribe to OpenCode events: ${err.message}` });
   }
 
+  // If resuming an existing OpenCode session, load its history
+  if (config.ocSessionId) {
+    ocSessionId = config.ocSessionId;
+    log(`Resuming OpenCode session: ${ocSessionId}`);
+    emit({ type: "system", subtype: "init", session_id: ocSessionId });
+    await loadSessionHistory(ocSessionId);
+  }
+
   emit({
     type: "system",
     subtype: "bridge_ready",
@@ -483,6 +491,26 @@ function emitPartAsAssistantMessage(part, delta) {
       break;
     }
     case "tool": {
+      // Intercept "question" tool — convert to AskUserQuestion
+      if (part.tool === "question") {
+        const input = part.state?.input || {};
+        const rawQuestions = input.questions || [input];
+        const questions = (Array.isArray(rawQuestions) ? rawQuestions : [rawQuestions]).map((q) => ({
+          question: q.question || q.label || "",
+          header: q.header || undefined,
+          options: Array.isArray(q.options) ? q.options : undefined,
+        }));
+        if (questions.length > 0 && questions[0].question) {
+          const toolId = `ask-${part.id || Date.now()}`;
+          blocks.push({
+            type: "tool_use",
+            id: toolId,
+            name: "AskUserQuestion",
+            input: { questions },
+          });
+          break;
+        }
+      }
       const state = part.state;
       // Emit tool_use block
       blocks.push({
@@ -493,10 +521,26 @@ function emitPartAsAssistantMessage(part, delta) {
       });
       // If completed or error, also emit tool_result
       if (state?.status === "completed") {
+        let output = state.output || "";
+        // Normalize OpenCode's XML-wrapped read output to cat -n format
+        if (part.tool === "read" && output.includes("<content>")) {
+          const contentMatch = output.match(/<content>([\s\S]*?)<\/content>/);
+          if (contentMatch) {
+            output = contentMatch[1]
+              .replace(/\(End of file[^\n]*\)\n?$/, "")
+              .trimEnd()
+              .split("\n")
+              .map((line) => {
+                const m = line.match(/^(\d+): (.*)$/);
+                return m ? `     ${m[1]}\t${m[2]}` : line;
+              })
+              .join("\n");
+          }
+        }
         blocks.push({
           type: "tool_result",
           tool_use_id: part.callID || part.id,
-          content: state.output || "",
+          content: output,
           is_error: false,
         });
       } else if (state?.status === "error") {
@@ -573,6 +617,63 @@ function emitPartAsAssistantMessage(part, delta) {
         stop_reason: null,
       },
     });
+  }
+}
+
+// ── Load session history from OpenCode SDK ──────────────────────────
+async function loadSessionHistory(sid) {
+  try {
+    const result = await client.session.messages({ path: { id: sid } });
+    if (result.error || !result.data) {
+      log(`Failed to load session history: ${JSON.stringify(result.error)}`);
+      emit({ type: "history_loaded", success: false });
+      return;
+    }
+
+    log(`Loading history: ${result.data.length} messages`);
+
+    for (const { info, parts } of result.data) {
+      if (info.role === "user") {
+        // Extract text from user message parts
+        const textParts = (parts || []).filter((p) => p.type === "text");
+        const text = textParts.map((p) => p.text || "").join("\n");
+        emit({
+          type: "user_history",
+          message: {
+            id: info.id,
+            role: "user",
+            content: [{ type: "text", text }],
+          },
+        });
+      } else if (info.role === "assistant") {
+        // Emit each part using the same translation logic as streaming
+        for (const part of parts || []) {
+          emitPartAsAssistantMessage(part);
+        }
+        // Emit result with token/cost data from message metadata
+        if (info.tokens || info.cost != null) {
+          emit({
+            type: "result",
+            subtype: "result",
+            result: "",
+            cost_usd: info.cost || 0,
+            session_id: sid,
+            usage: {
+              input_tokens: info.tokens?.input || 0,
+              output_tokens: info.tokens?.output || 0,
+              cache_read_input_tokens: info.tokens?.cache?.read || 0,
+              cache_creation_input_tokens: info.tokens?.cache?.write || 0,
+            },
+          });
+        }
+      }
+    }
+
+    emit({ type: "history_loaded", success: true });
+    log(`Session history loaded successfully`);
+  } catch (err) {
+    log(`Error loading session history: ${err.message}`);
+    emit({ type: "history_loaded", success: false });
   }
 }
 
