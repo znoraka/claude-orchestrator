@@ -42,6 +42,20 @@ if [[ -z "$APP" ]]; then
   exit 1
 fi
 
+# ── Create tar.gz + sig for updater if not produced by Tauri ────
+if [[ -z "$TARGZ" ]]; then
+  TARGZ_NAME="${APP_NAME}_${VERSION}_aarch64.app.tar.gz"
+  TARGZ="${BUNDLE_DIR}/macos/${TARGZ_NAME}"
+  echo "Creating updater tarball: ${TARGZ_NAME}..."
+  tar -czf "$TARGZ" -C "${BUNDLE_DIR}/macos" "${APP_NAME}.app"
+fi
+
+if [[ -z "$SIG" && -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+  SIG="${TARGZ}.sig"
+  echo "Signing tarball..."
+  pnpm tauri signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$TARGZ"
+fi
+
 echo ""
 echo "Build complete!"
 echo "  .app:    $APP"
