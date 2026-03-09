@@ -38,9 +38,19 @@ export default function Sidebar({
 }: SidebarProps) {
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
-  const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(new Set());
-  const [collapsedWorktrees, setCollapsedWorktrees] = useState<Set<string>>(new Set());
-  const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(new Set());
+  const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(() => {
+    try { const v = localStorage.getItem("sidebar:collapsedRepos"); return v ? new Set(JSON.parse(v)) : new Set(); } catch { return new Set(); }
+  });
+  const [collapsedWorktrees, setCollapsedWorktrees] = useState<Set<string>>(() => {
+    try { const v = localStorage.getItem("sidebar:collapsedWorktrees"); return v ? new Set(JSON.parse(v)) : new Set(); } catch { return new Set(); }
+  });
+  const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(() => {
+    try { const v = localStorage.getItem("sidebar:expandedWorktrees"); return v ? new Set(JSON.parse(v)) : new Set(); } catch { return new Set(); }
+  });
+
+  useEffect(() => { localStorage.setItem("sidebar:collapsedRepos", JSON.stringify([...collapsedRepos])); }, [collapsedRepos]);
+  useEffect(() => { localStorage.setItem("sidebar:collapsedWorktrees", JSON.stringify([...collapsedWorktrees])); }, [collapsedWorktrees]);
+  useEffect(() => { localStorage.setItem("sidebar:expandedWorktrees", JSON.stringify([...expandedWorktrees])); }, [expandedWorktrees]);
 
   const branches = worktreeBranches ?? new Map<string, string>();
 
@@ -137,8 +147,14 @@ export default function Sidebar({
     (s: Session): boolean => {
       if (s.id === activeSessionId) return true;
       if (unreadSessions?.has(s.id)) return true;
+      if (s.status === "running" || s.status === "starting") return true;
       const youngest = youngestDescendantMap?.get(s.id);
-      if (s.hasQuestion || youngest?.hasQuestion) return true;
+      if (youngest) {
+        if (unreadSessions?.has(youngest.id)) return true;
+        if (youngest.status === "running" || youngest.status === "starting") return true;
+        if (youngest.hasQuestion) return true;
+      }
+      if (s.hasQuestion) return true;
       return false;
     },
     [activeSessionId, unreadSessions, youngestDescendantMap]
@@ -390,6 +406,18 @@ export default function Sidebar({
 
                           return (
                             <>
+                              {isExpanded && topLevel.length > MAX_INACTIVE && !filterQ && (
+                                <button
+                                  onClick={() => setExpandedWorktrees((prev) => {
+                                    const next = new Set(prev);
+                                    next.delete(wt.path);
+                                    return next;
+                                  })}
+                                  className="pl-5 w-full px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left sticky top-0 z-10 bg-[var(--bg-primary)]"
+                                >
+                                  Show less
+                                </button>
+                              )}
                               {visible.map((session) => (
                                 <div key={session.id} className="pl-5">
                                   {renderSession(session, { hideDirectory: true })}
