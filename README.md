@@ -36,7 +36,7 @@ pnpm tauri dev
 ./build.sh
 
 # Build and publish a signed release to GitHub
-RELEASE=1 ./build.sh
+./build.sh --release
 ```
 
 See the [build script](./build.sh) for signing and notarization setup.
