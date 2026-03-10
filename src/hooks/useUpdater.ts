@@ -2,9 +2,12 @@ import { useEffect, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
+export type UpdateStatus = "idle" | "downloading" | "installing";
+
 export function useUpdater(onError?: (msg: string) => void) {
   const [update, setUpdate] = useState<Update | null>(null);
-  const [installing, setInstalling] = useState(false);
+  const [status, setStatus] = useState<UpdateStatus>("idle");
+  const [progress, setProgress] = useState(0);
 
   useEffect(() => {
     check()
@@ -20,19 +23,37 @@ export function useUpdater(onError?: (msg: string) => void) {
 
   const install = async () => {
     if (!update) return;
-    setInstalling(true);
+    setStatus("downloading");
+    setProgress(0);
+    let downloaded = 0;
+    let total = 0;
     try {
-      await update.downloadAndInstall();
+      await update.downloadAndInstall((event) => {
+        switch (event.event) {
+          case "Started":
+            total = event.data.contentLength ?? 0;
+            break;
+          case "Progress":
+            downloaded += event.data.chunkLength;
+            if (total > 0) setProgress(Math.round((downloaded / total) * 100));
+            break;
+          case "Finished":
+            setStatus("installing");
+            setProgress(100);
+            break;
+        }
+      });
       await relaunch();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("Update install failed:", e);
       onError?.(`Update install failed: ${msg}`);
-      setInstalling(false);
+      setStatus("idle");
+      setProgress(0);
     }
   };
 
   const dismiss = () => setUpdate(null);
 
-  return { update, installing, install, dismiss };
+  return { update, status, progress, install, dismiss };
 }

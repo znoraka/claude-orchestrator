@@ -72,7 +72,7 @@ fi
 
 # ── Create tar.gz + sig for updater if not produced by Tauri ────
 if [[ -z "$TARGZ" ]]; then
-  TARGZ_NAME="${APP_NAME}_${VERSION}_aarch64.app.tar.gz"
+  TARGZ_NAME="${APP_NAME// /.}_${VERSION}_aarch64.app.tar.gz"
   TARGZ="${BUNDLE_DIR}/macos/${TARGZ_NAME}"
   echo "Creating updater tarball: ${TARGZ_NAME}..."
   tar -czf "$TARGZ" -C "${BUNDLE_DIR}/macos" "${APP_NAME}.app"
@@ -110,7 +110,8 @@ if [[ "$RELEASE" == true ]]; then
 
   SIGNATURE=$(cat "$SIG")
   TARGZ_NAME=$(basename "$TARGZ")
-  DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${TARGZ_NAME}"
+  TARGZ_NAME_URL="${TARGZ_NAME// /%20}"
+  DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${TARGZ_NAME_URL}"
   PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
   # Generate latest.json for Tauri updater

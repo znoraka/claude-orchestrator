@@ -177,7 +177,7 @@ export default function App() {
   } = useSessionContext();
 
   const { showError } = useToast();
-  const { update, installing, install, dismiss } = useUpdater(showError);
+  const { update, status, progress, install, dismiss } = useUpdater(showError);
 
   // Recent directories helpers
   const MAX_RECENT_DIRS = 8;
@@ -659,15 +659,45 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen w-screen bg-[var(--bg-primary)]">
       {update && (
-        <div className="flex items-center justify-between px-4 py-2 bg-blue-600 text-white text-sm shrink-0">
-          <span>Update available: v{update.version}</span>
-          <div className="flex gap-2">
-            <button onClick={install} disabled={installing} className="px-3 py-0.5 bg-white text-blue-600 rounded font-medium hover:bg-blue-50 disabled:opacity-50">
-              {installing ? "Installing..." : "Update & Restart"}
-            </button>
-            <button onClick={dismiss} className="px-2 py-0.5 text-white/80 hover:text-white">
-              Dismiss
-            </button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onMouseDown={(e) => { if (e.target === e.currentTarget) dismiss(); }}>
+          <div
+            className="flex flex-col bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl shadow-2xl w-[360px]"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-[var(--border-color)]">
+              <div className="text-sm font-semibold text-[var(--text-primary)]">Update available</div>
+              <div className="text-xs text-[var(--text-secondary)] mt-0.5">Version {update.version} is ready to install.</div>
+            </div>
+            {status !== "idle" && (
+              <div className="px-5 py-3 border-b border-[var(--border-color)]">
+                <div className="flex items-center justify-between text-xs text-[var(--text-secondary)] mb-1.5">
+                  <span>{status === "installing" ? "Installing…" : "Downloading…"}</span>
+                  {status === "downloading" && <span>{progress}%</span>}
+                </div>
+                <div className="h-1.5 rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-[var(--accent)] transition-all duration-200"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            <div className="flex items-center justify-end gap-2 px-5 py-3">
+              <button
+                onClick={dismiss}
+                disabled={status !== "idle"}
+                className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-40"
+              >
+                Dismiss
+              </button>
+              <button
+                onClick={install}
+                disabled={status !== "idle"}
+                className="px-4 py-1.5 text-sm font-medium bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-lg transition-colors disabled:opacity-50"
+              >
+                {status === "idle" ? "Update & Restart" : status === "downloading" ? "Downloading…" : "Installing…"}
+              </button>
+            </div>
           </div>
         </div>
       )}
