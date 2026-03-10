@@ -315,7 +315,16 @@ function parseHistoryLines(
                 const matchIdx = block.type === "tool_use" && block.id
                   ? existing.findIndex((b: ContentBlock) => b.type === "tool_use" && b.id === block.id)
                   : block.type === "text"
-                  ? existing.findIndex((b: ContentBlock) => b.type === "text")
+                  ? (() => {
+                      let lastTextIdx = -1;
+                      let lastToolUseIdx = -1;
+                      for (let i = existing.length - 1; i >= 0; i--) {
+                        if (lastTextIdx === -1 && existing[i].type === "text") lastTextIdx = i;
+                        if (lastToolUseIdx === -1 && existing[i].type === "tool_use") lastToolUseIdx = i;
+                        if (lastTextIdx !== -1 && lastToolUseIdx !== -1) break;
+                      }
+                      return lastTextIdx > lastToolUseIdx ? lastTextIdx : -1;
+                    })()
                   : -1;
                 if (matchIdx !== -1) {
                   existing[matchIdx] = block;
@@ -398,11 +407,19 @@ const AgentChat = memo(function AgentChat({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [images, setImages] = useState<Array<{ id: string; data: string; mediaType: string; name: string }>>([]);
+  const [pastedFiles, setPastedFiles] = useState<Array<{ id: string; name: string; content: string; mimeType: string }>>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const abortedRef = useRef(false);
   const generationStartRef = useRef<number>(0);
   const isGeneratingRef = useRef(false);
   const isGeneratingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [queuedMessage, setQueuedMessage] = useState<{
+    text: string;
+    images: Array<{ id: string; data: string; mediaType: string; name: string }>;
+    fileReferences: FileReference[];
+    pastedFiles: Array<{ id: string; name: string; content: string; mimeType: string }>;
+  } | null>(null);
+  const queuedMessageRef = useRef<typeof queuedMessage>(null);
   const stopGenerating = useCallback(() => {
     if (isGeneratingTimeoutRef.current) {
       clearTimeout(isGeneratingTimeoutRef.current);
@@ -412,6 +429,18 @@ const AgentChat = memo(function AgentChat({
       setIsGenerating(false);
     }, 150);
   }, []);
+
+  useEffect(() => {
+    if (isGenerating) return;
+    if (abortedRef.current) return;
+    const queued = queuedMessageRef.current;
+    if (!queued) return;
+    queuedMessageRef.current = null;
+    setQueuedMessage(null);
+    sendMessage(queued.text || undefined, queued.images, queued.fileReferences, queued.pastedFiles);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isGenerating]);
+
   const [currentTodo, setCurrentTodo] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] = useState<{ toolName: string; input: Record<string, unknown> } | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<{ blockId: string; questions: AskQuestion[] } | null>(null);
@@ -1247,7 +1276,16 @@ const AgentChat = memo(function AgentChat({
           const matchIdx = block.type === "tool_use" && block.id
             ? merged.findIndex((b) => b.type === "tool_use" && b.id === block.id)
             : block.type === "text"
-            ? merged.findIndex((b) => b.type === "text")
+            ? (() => {
+                let lastTextIdx = -1;
+                let lastToolUseIdx = -1;
+                for (let i = merged.length - 1; i >= 0; i--) {
+                  if (lastTextIdx === -1 && merged[i].type === "text") lastTextIdx = i;
+                  if (lastToolUseIdx === -1 && merged[i].type === "tool_use") lastToolUseIdx = i;
+                  if (lastTextIdx !== -1 && lastToolUseIdx !== -1) break;
+                }
+                return lastTextIdx > lastToolUseIdx ? lastTextIdx : -1;
+              })()
             : -1;
           if (matchIdx !== -1) {
             merged[matchIdx] = block; // Update existing block in place
@@ -1683,9 +1721,30 @@ const AgentChat = memo(function AgentChat({
 
   // ── Send message ─────────────────────────────────────────────────
 
-  const sendMessage = useCallback(async (overrideText?: string) => {
+  const sendMessage = useCallback(async (
+    overrideText?: string,
+    overrideImages?: Array<{ id: string; data: string; mediaType: string; name: string }>,
+    overrideFileRefs?: FileReference[],
+    overridePastedFiles?: Array<{ id: string; name: string; content: string; mimeType: string }>,
+  ) => {
+    const activeImages = overrideImages ?? images;
+    const activeFileRefs = overrideFileRefs ?? fileReferences;
+    const activePastedFiles = overridePastedFiles ?? pastedFiles;
     const text = (overrideText ?? inputText).trim();
-    if (!text && images.length === 0) return;
+    if (!text && activeImages.length === 0 && activePastedFiles.length === 0) return;
+
+    // Queue message if currently generating
+    if (isGeneratingRef.current) {
+      const queued = { text: overrideText ?? inputText, images: [...activeImages], fileReferences: [...activeFileRefs], pastedFiles: [...activePastedFiles] };
+      if (!queued.text.trim() && queued.images.length === 0 && queued.pastedFiles.length === 0) return;
+      queuedMessageRef.current = queued;
+      setQueuedMessage(queued);
+      setInputText("");
+      setImages([]);
+      setFileReferences([]);
+      setPastedFiles([]);
+      return;
+    }
 
     // Always scroll to bottom when user sends a message
     isAtBottomRef.current = true;
@@ -1732,7 +1791,7 @@ const AgentChat = memo(function AgentChat({
       return;
     }
     // Build file reference context prefix
-    const refs = fileReferences;
+    const refs = activeFileRefs;
     let fileContext = "";
     if (refs.length > 0) {
       fileContext = refs.map((ref) => {
@@ -1743,12 +1802,20 @@ const AgentChat = memo(function AgentChat({
       }).join("\n\n") + "\n\n";
     }
 
+    // Build pasted file context
+    let pastedFileContext = "";
+    if (activePastedFiles.length > 0) {
+      pastedFileContext = activePastedFiles
+        .map(f => `<file name="${f.name}">\n${f.content}\n</file>`)
+        .join("\n\n") + "\n\n";
+    }
+
     // Build content blocks
-    const fullText = fileContext + text;
+    const fullText = fileContext + pastedFileContext + text;
     let content: unknown;
-    if (images.length > 0) {
+    if (activeImages.length > 0) {
       const blocks: unknown[] = [];
-      for (const img of images) {
+      for (const img of activeImages) {
         blocks.push({
           type: "image",
           source: {
@@ -1780,7 +1847,7 @@ const AgentChat = memo(function AgentChat({
       id: `user-${Date.now()}`,
       type: "user",
       content: [
-        ...images.map((img) => ({
+        ...activeImages.map((img) => ({
           type: "image",
           source: { type: "base64", media_type: img.mediaType, data: img.data },
         })),
@@ -1793,6 +1860,7 @@ const AgentChat = memo(function AgentChat({
     setInputText("");
     setImages([]);
     setFileReferences([]);
+    setPastedFiles([]);
     abortedRef.current = false;
     generationStartRef.current = Date.now();
     isGeneratingRef.current = true;
@@ -1873,9 +1941,11 @@ const AgentChat = memo(function AgentChat({
       }
     };
     trySend(0);
-  }, [inputText, images, targetSessionId, isReadOnly, editingMessageId, fileReferences, scrollToBottom]);
+  }, [inputText, images, pastedFiles, targetSessionId, isReadOnly, editingMessageId, fileReferences, scrollToBottom]);
 
   const handleAbort = useCallback(() => {
+    queuedMessageRef.current = null;
+    setQueuedMessage(null);
     invoke("abort_agent", { sessionId: targetSessionId }).catch(() => {});
     abortedRef.current = true;
     if (isGeneratingTimeoutRef.current) {
@@ -2076,19 +2146,39 @@ const AgentChat = memo(function AgentChat({
     reader.readAsDataURL(file);
   }, []);
 
+  const addFileFromClipboard = useCallback((file: File) => {
+    // Skip large files (> 500 KB) to avoid enormous messages
+    if (file.size > 500 * 1024) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = e.target?.result as string;
+      setPastedFiles(prev => [...prev, {
+        id: `file-${Date.now()}-${Math.random()}`,
+        name: file.name,
+        content,
+        mimeType: file.type,
+      }]);
+    };
+    reader.readAsText(file);
+  }, []);
+
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
       for (const item of items) {
-        if (item.type.startsWith("image/")) {
+        if (item.kind === "file" && item.type.startsWith("image/")) {
           e.preventDefault();
           const file = item.getAsFile();
           if (file) addImageFromFile(file);
+        } else if (item.kind === "file" && !item.type.startsWith("image/")) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (file) addFileFromClipboard(file);
         }
       }
     },
-    [addImageFromFile]
+    [addImageFromFile, addFileFromClipboard]
   );
 
   // Document-level paste listener for when the input is not focused
@@ -2099,22 +2189,26 @@ const AgentChat = memo(function AgentChat({
       if (document.activeElement === inputRef.current) return;
       const items = e.clipboardData?.items;
       if (!items) return;
-      let hasImage = false;
+      let hasAttachment = false;
       for (const item of items) {
-        if (item.type.startsWith("image/")) {
-          hasImage = true;
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          hasAttachment = true;
           const file = item.getAsFile();
           if (file) addImageFromFile(file);
+        } else if (item.kind === "file" && !item.type.startsWith("image/")) {
+          hasAttachment = true;
+          const file = item.getAsFile();
+          if (file) addFileFromClipboard(file);
         }
       }
-      if (hasImage) {
+      if (hasAttachment) {
         e.preventDefault();
         inputRef.current?.focus();
       }
     };
     document.addEventListener("paste", handler);
     return () => document.removeEventListener("paste", handler);
-  }, [addImageFromFile, isActive]);
+  }, [addImageFromFile, addFileFromClipboard, isActive]);
 
   // Listen for orchestrator-commit event (Cmd+Shift+C)
   useEffect(() => {
@@ -2133,6 +2227,10 @@ const AgentChat = memo(function AgentChat({
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => prev.filter((img) => img.id !== id));
+  }, []);
+
+  const removePastedFile = useCallback((id: string) => {
+    setPastedFiles((prev) => prev.filter((f) => f.id !== id));
   }, []);
 
   // ── Key handling ─────────────────────────────────────────────────
@@ -2202,9 +2300,7 @@ const AgentChat = memo(function AgentChat({
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        if (!isGenerating) {
-          sendMessage();
-        }
+        sendMessage();
       }
       if (e.key === "Escape" && isGenerating) {
         e.preventDefault();
@@ -2305,6 +2401,23 @@ const AgentChat = memo(function AgentChat({
                 <span className="text-xs text-[var(--text-tertiary)]">
                   {currentTodo || "Thinking…"}
                 </span>
+              </div>
+            )}
+            {queuedMessage && (
+              <div className="flex items-center gap-2 px-3 py-1.5 mx-1 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] text-xs">
+                <svg className="w-3 h-3 text-[var(--accent)] shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className="text-[var(--text-secondary)] truncate flex-1">
+                  Queued: {queuedMessage.text || "(attachment)"}
+                </span>
+                <button
+                  onClick={() => { queuedMessageRef.current = null; setQueuedMessage(null); }}
+                  className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors shrink-0"
+                  title="Cancel queued message"
+                >
+                  ✕
+                </button>
               </div>
             )}
           </>
@@ -2415,8 +2528,8 @@ const AgentChat = memo(function AgentChat({
           </div>
         ) : (
           <>
-            {/* Attachments: file refs + images on one line */}
-            {(fileReferences.length > 0 || images.length > 0) && (
+            {/* Attachments: file refs + pasted files + images on one line */}
+            {(fileReferences.length > 0 || images.length > 0 || pastedFiles.length > 0) && (
               <div className="flex gap-2 flex-wrap items-center">
                 {fileReferences.map((ref) => {
                   const fileName = ref.filePath.split("/").pop()!;
@@ -2445,6 +2558,29 @@ const AgentChat = memo(function AgentChat({
                     </div>
                   );
                 })}
+                {pastedFiles.map((f) => (
+                  <div
+                    key={f.id}
+                    className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)] bg-[var(--bg-tertiary)]"
+                  >
+                    <div className="w-full h-full flex flex-col items-center justify-center p-1">
+                      <svg className="w-6 h-6 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                    </div>
+                    <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent pt-3 pb-0.5 px-1">
+                      <span className="text-[8px] text-white/90 font-medium truncate block leading-tight">{f.name}</span>
+                    </div>
+                    <button
+                      onClick={() => removePastedFile(f.id)}
+                      className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
                 {images.map((img) => (
                   <div
                     key={img.id}
@@ -2617,22 +2753,21 @@ const AgentChat = memo(function AgentChat({
               )}
             </div>
                 {/* Send / Stop button — inside bottom bar */}
-                {isGenerating ? (
+                {isGenerating && (
                   <button
                     onClick={handleAbort}
                     className="ml-auto px-3 py-1.5 bg-red-500/15 hover:bg-red-500/25 text-red-400 rounded-lg text-sm font-medium transition-colors shrink-0 border border-red-500/20"
                   >
                     Stop
                   </button>
-                ) : (
-                  <button
-                    onClick={() => sendMessage()}
-                    disabled={!inputText.trim() && images.length === 0 && fileReferences.length === 0}
-                    className="ml-auto px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-35 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-all duration-150 shrink-0 shadow-[0_0_12px_rgba(108,126,230,0.2)]"
-                  >
-                    Send
-                  </button>
                 )}
+                <button
+                  onClick={() => sendMessage()}
+                  disabled={!inputText.trim() && images.length === 0 && fileReferences.length === 0 && pastedFiles.length === 0}
+                  className={`${isGenerating ? "" : "ml-auto"} px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-35 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-all duration-150 shrink-0 shadow-[0_0_12px_rgba(108,126,230,0.2)]`}
+                >
+                  {isGenerating ? "Queue" : "Send"}
+                </button>
               </div>
             </div>
           </>
