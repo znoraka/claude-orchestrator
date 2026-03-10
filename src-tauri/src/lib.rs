@@ -3181,6 +3181,45 @@ fn read_file(file_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn read_file_base64(file_path: String) -> Result<String, String> {
+    use std::io::Read;
+    let expanded = if file_path.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            file_path.replacen('~', &home, 1)
+        } else {
+            file_path.clone()
+        }
+    } else {
+        file_path.clone()
+    };
+    let meta = std::fs::metadata(&expanded).map_err(|e| format!("Failed to stat file: {}", e))?;
+    if meta.len() > 10 * 1024 * 1024 {
+        return Err("File too large (>10MB)".into());
+    }
+    let mut buf = Vec::new();
+    std::fs::File::open(&expanded)
+        .map_err(|e| format!("Failed to open file: {}", e))?
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    Ok(base64_encode(&buf))
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
+        out.push(CHARS[(b0 >> 2)] as char);
+        out.push(CHARS[((b0 & 3) << 4) | (b1 >> 4)] as char);
+        out.push(if chunk.len() > 1 { CHARS[((b1 & 15) << 2) | (b2 >> 6)] as char } else { '=' });
+        out.push(if chunk.len() > 2 { CHARS[b2 & 63] as char } else { '=' });
+    }
+    out
+}
+
+#[tauri::command]
 fn write_file(file_path: String, content: String) -> Result<(), String> {
     let expanded = if file_path.starts_with('~') {
         if let Ok(home) = std::env::var("HOME") {
@@ -3729,6 +3768,7 @@ pub fn run() {
             get_git_diff,
             read_file_content,
             read_file,
+            read_file_base64,
             write_file,
             resolve_path,
             list_files,

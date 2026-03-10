@@ -2210,6 +2210,45 @@ const AgentChat = memo(function AgentChat({
     return () => document.removeEventListener("paste", handler);
   }, [addImageFromFile, addFileFromClipboard, isActive]);
 
+  // ── Drag-and-drop (Tauri native file drop events) ─────────────────
+  const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    if (!isActive) return;
+    const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "tiff", "avif"]);
+    const IMAGE_MIME: Record<string, string> = {
+      png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+      webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml", ico: "image/x-icon",
+      tiff: "image/tiff", avif: "image/avif",
+    };
+    const unlisten = Promise.all([
+      listen("tauri://drag-enter", () => setIsDragging(true)),
+      listen("tauri://drag-leave", () => setIsDragging(false)),
+      listen<{ paths: string[] }>("tauri://drag-drop", async (event) => {
+        setIsDragging(false);
+        for (const path of event.payload.paths) {
+          const ext = path.split(".").pop()?.toLowerCase() ?? "";
+          if (IMAGE_EXTS.has(ext)) {
+            try {
+              const data = await invoke<string>("read_file_base64", { filePath: path });
+              const mediaType = IMAGE_MIME[ext] ?? "image/png";
+              const name = path.split("/").pop() ?? "image";
+              setImages(prev => [...prev, { id: `img-${Date.now()}-${Math.random()}`, data, mediaType, name }]);
+            } catch { /* skip unreadable */ }
+          } else {
+            try {
+              const content = await invoke<string>("read_file", { filePath: path });
+              const name = path.split("/").pop() ?? "file";
+              setPastedFiles(prev => [...prev, { id: `file-${Date.now()}-${Math.random()}`, name, content, mimeType: "" }]);
+            } catch { /* skip unreadable */ }
+          }
+        }
+        inputRef.current?.focus();
+      }),
+    ]);
+    return () => { unlisten.then(fns => fns.forEach(fn => fn())); };
+  }, [isActive]);
+
   // Listen for orchestrator-commit event (Cmd+Shift+C)
   useEffect(() => {
     if (!isActive) return;
@@ -2339,7 +2378,20 @@ const AgentChat = memo(function AgentChat({
   }, [isActive]);
 
   return (
-    <div className="flex flex-col h-full">
+    <div
+      className="flex flex-col h-full relative"
+    >
+      {isDragging && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
+          <div className="absolute inset-0 bg-[var(--accent)]/10 border-2 border-dashed border-[var(--accent)] rounded-xl" />
+          <div className="relative flex flex-col items-center gap-2 text-[var(--accent)]">
+            <svg className="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            <span className="text-sm font-medium">Drop files to attach</span>
+          </div>
+        </div>
+      )}
       {/* Messages area */}
       <div
         ref={scrollRef}
