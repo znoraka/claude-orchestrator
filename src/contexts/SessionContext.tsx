@@ -72,9 +72,6 @@ interface SessionContextValue {
   activeWorkspaceId: string | null;
   activeWorktreePath: string | null;
   youngestDescendantMap: Map<string, Session>;
-  sessionUsage: Map<string, SessionUsage>;
-  todayCost: number;
-  todayTokens: number;
 
   selectSession: (id: string) => void;
   selectWorkspace: (workspaceId: string) => void;
@@ -106,14 +103,29 @@ interface SessionContextValue {
   setSessionDraft: (sessionId: string, hasDraft: boolean) => void;
   setSessionQuestion: (sessionId: string, hasQuestion: boolean) => void;
   updatePermissionMode: (sessionId: string, mode: "bypassPermissions" | "plan") => void;
+}
+
+// ── Live context: frequently-updated data separated so cold consumers don't re-render ──
+
+interface SessionLiveContextValue {
+  sessionUsage: Map<string, SessionUsage>;
+  todayCost: number;
+  todayTokens: number;
   unreadSessions: Set<string>;
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null);
+const SessionLiveContext = createContext<SessionLiveContextValue | null>(null);
 
 export function useSessionContext(): SessionContextValue {
   const ctx = useContext(SessionContext);
   if (!ctx) throw new Error("useSessionContext must be used within SessionProvider");
+  return ctx;
+}
+
+export function useSessionLive(): SessionLiveContextValue {
+  const ctx = useContext(SessionLiveContext);
+  if (!ctx) throw new Error("useSessionLive must be used within SessionProvider");
   return ctx;
 }
 
@@ -944,15 +956,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         .catch(() => {});
     };
     fetchUsage();
-    // Refresh on any JSONL change event
+    // Refresh on any JSONL change event (debounced: coalesce rapid writes)
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const unlistenPromise = listen<string>("jsonl-changed", () => {
-      fetchUsage();
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(fetchUsage, 300);
     });
     // Slow fallback for sessions managed outside this app
     const interval = setInterval(fetchUsage, 120_000);
     return () => {
       unlistenPromise.then((fn) => fn());
       clearInterval(interval);
+      if (debounceTimer) clearTimeout(debounceTimer);
     };
   }, []);
 
@@ -968,9 +983,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       activeWorkspaceId,
       activeWorktreePath,
       youngestDescendantMap,
-      sessionUsage,
-      todayCost,
-      todayTokens,
       selectSession,
       selectWorkspace,
       selectWorktree,
@@ -990,7 +1002,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setSessionDraft,
       setSessionQuestion,
       updatePermissionMode,
-      unreadSessions,
     }),
     [
       sessions,
@@ -1001,9 +1012,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       activeWorkspaceId,
       activeWorktreePath,
       youngestDescendantMap,
-      sessionUsage,
-      todayCost,
-      todayTokens,
       selectSession,
       selectWorkspace,
       selectWorktree,
@@ -1023,11 +1031,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setSessionDraft,
       setSessionQuestion,
       updatePermissionMode,
-      unreadSessions,
     ]
   );
 
+  // Frequently-updated live data in its own context so cold consumers don't re-render
+  const liveValue = useMemo<SessionLiveContextValue>(
+    () => ({ sessionUsage, todayCost, todayTokens, unreadSessions }),
+    [sessionUsage, todayCost, todayTokens, unreadSessions]
+  );
+
   return (
-    <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
+    <SessionContext.Provider value={value}>
+      <SessionLiveContext.Provider value={liveValue}>
+        {children}
+      </SessionLiveContext.Provider>
+    </SessionContext.Provider>
   );
 }

@@ -65,12 +65,21 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
       sessionIdMap.set(session.claudeSessionId!, session);
     }
 
-    // Listen for file change events
+    // Listen for file change events (debounced per session: coalesce rapid writes)
+    const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
     const unlistenPromise = listen<string>("jsonl-changed", (event) => {
       const changedPath = event.payload;
       for (const [claudeSessionId, session] of sessionIdMap) {
         if (changedPath.includes(claudeSessionId)) {
-          fetchUsageForSession(session);
+          const prev = debounceTimers.get(session.id);
+          if (prev) clearTimeout(prev);
+          debounceTimers.set(
+            session.id,
+            setTimeout(() => {
+              debounceTimers.delete(session.id);
+              fetchUsageForSession(session);
+            }, 200)
+          );
           break;
         }
       }
@@ -91,6 +100,8 @@ export function useSessionUsage(sessions: Session[]): Map<string, SessionUsage> 
     return () => {
       unlistenPromise.then((fn) => fn());
       if (pollInterval) clearInterval(pollInterval);
+      for (const t of debounceTimers.values()) clearTimeout(t);
+      debounceTimers.clear();
     };
   }, [runningSessions, appVisible]);
 

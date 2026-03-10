@@ -3024,10 +3024,6 @@ function MarkdownContent({ text }: { text: string }) {
     // that DOMPurify preserves as valid custom elements
     const cleaned = unescaped.replace(/<\/?[a-z]+-[a-z-]*>/g, "");
     const raw = marked.parse(cleaned, markedOptions) as string;
-    if (text.includes("##") || text.includes("\\n")) {
-      console.log("[MD debug] text:", JSON.stringify(text.slice(0, 200)));
-      console.log("[MD debug] html:", raw.slice(0, 200));
-    }
     return DOMPurify.sanitize(raw, { ADD_ATTR: ["target"] });
   }, [text]);
 

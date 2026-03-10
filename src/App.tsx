@@ -149,7 +149,6 @@ export default function App() {
     activeSessionId,
     effectiveSessionId,
     activeWorktreePath,
-    sessionUsage,
     youngestDescendantMap,
     selectSession,
     createSession,
@@ -167,7 +166,6 @@ export default function App() {
     setSessionDraft,
     setSessionQuestion,
     updatePermissionMode,
-    unreadSessions,
   } = useSessionContext();
 
   const { update, installing, install, dismiss } = useUpdater();
@@ -327,7 +325,6 @@ export default function App() {
   );
 
   const panelDirectory = activeSession?.directory ?? "~";
-  const activeUsage = activeSessionId ? sessionUsage.get(activeSessionId) : undefined;
 
 
 
@@ -643,14 +640,12 @@ export default function App() {
         workspaces={workspaces}
         activeSessionId={activeSessionId}
         activeWorktreePath={activeWorktreePath}
-        sessionUsage={sessionUsage}
         onSelectSession={handleSelectSession}
         onCreateSession={handleNewSession}
         onCreateWorktree={handleCreateWorktree}
         onRenameSession={renameSession}
         onDeleteSession={handleDeleteSession}
         shellProcessDirs={shellProcessDirs}
-        unreadSessions={unreadSessions}
         worktreeBranches={dialogBranches}
         youngestDescendantMap={youngestDescendantMap}
       />
@@ -973,7 +968,7 @@ export default function App() {
 
               {/* Spacer to push bottom items down */}
               <div className="flex-1" />
-              <ContextPieChart usage={activeUsage} model={activeSession?.model} />
+              <ContextPieChart sessionId={activeSessionId} model={activeSession?.model} />
               <button
                 onClick={() => setShowUsagePanel(true)}
                 className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60 transition-all duration-150"
@@ -1340,7 +1335,6 @@ export default function App() {
         onClose={() => setShowCommandPalette(false)}
         sessions={sessions}
         workspaces={workspaces}
-        sessionUsage={sessionUsage}
         activeSessionId={activeSessionId}
         youngestDescendantMap={youngestDescendantMap}
         onSelectSession={handleSelectSession}
@@ -1349,7 +1343,6 @@ export default function App() {
         onOpenUsage={() => setShowUsagePanel(true)}
         onOpenPRs={() => togglePanel("prs")}
         onOpenShell={() => togglePanel("shell")}
-        unreadSessions={unreadSessions}
       />
 
       {/* Worktree creation dialog */}

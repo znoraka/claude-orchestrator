@@ -109,12 +109,21 @@ export function useConversationTitles(
       tryResolveTitle(session);
     }
 
-    // Listen for file change events
+    // Listen for file change events (debounced per session: coalesce rapid writes)
+    const titleDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
     const unlistenPromise = listen<string>("jsonl-changed", (event) => {
       const changedPath = event.payload;
       for (const [sessionId, session] of pathToSession) {
         if (changedPath.includes(sessionId)) {
-          tryResolveTitle(session);
+          const prev = titleDebounceTimers.get(session.id);
+          if (prev) clearTimeout(prev);
+          titleDebounceTimers.set(
+            session.id,
+            setTimeout(() => {
+              titleDebounceTimers.delete(session.id);
+              tryResolveTitle(session);
+            }, 500)
+          );
           break;
         }
       }
@@ -134,6 +143,8 @@ export function useConversationTitles(
     return () => {
       unlistenPromise.then((fn) => fn());
       if (fallbackInterval) clearInterval(fallbackInterval);
+      for (const t of titleDebounceTimers.values()) clearTimeout(t);
+      titleDebounceTimers.clear();
     };
   }, [runningSessions, renameSession, markTitleGenerated, appVisible]);
 }

@@ -1,15 +1,15 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Session, SessionUsage, Workspace } from "../types";
+import type { Session, Workspace } from "../types";
 import { worktreeName } from "../utils/workspaces";
 import SessionTab, { repoColor } from "./SessionTab";
+import { useSessionLive } from "../contexts/SessionContext";
 
 
 interface SidebarProps {
   workspaces: Workspace[];
   activeSessionId: string | null;
   activeWorktreePath: string | null;
-  sessionUsage: Map<string, SessionUsage>;
   youngestDescendantMap?: Map<string, Session>;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
@@ -17,7 +17,6 @@ interface SidebarProps {
   onRenameSession: (id: string, name: string) => void;
   onDeleteSession: (id: string) => void;
   shellProcessDirs?: Map<string, number>;
-  unreadSessions?: Set<string>;
   worktreeBranches?: Map<string, string>;
 }
 
@@ -25,17 +24,16 @@ export default function Sidebar({
   workspaces,
   activeSessionId,
   activeWorktreePath: _activeWorktreePath,
-  sessionUsage,
   onSelectSession,
   onCreateSession,
   onCreateWorktree,
   onRenameSession,
   onDeleteSession,
   shellProcessDirs,
-  unreadSessions,
   worktreeBranches,
   youngestDescendantMap,
 }: SidebarProps) {
+  const { sessionUsage, unreadSessions } = useSessionLive();
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(() => {
@@ -177,6 +175,22 @@ export default function Sidebar({
     );
   }, [allSessions, filterQ, contentMatchIds]);
 
+  // Memoize filtered workspace/worktree tree so inline JSX map doesn't recompute on every render
+  const filteredWorkspaces = useMemo(() => {
+    if (!filterQ) return workspaces;
+    return workspaces
+      .map((workspace) => ({
+        ...workspace,
+        worktrees: workspace.worktrees
+          .map((wt) => ({
+            ...wt,
+            sessions: wt.sessions.filter(sessionMatchesFilter),
+          }))
+          .filter((wt) => wt.sessions.length > 0),
+      }))
+      .filter((workspace) => workspace.worktrees.length > 0);
+  }, [workspaces, filterQ, sessionMatchesFilter]);
+
   const toggleRepo = (repoId: string) => {
     setCollapsedRepos((prev) => {
       const next = new Set(prev);
@@ -262,22 +276,11 @@ export default function Sidebar({
 
       {/* Tree */}
       <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5">
-        {workspaces.length > 0 ? (
-          workspaces.map((workspace, wsIdx) => {
+        {filteredWorkspaces.length > 0 ? (
+          filteredWorkspaces.map((workspace, wsIdx) => {
             const repoName = workspace.directory.split("/").filter(Boolean).pop() || workspace.directory;
             const isRepoCollapsed = collapsedRepos.has(workspace.id);
-
-            // Filter: does this workspace have any matching sessions?
-            const filteredWorktrees = filterQ
-              ? workspace.worktrees
-                  .map((wt) => ({
-                    ...wt,
-                    sessions: wt.sessions.filter(sessionMatchesFilter),
-                  }))
-                  .filter((wt) => wt.sessions.length > 0)
-              : workspace.worktrees;
-
-            if (filterQ && filteredWorktrees.length === 0) return null;
+            const filteredWorktrees = workspace.worktrees;
 
             const color = repoColor(workspace.directory);
             const totalSessions = workspace.worktrees.reduce((n, wt) => n + wt.sessions.length, 0);
@@ -471,15 +474,21 @@ export default function Sidebar({
           })
         ) : (
           <div className="px-3 py-12 text-center">
-            <p className="text-xs text-[var(--text-secondary)] mb-3">
-              No sessions yet
-            </p>
-            <button
-              onClick={onCreateSession}
-              className="text-xs text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors font-medium"
-            >
-              Create your first session
-            </button>
+            {workspaces.length > 0 ? (
+              <p className="text-xs text-[var(--text-secondary)]">No matching sessions</p>
+            ) : (
+              <>
+                <p className="text-xs text-[var(--text-secondary)] mb-3">
+                  No sessions yet
+                </p>
+                <button
+                  onClick={onCreateSession}
+                  className="text-xs text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors font-medium"
+                >
+                  Create your first session
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>

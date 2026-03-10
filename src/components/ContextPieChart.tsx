@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { SessionUsage } from "../types";
+import { useSessionLive } from "../contexts/SessionContext";
 
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "claude-opus-4-6": 1_000_000,
@@ -20,7 +20,9 @@ function getColor(pct: number) {
   return "rgba(148,163,184,0.35)";
 }
 
-export default function ContextPieChart({ usage, model }: { usage: SessionUsage | undefined; model?: string }) {
+export default function ContextPieChart({ sessionId, model }: { sessionId: string | null; model?: string }) {
+  const { sessionUsage } = useSessionLive();
+  const usage = sessionId ? sessionUsage.get(sessionId) : undefined;
   const [hover, setHover] = useState(false);
   const maxTokens = Math.max(contextWindowForModel(model), usage?.contextTokens ?? 0);
   const pct = usage && usage.contextTokens > 0 ? usage.contextTokens / maxTokens : 0;

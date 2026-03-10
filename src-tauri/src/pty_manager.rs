@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 /// Maximum scrollback buffer size per session (1 MB).
@@ -161,17 +162,44 @@ impl PtyManager {
         }
 
         thread::spawn(move || {
+            // Batch PTY output: accumulate data for up to FLUSH_INTERVAL before emitting.
+            // This reduces the number of Tauri events from ~100s/sec to ~60/sec max,
+            // eliminating main-thread jank during high-throughput shell output.
+            const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
+
             let mut first_output = true;
             let mut buf = [0u8; 4096];
-            let mut pending = Vec::new();
+            let mut pending = Vec::new();  // incomplete UTF-8 tail
+            let mut batch = String::new(); // batched valid UTF-8 to emit
+            let mut last_flush = Instant::now();
+
+            macro_rules! flush_batch {
+                () => {
+                    if !batch.is_empty() {
+                        let data = std::mem::take(&mut batch);
+                        if let Ok(mut sb) = scrollback_buf.lock() {
+                            if let Some(sbuf) = sb.get_mut(&sid) {
+                                sbuf.extend_from_slice(data.as_bytes());
+                                if sbuf.len() > MAX_SCROLLBACK_BYTES {
+                                    let drain_to = sbuf.len() - MAX_SCROLLBACK_BYTES;
+                                    sbuf.drain(..drain_to);
+                                }
+                            }
+                        }
+                        let event_name = format!("pty-output-{}", sid);
+                        if let Err(e) = app_handle.emit(&event_name, data) {
+                            eprintln!("[pty_manager] emit error for {}: {}", event_name, e);
+                        }
+                        last_flush = Instant::now();
+                    }
+                };
+            }
+
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => {
                         eprintln!("[pty_manager] shell reader EOF for {}", sid);
-                        if !pending.is_empty() {
-                            let data = String::from_utf8_lossy(&pending).to_string();
-                            let _ = app_handle.emit(&format!("pty-output-{}", sid), data);
-                        }
+                        flush_batch!();
                         let _ = app_handle.emit(&format!("pty-exit-{}", sid), ());
                         break;
                     }
@@ -188,23 +216,10 @@ impl PtyManager {
                         };
 
                         if valid_up_to > 0 {
-                            let data = unsafe {
+                            let valid_str = unsafe {
                                 std::str::from_utf8_unchecked(&pending[..valid_up_to])
                             };
-                            let event_name = format!("pty-output-{}", sid);
-                            if let Err(e) = app_handle.emit(&event_name, data.to_string()) {
-                                eprintln!("[pty_manager] emit error for {}: {}", event_name, e);
-                            }
-
-                            if let Ok(mut sb) = scrollback_buf.lock() {
-                                if let Some(buf) = sb.get_mut(&sid) {
-                                    buf.extend_from_slice(&pending[..valid_up_to]);
-                                    if buf.len() > MAX_SCROLLBACK_BYTES {
-                                        let drain_to = buf.len() - MAX_SCROLLBACK_BYTES;
-                                        buf.drain(..drain_to);
-                                    }
-                                }
-                            }
+                            batch.push_str(valid_str);
                         }
 
                         if valid_up_to < pending.len() {
@@ -214,8 +229,14 @@ impl PtyManager {
                         } else {
                             pending.clear();
                         }
+
+                        // Flush if the batch interval has elapsed
+                        if last_flush.elapsed() >= FLUSH_INTERVAL {
+                            flush_batch!();
+                        }
                     }
                     Err(_) => {
+                        flush_batch!();
                         let _ = app_handle.emit(&format!("pty-exit-{}", sid), ());
                         break;
                     }
