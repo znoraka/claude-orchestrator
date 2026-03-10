@@ -90,6 +90,9 @@ interface SessionContextValue {
   ) => Promise<string>;
   createWorktree: (repoDir: string, branchName: string, worktreeName?: string) => Promise<string>;
   removeWorktree: (path: string) => Promise<void>;
+  archiveSession: (id: string) => void;
+  unarchiveSession: (id: string) => void;
+  archiveWorktree: (path: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   renameSession: (id: string, name: string) => void;
   markTitleGenerated: (id: string) => void;
@@ -454,6 +457,33 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setTimeout(() => saveSessionsImmediately(), 0);
     },
     [saveSessionsImmediately]
+  );
+
+  const archiveSession = useCallback((id: string) => {
+    dispatch({ type: "UPDATE", id, patch: { archived: true, archivedAt: Date.now() } });
+  }, []);
+
+  const unarchiveSession = useCallback((id: string) => {
+    dispatch({ type: "UPDATE", id, patch: { archived: false, archivedAt: undefined } });
+  }, []);
+
+  const archiveWorktree = useCallback(
+    async (path: string) => {
+      // Archive all sessions in this worktree
+      const now = Date.now();
+      for (const s of sessionsRef.current) {
+        if (s.directory === path) {
+          dispatch({ type: "UPDATE", id: s.id, patch: { archived: true, archivedAt: now } });
+        }
+      }
+      // Remove the git worktree
+      try {
+        await invoke("remove_worktree", { path });
+      } catch (err) {
+        console.error("Failed to remove worktree:", err);
+      }
+    },
+    []
   );
 
   const renameSession = useCallback((id: string, name: string) => {
@@ -994,6 +1024,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       createSession,
       createWorktree,
       removeWorktree,
+      archiveSession,
+      unarchiveSession,
+      archiveWorktree,
       deleteSession,
       renameSession,
       markTitleGenerated,
@@ -1023,6 +1056,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       createSession,
       createWorktree,
       removeWorktree,
+      archiveSession,
+      unarchiveSession,
+      archiveWorktree,
       deleteSession,
       renameSession,
       markTitleGenerated,

@@ -156,6 +156,9 @@ export default function App() {
     selectSession,
     createSession,
     createWorktree,
+    archiveSession,
+    unarchiveSession,
+    archiveWorktree,
     deleteSession,
     renameSession,
     markTitleGenerated,
@@ -410,8 +413,12 @@ export default function App() {
   // Cmd+N to open new session dialog, Cmd+G/P/T to toggle panels
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't fire app shortcuts when a modal is already open
+      const anyModalOpen = showDirDialog || showCommandPalette;
+
       if (e.metaKey && e.key === "n") {
         e.preventDefault();
+        if (anyModalOpen) return;
         setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
         setPreselectedDir(localStorage.getItem("claude-orchestrator-last-session-dir") || null);
         setRecentDirs(loadRecentDirs());
@@ -449,7 +456,7 @@ export default function App() {
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [activePanel, panelDirectory]);
+  }, [activePanel, panelDirectory, showDirDialog, showCommandPalette]);
 
   // Wrap deleteSession to handle shell PTY lifecycle
   const handleDeleteSession = async (id: string) => {
@@ -667,6 +674,9 @@ export default function App() {
         onCreateWorktree={handleCreateWorktree}
         onRenameSession={renameSession}
         onDeleteSession={handleDeleteSession}
+        onArchiveSession={archiveSession}
+        onUnarchiveSession={unarchiveSession}
+        onArchiveWorktree={archiveWorktree}
         shellProcessDirs={shellProcessDirs}
         worktreeBranches={dialogBranches}
         youngestDescendantMap={youngestDescendantMap}

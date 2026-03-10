@@ -16,6 +16,9 @@ interface SidebarProps {
   onCreateWorktree: (repoDir: string) => void;
   onRenameSession: (id: string, name: string) => void;
   onDeleteSession: (id: string) => void;
+  onArchiveSession?: (id: string) => void;
+  onUnarchiveSession?: (id: string) => void;
+  onArchiveWorktree?: (path: string) => void;
   shellProcessDirs?: Map<string, number>;
   worktreeBranches?: Map<string, string>;
 }
@@ -29,6 +32,9 @@ export default function Sidebar({
   onCreateWorktree,
   onRenameSession,
   onDeleteSession,
+  onArchiveSession,
+  onUnarchiveSession,
+  onArchiveWorktree,
   shellProcessDirs,
   worktreeBranches,
   youngestDescendantMap,
@@ -45,6 +51,7 @@ export default function Sidebar({
   const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(() => {
     try { const v = localStorage.getItem("sidebar:expandedWorktrees"); return v ? new Set(JSON.parse(v)) : new Set(); } catch { return new Set(); }
   });
+  const [showArchived, setShowArchived] = useState(false);
 
   useEffect(() => { localStorage.setItem("sidebar:collapsedRepos", JSON.stringify([...collapsedRepos])); }, [collapsedRepos]);
   useEffect(() => { localStorage.setItem("sidebar:collapsedWorktrees", JSON.stringify([...collapsedWorktrees])); }, [collapsedWorktrees]);
@@ -56,6 +63,8 @@ export default function Sidebar({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey && e.key === "k") {
         e.preventDefault();
+        // Stop propagation so the App-level Cmd+K (command palette) doesn't also fire
+        e.stopPropagation();
         searchRef.current?.focus();
       }
     };
@@ -230,6 +239,8 @@ export default function Sidebar({
         onClick={() => onSelectSession(session.id)}
         onRename={(name) => onRenameSession(session.id, name)}
         onDelete={() => onDeleteSession(session.id)}
+        onArchive={onArchiveSession ? () => onArchiveSession(session.id) : undefined}
+        onUnarchive={onUnarchiveSession ? () => onUnarchiveSession(session.id) : undefined}
         {...extraProps}
       />
     );
@@ -363,7 +374,18 @@ export default function Sidebar({
                                 {hasShellProcess && (
                                   <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="Shell process running" />
                                 )}
-                                {wt.sessions.length}
+                                {wt.sessions.filter((s) => !s.archived).length}
+                                {!wt.isMain && onArchiveWorktree && (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); onArchiveWorktree(wt.path); }}
+                                    className="opacity-0 group-hover:opacity-100 ml-0.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-all"
+                                    title="Archive worktree (removes git worktree, archives sessions)"
+                                  >
+                                    <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor">
+                                      <path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v1.708a2.5 2.5 0 0 1 0 4.584V13.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5V8.792a2.5 2.5 0 0 1 0-4.584V2.5ZM3.5 2a.5.5 0 0 0-.5.5v1.543a2.5 2.5 0 0 1 0 4.914V13.5a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5V8.957a2.5 2.5 0 0 1 0-4.914V2.5a.5.5 0 0 0-.5-.5h-9ZM8 10a.75.75 0 0 1-.75-.75V7.06l-.72.72a.75.75 0 0 1-1.06-1.06l2-2a.75.75 0 0 1 1.06 0l2 2a.75.75 0 0 1-1.06 1.06l-.72-.72v2.19A.75.75 0 0 1 8 10Z" />
+                                    </svg>
+                                  </button>
+                                )}
                               </span>
                             </button>
                           </>
@@ -371,7 +393,7 @@ export default function Sidebar({
 
                         {/* Important sessions shown even when worktree is collapsed */}
                         {isWtCollapsed && hasMultipleWorktrees && (() => {
-                          const important = wt.sessions.filter((s) => isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
+                          const important = wt.sessions.filter((s) => !s.archived && isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
                           return important.map((session) => (
                             <div key={session.id}>
                               {renderSession(session, { hideDirectory: true })}
@@ -383,7 +405,7 @@ export default function Sidebar({
                         {(!isWtCollapsed || !hasMultipleWorktrees) && (() => {
                           const MAX_INACTIVE = 3;
                           const isExpanded = expandedWorktrees.has(wt.path);
-                          const topLevel = wt.sessions.filter((s) => !s.parentSessionId);
+                          const topLevel = wt.sessions.filter((s) => !s.parentSessionId && !s.archived);
                           const showAll = isExpanded || !!filterQ;
                           let visible: Session[];
                           if (showAll) {
@@ -439,6 +461,30 @@ export default function Sidebar({
                                   Show less
                                 </button>
                               )}
+
+                              {/* Archived sessions toggle */}
+                              {(() => {
+                                const archivedSessions = wt.sessions.filter((s) => !s.parentSessionId && s.archived);
+                                if (archivedSessions.length === 0) return null;
+                                return (
+                                  <>
+                                    <button
+                                      onClick={() => setShowArchived((v) => !v)}
+                                      className="pl-5 w-full px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left flex items-center gap-1"
+                                    >
+                                      <svg className={`w-2 h-2 transition-transform ${showArchived ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                                      </svg>
+                                      {archivedSessions.length} archived
+                                    </button>
+                                    {showArchived && archivedSessions.map((session) => (
+                                      <div key={session.id} className="opacity-50">
+                                        {renderSession(session, { hideDirectory: true })}
+                                      </div>
+                                    ))}
+                                  </>
+                                );
+                              })()}
                             </>
                           );
                         })()}
