@@ -139,11 +139,13 @@ export default memo(function SessionTab({
       `}
     >
       {/* Status dot — tiny, only for meaningful states */}
-      <span className="shrink-0 w-1.5 h-1.5 rounded-full flex items-center justify-center" style={{ minWidth: "6px" }}>
+      <span className="shrink-0 w-3 h-3 flex items-center justify-center">
         {hasError ? (
           <span className="w-1.5 h-1.5 rounded-full bg-[var(--danger)]" />
         ) : hasQuestion ? (
-          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+          <svg className="w-3 h-3 text-orange-400" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4.5 2a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 4.5 2Zm7 0a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 11.5 2Z" />
+          </svg>
         ) : isBusy ? (
           <span className="w-1.5 h-1.5 border border-[var(--accent)] border-t-transparent rounded-full animate-spin" style={{ width: 6, height: 6 }} />
         ) : hasDraft ? (

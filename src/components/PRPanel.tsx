@@ -157,7 +157,7 @@ function PRRow({
           className="w-5 h-5 rounded-full mt-0.5 flex-shrink-0"
         />
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
+          <div className="flex items-center gap-2 mb-0.5 min-w-0 overflow-hidden">
             <span className="text-[10px] text-[var(--text-tertiary)] font-mono truncate">
               #{pr.number}
             </span>
@@ -481,7 +481,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
           <span className="text-xs">No PRs match your search</span>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden pr-14">
           {filteredMyPrs.length > 0 && (
             <div className="py-1">
               <div className="text-[10px] uppercase tracking-wider text-[var(--text-tertiary)] px-3 py-1.5 font-semibold">

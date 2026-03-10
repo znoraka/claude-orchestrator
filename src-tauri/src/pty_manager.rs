@@ -1,7 +1,8 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -161,16 +162,34 @@ impl PtyManager {
             sb.entry(sid.clone()).or_insert_with(Vec::new);
         }
 
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+
+        // Thread 1: reader — forwards raw bytes to channel, no batching logic
         thread::spawn(move || {
-            // Batch PTY output: accumulate data for up to FLUSH_INTERVAL before emitting.
-            // This reduces the number of Tauri events from ~100s/sec to ~60/sec max,
-            // eliminating main-thread jank during high-throughput shell output.
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            // tx dropped here → Disconnected signals emitter thread to exit
+        });
+
+        // Thread 2: emitter — batches received bytes and flushes on timer
+        // recv_timeout ensures we flush within FLUSH_INTERVAL even when PTY goes idle,
+        // fixing the bug where output was invisible until the user typed a character.
+        thread::spawn(move || {
             const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 
             let mut first_output = true;
-            let mut buf = [0u8; 4096];
-            let mut pending = Vec::new();  // incomplete UTF-8 tail
-            let mut batch = String::new(); // batched valid UTF-8 to emit
+            let mut pending = Vec::<u8>::new();
+            let mut batch = String::new();
             let mut last_flush = Instant::now();
 
             macro_rules! flush_batch {
@@ -196,19 +215,13 @@ impl PtyManager {
             }
 
             loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => {
-                        eprintln!("[pty_manager] shell reader EOF for {}", sid);
-                        flush_batch!();
-                        let _ = app_handle.emit(&format!("pty-exit-{}", sid), ());
-                        break;
-                    }
-                    Ok(n) => {
+                match rx.recv_timeout(FLUSH_INTERVAL) {
+                    Ok(bytes) => {
                         if first_output {
-                            eprintln!("[pty_manager] shell first output for {} ({} bytes)", sid, n);
+                            eprintln!("[pty_manager] shell first output for {} ({} bytes)", sid, bytes.len());
                             first_output = false;
                         }
-                        pending.extend_from_slice(&buf[..n]);
+                        pending.extend_from_slice(&bytes);
 
                         let valid_up_to = match std::str::from_utf8(&pending) {
                             Ok(_) => pending.len(),
@@ -224,18 +237,22 @@ impl PtyManager {
 
                         if valid_up_to < pending.len() {
                             let remaining = pending[valid_up_to..].to_vec();
-                            pending.clear();
-                            pending.extend_from_slice(&remaining);
+                            pending = remaining;
                         } else {
                             pending.clear();
                         }
 
-                        // Flush if the batch interval has elapsed
                         if last_flush.elapsed() >= FLUSH_INTERVAL {
                             flush_batch!();
                         }
                     }
-                    Err(_) => {
+                    Err(RecvTimeoutError::Timeout) => {
+                        // No new data for a full flush interval — emit whatever is pending
+                        flush_batch!();
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        // Reader thread exited (EOF or error)
+                        eprintln!("[pty_manager] shell reader EOF for {}", sid);
                         flush_batch!();
                         let _ = app_handle.emit(&format!("pty-exit-{}", sid), ());
                         break;

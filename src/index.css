@@ -228,11 +228,10 @@ input:focus-visible, textarea:focus-visible {
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
   }
 }
 .animate-slide-down {
-  animation: slide-down 150ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: slide-down 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* Sidebar search input */

@@ -164,7 +164,11 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           fitAddonRef.current?.fit();
-          termRef.current?.focus();
+          const term = termRef.current;
+          if (term) {
+            term.refresh(0, term.rows - 1);
+            term.focus();
+          }
         });
       });
     }

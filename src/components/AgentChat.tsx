@@ -2257,7 +2257,8 @@ const AgentChat = memo(function AgentChat({
           </p>
         </div>
       )}
-      <div className="w-full max-w-[720px] mx-auto px-6 flex flex-col gap-5">
+      <div className="w-full px-6 flex justify-center">
+      <div className="w-full max-w-[840px] flex flex-col gap-5">
         {/* Skip rendering message DOM for inactive tabs to avoid layout thrash */}
         {isActive ? (
           <>
@@ -2310,15 +2311,16 @@ const AgentChat = memo(function AgentChat({
         ) : null}
       </div>
       </div>
+      </div>
 
       {/* Input area — hero card, centered */}
-      <div className="px-6 pb-5 pt-2 relative flex flex-col items-center" ref={inputAreaRef}>
-      <div className="w-full max-w-[720px] mx-auto flex flex-col gap-2">
+      <div className="px-6 pb-5 pt-2 relative flex justify-center" ref={inputAreaRef}>
+      <div className="w-full max-w-[720px] flex flex-col gap-2">
         {/* Slash command autocomplete */}
         {showSlashMenu && filteredSlashCommands.length > 0 && (
           <div
             ref={slashMenuRef}
-            className="absolute bottom-full left-0 right-0 mx-4 mb-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"
+            className="absolute bottom-full left-0 right-0 mx-auto max-w-2xl mb-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"
           >
             {filteredSlashCommands.map((cmd, i) => (
               <button
@@ -2347,7 +2349,7 @@ const AgentChat = memo(function AgentChat({
         {showFileMenu && (
           <div
             ref={fileMenuRef}
-            className="absolute bottom-full left-0 right-0 mx-4 mb-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"
+            className="absolute bottom-full left-0 right-0 mx-auto max-w-2xl mb-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"
           >
             {fileSuggestions.map((filePath, i) => {
               const parts = filePath.split("/");
@@ -2909,7 +2911,7 @@ const MessageBubble = memo(function MessageBubble({
   }, [bundledItems, isLastMessage]);
 
   return (
-    <div className="max-w-[95%]">
+    <div className="w-full">
       <div className="flex flex-col gap-3">
         {bundledItems.map((item, i) => {
           if (item.type === "toolBundle") {
