@@ -62,8 +62,8 @@ pnpm tauri build
 # ── Locate artifacts ──────────────────────────────────────────────
 DMG=$(find "${BUNDLE_DIR}/dmg" -name '*.dmg' 2>/dev/null | head -1)
 APP=$(find "${BUNDLE_DIR}/macos" -name '*.app' 2>/dev/null | head -1)
-TARGZ=$(find "${BUNDLE_DIR}/macos" -name '*.tar.gz' 2>/dev/null | grep -v '\.sig$' | head -1)
-SIG=$(find "${BUNDLE_DIR}/macos" -name '*.tar.gz.sig' 2>/dev/null | head -1)
+TARGZ=$(find "${BUNDLE_DIR}/macos" -name "*${VERSION}*.tar.gz" 2>/dev/null | grep -v '\.sig$' | head -1)
+SIG=$(find "${BUNDLE_DIR}/macos" -name "*${VERSION}*.tar.gz.sig" 2>/dev/null | head -1)
 
 if [[ -z "$APP" ]]; then
   echo "Build failed — no .app bundle found."
@@ -75,7 +75,7 @@ if [[ -z "$TARGZ" ]]; then
   TARGZ_NAME="${APP_NAME// /.}_${VERSION}_aarch64.app.tar.gz"
   TARGZ="${BUNDLE_DIR}/macos/${TARGZ_NAME}"
   echo "Creating updater tarball: ${TARGZ_NAME}..."
-  tar -czf "$TARGZ" -C "${BUNDLE_DIR}/macos" "${APP_NAME}.app"
+  COPYFILE_DISABLE=1 tar -czf "$TARGZ" -C "${BUNDLE_DIR}/macos" "${APP_NAME}.app"
 fi
 
 if [[ -z "$SIG" && -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
