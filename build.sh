@@ -110,7 +110,7 @@ if [[ "$RELEASE" == true ]]; then
 
   SIGNATURE=$(cat "$SIG")
   TARGZ_NAME=$(basename "$TARGZ")
-  TARGZ_NAME_URL="${TARGZ_NAME// /%20}"
+  TARGZ_NAME_URL="${TARGZ_NAME// /.}"
   DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${TARGZ_NAME_URL}"
   PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
