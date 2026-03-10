@@ -7,10 +7,19 @@
  * Usage: node agent-bridge-opencode.bundle.mjs '{"sessionId":"...","cwd":"..."}'
  */
 import { createOpencodeClient, createOpencodeServer } from "@opencode-ai/sdk";
-import { appendFileSync } from "fs";
 import { createServer } from "net";
 import { homedir } from "os";
 import { join } from "path";
+import {
+  emit,
+  createLogger,
+  startStdinReader,
+  createBridgeState,
+  handleCommonSetters,
+  createBlockingSlot,
+  handleInteractionResponse,
+  cancelPendingInteractions,
+} from "./bridge-utils.mjs";
 
 /** Find a free port by briefly binding to port 0. */
 function getFreePort() {
@@ -31,18 +40,13 @@ if (!process.env.PATH?.includes(opencodebin)) {
 }
 
 // ── Logging ──────────────────────────────────────────────────────────
-const logFile = "/tmp/agent-bridge-opencode-debug.log";
-const log = (msg) => {
-  const line = `[${new Date().toISOString()}] ${msg}\n`;
-  process.stderr.write(line);
-  try { appendFileSync(logFile, line); } catch {}
-};
+const log = createLogger("opencode");  // → /tmp/agent-bridge-opencode-debug.log
 
 // ── Config ───────────────────────────────────────────────────────────
 const config = JSON.parse(process.argv[2] || "{}");
-const { sessionId, cwd: initialCwd, permissionMode: configPermissionMode } = config;
+const { sessionId } = config;
 
-let currentCwd = initialCwd;
+const state = createBridgeState(config);
 
 const PLAN_MODE_SYSTEM_PROMPT = `You are in PLAN MODE. Your job is to analyze the user's request and produce a detailed implementation plan — do NOT execute the plan.
 
@@ -57,17 +61,9 @@ RULES:
 
 Think carefully, explore thoroughly, and be specific in your plan.`;
 
-// Mutable permission mode — can be toggled at runtime via set_permission_mode
-let currentPermissionMode = configPermissionMode || "bypassPermissions";
-
-// Permission prompt interception (for plan mode): when set, we're waiting
-// for the user to approve/deny a tool use.
-let permissionResolve = null;
-let askUserResolve = null;
-
-function emit(obj) {
-  process.stdout.write(JSON.stringify(obj) + "\n");
-}
+// Interaction slots for plan mode and AskUserQuestion
+const permissionSlot = createBlockingSlot();
+const askUserSlot = createBlockingSlot();
 
 // ── Fallback pricing (USD per million tokens) ────────────────────────
 // Used when OpenCode reports 0/0 cost for a model.
@@ -172,7 +168,6 @@ let server;
 let bootPromise; // resolves when boot() completes successfully
 let ocSessionId = null; // OpenCode session ID
 let currentMessageId = null; // assistant message being streamed
-let currentReasoningEffort = null;
 let idleTimer = null; // debounce timer for query_complete
 
 // Track user message IDs so we don't emit their parts as assistant content
@@ -182,15 +177,15 @@ const userMessageIds = new Set();
 const partsById = new Map();
 
 async function boot() {
-  log(`Booting OpenCode server (cwd=${currentCwd})`);
+  log(`Booting OpenCode server (cwd=${state.currentCwd})`);
   try {
     const port = await getFreePort();
     log(`Using port ${port}`);
     // Pass model via config so OpenCode uses it (sets OPENCODE_CONFIG_CONTENT)
     const serverConfig = {};
-    if (config.model) {
-      serverConfig.model = config.model;
-      log(`Setting OpenCode model: ${config.model}`);
+    if (state.currentModel) {
+      serverConfig.model = state.currentModel;
+      log(`Setting OpenCode model: ${state.currentModel}`);
     }
     server = await createOpencodeServer({
       port,
@@ -199,7 +194,7 @@ async function boot() {
     });
     client = createOpencodeClient({
       baseUrl: server.url,
-      directory: currentCwd,
+      directory: state.currentCwd,
     });
     log(`OpenCode server started at ${server.url}`);
   } catch (err) {
@@ -229,7 +224,7 @@ async function boot() {
     type: "system",
     subtype: "bridge_ready",
     sessionId,
-    cwd: currentCwd || process.cwd(),
+    cwd: state.currentCwd || process.cwd(),
   });
 
   // Fetch available models and emit to frontend
@@ -370,11 +365,11 @@ function handleEvent(event) {
 
     case "permission.updated": {
       const permission = props;
-      log(`Permission requested: ${permission.type} — ${permission.title} (mode=${currentPermissionMode})`);
+      log(`Permission requested: ${permission.type} — ${permission.title} (mode=${state.currentPermissionMode})`);
 
       // Check if this is a question permission
       const isQuestion = permission.type === "question" || permission.title === "question";
-      
+
       if (isQuestion) {
         // Handle question tool — emit ask_user_question to frontend
         const questions = permission.metadata?.questions || [];
@@ -386,7 +381,7 @@ function handleEvent(event) {
         const sid = permission.sessionID;
         const pid = permission.id;
         new Promise((resolve) => {
-          askUserResolve = resolve;
+          askUserSlot.pending = resolve;
         }).then((answer) => {
           log(`Question ${pid} answered: ${JSON.stringify(answer).substring(0, 100)}`);
           client.postSessionIdPermissionsPermissionId({
@@ -496,17 +491,17 @@ function emitPartAsAssistantMessage(part, delta) {
           break;
         }
       }
-      const state = part.state;
+      const toolState = part.state;
       // Emit tool_use block
       blocks.push({
         type: "tool_use",
         id: part.callID || part.id,
         name: part.tool,
-        input: state?.input || {},
+        input: toolState?.input || {},
       });
       // If completed or error, also emit tool_result
-      if (state?.status === "completed") {
-        let output = state.output || "";
+      if (toolState?.status === "completed") {
+        let output = toolState.output || "";
         // Normalize OpenCode's XML-wrapped read output to cat -n format
         if (part.tool === "read" && output.includes("<content>")) {
           const contentMatch = output.match(/<content>([\s\S]*?)<\/content>/);
@@ -521,6 +516,11 @@ function emitPartAsAssistantMessage(part, delta) {
               })
               .join("\n");
           }
+        } else if (part.tool === "read" && output.includes("<type>directory</type>")) {
+          const entriesMatch = output.match(/<entries>([\s\S]*?)<\/entries>/);
+          if (entriesMatch) {
+            output = entriesMatch[1].trim();
+          }
         }
         blocks.push({
           type: "tool_result",
@@ -528,11 +528,11 @@ function emitPartAsAssistantMessage(part, delta) {
           content: output,
           is_error: false,
         });
-      } else if (state?.status === "error") {
+      } else if (toolState?.status === "error") {
         blocks.push({
           type: "tool_result",
           tool_use_id: part.callID || part.id,
-          content: state.error || "Tool error",
+          content: toolState.error || "Tool error",
           is_error: true,
         });
       }
@@ -666,7 +666,7 @@ function emitQueryComplete() {
   currentMessageId = null;
   partsById.clear();
 
-  if (currentPermissionMode === "plan") {
+  if (state.currentPermissionMode === "plan") {
     // Emit synthetic ExitPlanMode permission request — triggers the frontend's
     // "Plan ready — how do you want to proceed?" UI
     emit({
@@ -676,12 +676,12 @@ function emitQueryComplete() {
     });
     // Wait for user response
     new Promise((resolve) => {
-      permissionResolve = resolve;
+      permissionSlot.pending = resolve;
     }).then((allowed) => {
       if (allowed) {
         // User accepted the plan — switch to bypass mode so the next prompt executes
-        currentPermissionMode = "bypassPermissions";
-        emit({ type: "permission_mode_updated", permissionMode: currentPermissionMode });
+        state.currentPermissionMode = "bypassPermissions";
+        emit({ type: "permission_mode_updated", permissionMode: state.currentPermissionMode });
       }
       emit({ type: "query_complete" });
     });
@@ -690,27 +690,9 @@ function emitQueryComplete() {
   }
 }
 
-// ── Stdin handling ──────────────────────────────────────────────────
+// ── Stdin handling ───────────────────────────────────────────────────
 
-let stdinBuf = "";
-process.stdin.setEncoding("utf-8");
-process.stdin.on("data", (chunk) => {
-  stdinBuf += chunk;
-  let newlineIdx;
-  while ((newlineIdx = stdinBuf.indexOf("\n")) !== -1) {
-    const line = stdinBuf.slice(0, newlineIdx).trim();
-    stdinBuf = stdinBuf.slice(newlineIdx + 1);
-    if (!line) continue;
-    try {
-      const msg = JSON.parse(line);
-      handleStdinMessage(msg);
-    } catch (err) {
-      emit({ type: "error", error: `Invalid JSON on stdin: ${err.message}` });
-    }
-  }
-});
-
-process.stdin.on("end", () => {
+startStdinReader(handleStdinMessage, () => {
   if (server) server.close();
   process.exit(0);
 });
@@ -719,15 +701,7 @@ async function handleStdinMessage(msg) {
   if (msg.type === "abort") {
     // Cancel any pending idle debounce so we don't emit query_complete after abort
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-    // Unblock any pending permission wait
-    if (permissionResolve) {
-      permissionResolve(false);
-      permissionResolve = null;
-    }
-    if (askUserResolve) {
-      askUserResolve(null);
-      askUserResolve = null;
-    }
+    cancelPendingInteractions(permissionSlot, askUserSlot);
     if (ocSessionId) {
       try {
         await client.session.abort({ path: { id: ocSessionId } });
@@ -739,47 +713,8 @@ async function handleStdinMessage(msg) {
     return;
   }
 
-  if (msg.type === "set_cwd") {
-    currentCwd = msg.cwd;
-    log(`cwd updated to: ${currentCwd}`);
-    emit({ type: "cwd_updated", cwd: currentCwd });
-    return;
-  }
-
-  // User approved or denied a permission prompt (plan mode)
-  if (msg.type === "permission_response") {
-    if (permissionResolve) {
-      log(`Resolving permission: ${msg.allowed ? "allow" : "deny"}`);
-      permissionResolve(msg.allowed);
-      permissionResolve = null;
-    } else {
-      log("permission_response received but no pending permissionResolve — ignoring");
-    }
-    return;
-  }
-
-  // Toggle permission mode at runtime
-  if (msg.type === "set_permission_mode") {
-    currentPermissionMode = msg.permissionMode || "bypassPermissions";
-    log(`permissionMode updated to: ${currentPermissionMode}`);
-    emit({ type: "permission_mode_updated", permissionMode: currentPermissionMode });
-    return;
-  }
-
-  if (msg.type === "set_model") {
-    // OpenCode model is set per-prompt, not globally — we'll store it
-    config.model = msg.model || null;
-    log(`model updated to: ${config.model}`);
-    emit({ type: "model_updated", model: config.model });
-    return;
-  }
-
-  if (msg.type === "set_reasoning_effort") {
-    currentReasoningEffort = msg.effort || null;
-    log(`reasoning effort updated to: ${currentReasoningEffort}`);
-    emit({ type: "reasoning_effort_updated", effort: currentReasoningEffort });
-    return;
-  }
+  if (handleInteractionResponse(msg, permissionSlot, askUserSlot, log)) return;
+  if (handleCommonSetters(msg, state, log)) return;
 
   if (msg.type === "get_usage") {
     // Query the OpenCode server for usage/session status info
@@ -790,16 +725,6 @@ async function handleStdinMessage(msg) {
     } catch (err) {
       log(`Failed to get usage: ${err.message}`);
       emit({ type: "opencode_usage", data: null, error: err.message });
-    }
-    return;
-  }
-
-  if (msg.type === "ask_user_answer") {
-    // User answered an AskUserQuestion — resolve the pending question promise
-    if (askUserResolve) {
-      log(`Resolving ask_user_question with: ${JSON.stringify(msg.answer).substring(0, 100)}`);
-      askUserResolve(msg.answer);
-      askUserResolve = null;
     }
     return;
   }
@@ -866,29 +791,29 @@ async function sendPrompt(userMessage) {
     {
       const parts = [];
       if (config.systemPrompt) parts.push(config.systemPrompt);
-      if (currentPermissionMode === "plan") parts.push(PLAN_MODE_SYSTEM_PROMPT);
+      if (state.currentPermissionMode === "plan") parts.push(PLAN_MODE_SYSTEM_PROMPT);
       if (parts.length > 0) promptBody.system = parts.join("\n\n");
     }
 
     // Include reasoning effort / variant if set
-    if (currentReasoningEffort) {
-      promptBody.variant = currentReasoningEffort;
-      log(`Using reasoning effort variant: ${currentReasoningEffort}`);
+    if (state.currentReasoningEffort) {
+      promptBody.variant = state.currentReasoningEffort;
+      log(`Using reasoning effort variant: ${state.currentReasoningEffort}`);
     }
 
     // Include model selection if set
-    if (config.model) {
-      // config.model is "providerID/modelID" or just "modelID"
-      const slash = config.model.indexOf("/");
+    if (state.currentModel) {
+      // state.currentModel is "providerID/modelID" or just "modelID"
+      const slash = state.currentModel.indexOf("/");
       if (slash > 0) {
         promptBody.model = {
-          providerID: config.model.substring(0, slash),
-          modelID: config.model.substring(slash + 1),
+          providerID: state.currentModel.substring(0, slash),
+          modelID: state.currentModel.substring(slash + 1),
         };
       } else {
         promptBody.model = {
-          providerID: config.model,
-          modelID: config.model,
+          providerID: state.currentModel,
+          modelID: state.currentModel,
         };
       }
       log(`Using model: ${JSON.stringify(promptBody.model)}`);
@@ -907,7 +832,7 @@ async function sendPrompt(userMessage) {
   }
 }
 
-// ── Start ───────────────────────────────────────────────────────────
+// ── Start ────────────────────────────────────────────────────────────
 bootPromise = boot();
 
 } // end of normal session mode (else branch)

@@ -88,11 +88,8 @@ export function useConversationTitles(
         })
         .catch(() => {
           smartPendingRef.current.delete(session.id);
-          const count = (retryCountRef.current.get(session.id) ?? 0) + 1;
-          retryCountRef.current.set(session.id, count);
-          if (count >= 3) {
-            smartStateRef.current.set(session.id, { titled: true });
-          }
+          // Errors are transient (e.g. title server still starting up) — don't count toward the
+          // retry limit. The JSONL file watcher and 5s fallback will trigger another attempt.
         });
     };
 

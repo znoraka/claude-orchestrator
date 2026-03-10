@@ -1638,10 +1638,126 @@ Server output: ${output}`;
 }
 
 // src-tauri/resources/agent-bridge-opencode.mjs
-import { appendFileSync } from "fs";
 import { createServer } from "net";
 import { homedir } from "os";
 import { join } from "path";
+
+// src-tauri/resources/bridge-utils.mjs
+import { appendFileSync } from "fs";
+function emit(obj) {
+  process.stdout.write(JSON.stringify(obj) + "\n");
+}
+function createLogger(name) {
+  const suffix = name ? `-${name}` : "";
+  const logFile = `/tmp/agent-bridge${suffix}-debug.log`;
+  return (msg) => {
+    const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
+`;
+    process.stderr.write(line);
+    try {
+      appendFileSync(logFile, line);
+    } catch {
+    }
+  };
+}
+function startStdinReader(onMessage, onEnd) {
+  let buf = "";
+  process.stdin.setEncoding("utf-8");
+  process.stdin.on("data", (chunk) => {
+    buf += chunk;
+    let idx;
+    while ((idx = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line) continue;
+      try {
+        onMessage(JSON.parse(line));
+      } catch (err) {
+        emit({ type: "error", error: `Invalid JSON on stdin: ${err.message}` });
+      }
+    }
+  });
+  process.stdin.on("end", onEnd);
+}
+function createBridgeState(config2) {
+  return {
+    currentCwd: config2.cwd || null,
+    currentModel: config2.model || null,
+    currentReasoningEffort: null,
+    currentPermissionMode: config2.permissionMode || "bypassPermissions"
+  };
+}
+function handleCommonSetters(msg, state2, log2) {
+  if (msg.type === "set_cwd") {
+    state2.currentCwd = msg.cwd;
+    log2(`cwd updated to: ${state2.currentCwd}`);
+    emit({ type: "cwd_updated", cwd: state2.currentCwd });
+    return true;
+  }
+  if (msg.type === "set_model") {
+    state2.currentModel = msg.model || null;
+    log2(`model updated to: ${state2.currentModel}`);
+    emit({ type: "model_updated", model: state2.currentModel });
+    return true;
+  }
+  if (msg.type === "set_reasoning_effort") {
+    state2.currentReasoningEffort = msg.effort || null;
+    log2(`reasoning effort updated to: ${state2.currentReasoningEffort}`);
+    emit({ type: "reasoning_effort_updated", effort: state2.currentReasoningEffort });
+    return true;
+  }
+  if (msg.type === "set_permission_mode") {
+    state2.currentPermissionMode = msg.permissionMode || "bypassPermissions";
+    log2(`permissionMode updated to: ${state2.currentPermissionMode}`);
+    emit({ type: "permission_mode_updated", permissionMode: state2.currentPermissionMode });
+    return true;
+  }
+  return false;
+}
+function createBlockingSlot() {
+  return {
+    /** The resolve function of the currently-pending promise, or null. */
+    pending: null,
+    /** Resolve the pending promise with value (no-op if nothing pending). */
+    resolve(value) {
+      if (this.pending) {
+        this.pending(value);
+        this.pending = null;
+      }
+    },
+    /** Resolve with a fallback value (convenience alias for abort/cancel). */
+    cancel(fallback) {
+      this.resolve(fallback);
+    }
+  };
+}
+function handleInteractionResponse(msg, permissionSlot2, askUserSlot2, log2) {
+  if (msg.type === "ask_user_answer") {
+    if (askUserSlot2.pending) {
+      log2(`Resolving AskUserQuestion with: ${String(msg.answer).substring(0, 100)}`);
+      askUserSlot2.resolve(msg.answer);
+    } else {
+      log2("ask_user_answer received but no pending askUserResolve \u2014 ignoring");
+    }
+    return true;
+  }
+  if (msg.type === "permission_response") {
+    if (permissionSlot2.pending) {
+      log2(`Resolving permission: ${msg.allowed ? "allow" : "deny"}`);
+      permissionSlot2.resolve(msg.allowed);
+    } else {
+      log2("permission_response received but no pending permissionResolve \u2014 ignoring");
+    }
+    return true;
+  }
+  return false;
+}
+function cancelPendingInteractions(permissionSlot2, askUserSlot2) {
+  permissionSlot2.cancel(false);
+  askUserSlot2.cancel(null);
+}
+
+// src-tauri/resources/agent-bridge-opencode.mjs
 function getFreePort() {
   return new Promise((resolve, reject) => {
     const srv = createServer();
@@ -1656,19 +1772,10 @@ var opencodebin = join(homedir(), ".opencode", "bin");
 if (!process.env.PATH?.includes(opencodebin)) {
   process.env.PATH = `${opencodebin}:${process.env.PATH || ""}`;
 }
-var logFile = "/tmp/agent-bridge-opencode-debug.log";
-var log = (msg) => {
-  const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
-`;
-  process.stderr.write(line);
-  try {
-    appendFileSync(logFile, line);
-  } catch {
-  }
-};
+var log = createLogger("opencode");
 var config = JSON.parse(process.argv[2] || "{}");
-var { sessionId, cwd: initialCwd, permissionMode: configPermissionMode } = config;
-var currentCwd = initialCwd;
+var { sessionId } = config;
+var state = createBridgeState(config);
 var PLAN_MODE_SYSTEM_PROMPT = `You are in PLAN MODE. Your job is to analyze the user's request and produce a detailed implementation plan \u2014 do NOT execute the plan.
 
 RULES:
@@ -1681,12 +1788,8 @@ RULES:
   4. Any risks or considerations
 
 Think carefully, explore thoroughly, and be specific in your plan.`;
-var currentPermissionMode = configPermissionMode || "bypassPermissions";
-var permissionResolve = null;
-var askUserResolve = null;
-function emit(obj) {
-  process.stdout.write(JSON.stringify(obj) + "\n");
-}
+var permissionSlot = createBlockingSlot();
+var askUserSlot = createBlockingSlot();
 var KNOWN_COSTS = [
   // OpenAI
   ["o1-mini", 1.1, 4.4],
@@ -1849,7 +1952,7 @@ if (config.mode === "list-models") {
       }
       case "permission.updated": {
         const permission = props;
-        log(`Permission requested: ${permission.type} \u2014 ${permission.title} (mode=${currentPermissionMode})`);
+        log(`Permission requested: ${permission.type} \u2014 ${permission.title} (mode=${state.currentPermissionMode})`);
         const isQuestion = permission.type === "question" || permission.title === "question";
         if (isQuestion) {
           const questions = permission.metadata?.questions || [];
@@ -1860,7 +1963,7 @@ if (config.mode === "list-models") {
           const sid = permission.sessionID;
           const pid = permission.id;
           new Promise((resolve) => {
-            askUserResolve = resolve;
+            askUserSlot.pending = resolve;
           }).then((answer) => {
             log(`Question ${pid} answered: ${JSON.stringify(answer).substring(0, 100)}`);
             client2.postSessionIdPermissionsPermissionId({
@@ -1953,15 +2056,15 @@ if (config.mode === "list-models") {
             break;
           }
         }
-        const state = part.state;
+        const toolState = part.state;
         blocks.push({
           type: "tool_use",
           id: part.callID || part.id,
           name: part.tool,
-          input: state?.input || {}
+          input: toolState?.input || {}
         });
-        if (state?.status === "completed") {
-          let output = state.output || "";
+        if (toolState?.status === "completed") {
+          let output = toolState.output || "";
           if (part.tool === "read" && output.includes("<content>")) {
             const contentMatch = output.match(/<content>([\s\S]*?)<\/content>/);
             if (contentMatch) {
@@ -1970,6 +2073,11 @@ if (config.mode === "list-models") {
                 return m ? `     ${m[1]}	${m[2]}` : line;
               }).join("\n");
             }
+          } else if (part.tool === "read" && output.includes("<type>directory</type>")) {
+            const entriesMatch = output.match(/<entries>([\s\S]*?)<\/entries>/);
+            if (entriesMatch) {
+              output = entriesMatch[1].trim();
+            }
           }
           blocks.push({
             type: "tool_result",
@@ -1977,11 +2085,11 @@ if (config.mode === "list-models") {
             content: output,
             is_error: false
           });
-        } else if (state?.status === "error") {
+        } else if (toolState?.status === "error") {
           blocks.push({
             type: "tool_result",
             tool_use_id: part.callID || part.id,
-            content: state.error || "Tool error",
+            content: toolState.error || "Tool error",
             is_error: true
           });
         }
@@ -2050,18 +2158,18 @@ if (config.mode === "list-models") {
   }, emitQueryComplete = function() {
     currentMessageId = null;
     partsById.clear();
-    if (currentPermissionMode === "plan") {
+    if (state.currentPermissionMode === "plan") {
       emit({
         type: "permission_request",
         toolName: "ExitPlanMode",
         input: {}
       });
       new Promise((resolve) => {
-        permissionResolve = resolve;
+        permissionSlot.pending = resolve;
       }).then((allowed) => {
         if (allowed) {
-          currentPermissionMode = "bypassPermissions";
-          emit({ type: "permission_mode_updated", permissionMode: currentPermissionMode });
+          state.currentPermissionMode = "bypassPermissions";
+          emit({ type: "permission_mode_updated", permissionMode: state.currentPermissionMode });
         }
         emit({ type: "query_complete" });
       });
@@ -2075,19 +2183,18 @@ if (config.mode === "list-models") {
   let bootPromise;
   let ocSessionId = null;
   let currentMessageId = null;
-  let currentReasoningEffort = null;
   let idleTimer = null;
   const userMessageIds = /* @__PURE__ */ new Set();
   const partsById = /* @__PURE__ */ new Map();
   async function boot() {
-    log(`Booting OpenCode server (cwd=${currentCwd})`);
+    log(`Booting OpenCode server (cwd=${state.currentCwd})`);
     try {
       const port = await getFreePort();
       log(`Using port ${port}`);
       const serverConfig = {};
-      if (config.model) {
-        serverConfig.model = config.model;
-        log(`Setting OpenCode model: ${config.model}`);
+      if (state.currentModel) {
+        serverConfig.model = state.currentModel;
+        log(`Setting OpenCode model: ${state.currentModel}`);
       }
       server = await createOpencodeServer({
         port,
@@ -2096,7 +2203,7 @@ if (config.mode === "list-models") {
       });
       client2 = createOpencodeClient({
         baseUrl: server.url,
-        directory: currentCwd
+        directory: state.currentCwd
       });
       log(`OpenCode server started at ${server.url}`);
     } catch (err) {
@@ -2121,7 +2228,7 @@ if (config.mode === "list-models") {
       type: "system",
       subtype: "bridge_ready",
       sessionId,
-      cwd: currentCwd || process.cwd()
+      cwd: state.currentCwd || process.cwd()
     });
     fetchAndEmitModels();
   }
@@ -2215,24 +2322,7 @@ if (config.mode === "list-models") {
       emit({ type: "history_loaded", success: false });
     }
   }
-  let stdinBuf = "";
-  process.stdin.setEncoding("utf-8");
-  process.stdin.on("data", (chunk) => {
-    stdinBuf += chunk;
-    let newlineIdx;
-    while ((newlineIdx = stdinBuf.indexOf("\n")) !== -1) {
-      const line = stdinBuf.slice(0, newlineIdx).trim();
-      stdinBuf = stdinBuf.slice(newlineIdx + 1);
-      if (!line) continue;
-      try {
-        const msg = JSON.parse(line);
-        handleStdinMessage(msg);
-      } catch (err) {
-        emit({ type: "error", error: `Invalid JSON on stdin: ${err.message}` });
-      }
-    }
-  });
-  process.stdin.on("end", () => {
+  startStdinReader(handleStdinMessage, () => {
     if (server) server.close();
     process.exit(0);
   });
@@ -2242,14 +2332,7 @@ if (config.mode === "list-models") {
         clearTimeout(idleTimer);
         idleTimer = null;
       }
-      if (permissionResolve) {
-        permissionResolve(false);
-        permissionResolve = null;
-      }
-      if (askUserResolve) {
-        askUserResolve(null);
-        askUserResolve = null;
-      }
+      cancelPendingInteractions(permissionSlot, askUserSlot);
       if (ocSessionId) {
         try {
           await client2.session.abort({ path: { id: ocSessionId } });
@@ -2260,40 +2343,8 @@ if (config.mode === "list-models") {
       emit({ type: "aborted" });
       return;
     }
-    if (msg.type === "set_cwd") {
-      currentCwd = msg.cwd;
-      log(`cwd updated to: ${currentCwd}`);
-      emit({ type: "cwd_updated", cwd: currentCwd });
-      return;
-    }
-    if (msg.type === "permission_response") {
-      if (permissionResolve) {
-        log(`Resolving permission: ${msg.allowed ? "allow" : "deny"}`);
-        permissionResolve(msg.allowed);
-        permissionResolve = null;
-      } else {
-        log("permission_response received but no pending permissionResolve \u2014 ignoring");
-      }
-      return;
-    }
-    if (msg.type === "set_permission_mode") {
-      currentPermissionMode = msg.permissionMode || "bypassPermissions";
-      log(`permissionMode updated to: ${currentPermissionMode}`);
-      emit({ type: "permission_mode_updated", permissionMode: currentPermissionMode });
-      return;
-    }
-    if (msg.type === "set_model") {
-      config.model = msg.model || null;
-      log(`model updated to: ${config.model}`);
-      emit({ type: "model_updated", model: config.model });
-      return;
-    }
-    if (msg.type === "set_reasoning_effort") {
-      currentReasoningEffort = msg.effort || null;
-      log(`reasoning effort updated to: ${currentReasoningEffort}`);
-      emit({ type: "reasoning_effort_updated", effort: currentReasoningEffort });
-      return;
-    }
+    if (handleInteractionResponse(msg, permissionSlot, askUserSlot, log)) return;
+    if (handleCommonSetters(msg, state, log)) return;
     if (msg.type === "get_usage") {
       try {
         await bootPromise;
@@ -2302,14 +2353,6 @@ if (config.mode === "list-models") {
       } catch (err) {
         log(`Failed to get usage: ${err.message}`);
         emit({ type: "opencode_usage", data: null, error: err.message });
-      }
-      return;
-    }
-    if (msg.type === "ask_user_answer") {
-      if (askUserResolve) {
-        log(`Resolving ask_user_question with: ${JSON.stringify(msg.answer).substring(0, 100)}`);
-        askUserResolve(msg.answer);
-        askUserResolve = null;
       }
       return;
     }
@@ -2360,24 +2403,24 @@ if (config.mode === "list-models") {
       {
         const parts = [];
         if (config.systemPrompt) parts.push(config.systemPrompt);
-        if (currentPermissionMode === "plan") parts.push(PLAN_MODE_SYSTEM_PROMPT);
+        if (state.currentPermissionMode === "plan") parts.push(PLAN_MODE_SYSTEM_PROMPT);
         if (parts.length > 0) promptBody.system = parts.join("\n\n");
       }
-      if (currentReasoningEffort) {
-        promptBody.variant = currentReasoningEffort;
-        log(`Using reasoning effort variant: ${currentReasoningEffort}`);
+      if (state.currentReasoningEffort) {
+        promptBody.variant = state.currentReasoningEffort;
+        log(`Using reasoning effort variant: ${state.currentReasoningEffort}`);
       }
-      if (config.model) {
-        const slash = config.model.indexOf("/");
+      if (state.currentModel) {
+        const slash = state.currentModel.indexOf("/");
         if (slash > 0) {
           promptBody.model = {
-            providerID: config.model.substring(0, slash),
-            modelID: config.model.substring(slash + 1)
+            providerID: state.currentModel.substring(0, slash),
+            modelID: state.currentModel.substring(slash + 1)
           };
         } else {
           promptBody.model = {
-            providerID: config.model,
-            modelID: config.model
+            providerID: state.currentModel,
+            modelID: state.currentModel
           };
         }
         log(`Using model: ${JSON.stringify(promptBody.model)}`);

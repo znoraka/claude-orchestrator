@@ -10,95 +10,59 @@
  * Usage: node agent-bridge.bundle.mjs '{"sessionId":"...","cwd":"...","resume":"...","mcpServers":{...},"systemPrompt":"..."}'
  */
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { existsSync, appendFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
+import {
+  emit,
+  createLogger,
+  startStdinReader,
+  createBridgeState,
+  handleCommonSetters,
+  createBlockingSlot,
+  handleInteractionResponse,
+  cancelPendingInteractions,
+} from "./bridge-utils.mjs";
 
 // ── Logging ──────────────────────────────────────────────────────────
-const logFile = "/tmp/agent-bridge-debug.log";
-const log = (msg) => {
-  const line = `[${new Date().toISOString()}] ${msg}\n`;
-  process.stderr.write(line);
-  try { appendFileSync(logFile, line); } catch {}
-};
+const log = createLogger("");  // → /tmp/agent-bridge-debug.log
 
 // ── Config ───────────────────────────────────────────────────────────
 const config = JSON.parse(process.argv[2] || "{}");
 const {
   sessionId,
-  cwd: initialCwd,
   resume,
   mcpServers,
   systemPrompt,
   allowedTools,
   claudeCliPath,
-  permissionMode: configPermissionMode,
 } = config;
 
-// Mutable working directory — updated by set_cwd messages (e.g. after switch_workspace)
-let currentCwd = initialCwd;
-
-// Mutable model — updated by set_model messages
-let currentModel = config.model || null;
-
-// Mutable reasoning effort — updated by set_reasoning_effort messages
-let currentReasoningEffort = null; // "low" | "medium" | "high" | null
-
-function emit(obj) {
-  process.stdout.write(JSON.stringify(obj) + "\n");
-}
+const state = createBridgeState(config);
 
 log(`PATH: ${process.env.PATH}`);
 log(`HOME: ${process.env.HOME}`);
 log(`node: ${process.execPath}`);
-log(`cwd config: ${initialCwd}`);
+log(`cwd config: ${config.cwd}`);
 log(`cwd actual: ${process.cwd()}`);
-log(`cwd exists: ${existsSync(initialCwd || process.cwd())}`);
+log(`cwd exists: ${existsSync(config.cwd || process.cwd())}`);
 
-// ── Session state ───────────────────────────────────────────────────
+// ── Session state ────────────────────────────────────────────────────
 
 // The Claude Code session ID — captured from the first query's init message.
-// Used to resume conversation for follow-up messages.
 let claudeSessionId = resume || null;
 let abortController = null;
 let queryInProgress = false;
 let queryGeneration = 0;
 
-// AskUserQuestion interception: when set, we're waiting for user input
-// via the canUseTool callback (SDK permission prompt protocol).
-let askUserResolve = null;
+// Interaction slots for AskUserQuestion and permission prompts
+const askUserSlot = createBlockingSlot();
+const permissionSlot = createBlockingSlot();
 
-// Permission prompt interception (for plan mode): when set, we're waiting
-// for the user to approve/deny a tool use via canUseTool.
-let permissionResolve = null;
+// ── Stdin handling ───────────────────────────────────────────────────
 
-// Mutable permission mode — can be toggled at runtime via set_permission_mode
-let currentPermissionMode = configPermissionMode || "bypassPermissions";
-
-// ── Stdin handling ──────────────────────────────────────────────────
-
-let stdinBuf = "";
-process.stdin.setEncoding("utf-8");
-process.stdin.on("data", (chunk) => {
-  stdinBuf += chunk;
-  let newlineIdx;
-  while ((newlineIdx = stdinBuf.indexOf("\n")) !== -1) {
-    const line = stdinBuf.slice(0, newlineIdx).trim();
-    stdinBuf = stdinBuf.slice(newlineIdx + 1);
-    if (!line) continue;
-    try {
-      const msg = JSON.parse(line);
-      handleStdinMessage(msg);
-    } catch (err) {
-      emit({ type: "error", error: `Invalid JSON on stdin: ${err.message}` });
-    }
-  }
-});
-
-process.stdin.on("end", () => {
-  process.exit(0);
-});
+startStdinReader(handleStdinMessage, () => process.exit(0));
 
 async function handleStdinMessage(msg) {
   if (msg.type === "abort") {
@@ -108,71 +72,13 @@ async function handleStdinMessage(msg) {
       abortController = null;
     }
     queryInProgress = false;  // unblock new messages immediately
-    // Also unblock any pending AskUserQuestion / permission wait
-    if (askUserResolve) {
-      askUserResolve(null);
-      askUserResolve = null;
-    }
-    if (permissionResolve) {
-      permissionResolve(false);
-      permissionResolve = null;
-    }
+    cancelPendingInteractions(permissionSlot, askUserSlot);
     emit({ type: "aborted" });
     return;
   }
 
-  if (msg.type === "set_cwd") {
-    currentCwd = msg.cwd;
-    log(`cwd updated to: ${currentCwd}`);
-    emit({ type: "cwd_updated", cwd: currentCwd });
-    return;
-  }
-
-  if (msg.type === "set_model") {
-    currentModel = msg.model || null;
-    log(`model updated to: ${currentModel}`);
-    emit({ type: "model_updated", model: currentModel });
-    return;
-  }
-
-  if (msg.type === "set_reasoning_effort") {
-    currentReasoningEffort = msg.effort || null;
-    log(`reasoning effort updated to: ${currentReasoningEffort}`);
-    emit({ type: "reasoning_effort_updated", effort: currentReasoningEffort });
-    return;
-  }
-
-  // User answered an AskUserQuestion prompt
-  if (msg.type === "ask_user_answer") {
-    if (askUserResolve) {
-      log(`Resolving AskUserQuestion with: ${String(msg.answer).substring(0, 100)}`);
-      askUserResolve(msg.answer);
-      askUserResolve = null;
-    } else {
-      log("ask_user_answer received but no pending askUserResolve — ignoring");
-    }
-    return;
-  }
-
-  // User approved or denied a permission prompt (plan mode)
-  if (msg.type === "permission_response") {
-    if (permissionResolve) {
-      log(`Resolving permission: ${msg.allowed ? "allow" : "deny"}`);
-      permissionResolve(msg.allowed);
-      permissionResolve = null;
-    } else {
-      log("permission_response received but no pending permissionResolve — ignoring");
-    }
-    return;
-  }
-
-  // Toggle permission mode at runtime
-  if (msg.type === "set_permission_mode") {
-    currentPermissionMode = msg.permissionMode || "bypassPermissions";
-    log(`permissionMode updated to: ${currentPermissionMode}`);
-    emit({ type: "permission_mode_updated", permissionMode: currentPermissionMode });
-    return;
-  }
+  if (handleInteractionResponse(msg, permissionSlot, askUserSlot, log)) return;
+  if (handleCommonSetters(msg, state, log)) return;
 
   if (msg.type === "user") {
     await runQuery(msg.message);
@@ -224,10 +130,10 @@ async function runQuery(userMessage) {
     prompt = String(userMessage);
   }
 
-  const isBypass = currentPermissionMode === "bypassPermissions";
+  const isBypass = state.currentPermissionMode === "bypassPermissions";
   const options = {
-    cwd: currentCwd || process.cwd(),
-    permissionMode: currentPermissionMode,
+    cwd: state.currentCwd || process.cwd(),
+    permissionMode: state.currentPermissionMode,
     allowDangerouslySkipPermissions: isBypass,
     abortController,
     settingSources: ["project"],
@@ -240,9 +146,11 @@ async function runQuery(userMessage) {
         log(`canUseTool: AskUserQuestion — waiting for user answer`);
         emit({ type: "ask_user_question", questions: input.questions });
         const answer = await new Promise((resolve) => {
-          askUserResolve = resolve;
-          const onAbort = () => { resolve(null); };
-          signal.addEventListener("abort", onAbort, { once: true });
+          askUserSlot.pending = resolve;
+          signal.addEventListener("abort", () => {
+            askUserSlot.pending = null;
+            resolve(null);
+          }, { once: true });
         });
         if (answer === null) {
           log("canUseTool: AskUserQuestion cancelled");
@@ -269,9 +177,11 @@ async function runQuery(userMessage) {
       log(`canUseTool: permission request for ${toolName}`);
       emit({ type: "permission_request", toolName, input });
       const allowed = await new Promise((resolve) => {
-        permissionResolve = resolve;
-        const onAbort = () => { resolve(false); };
-        signal.addEventListener("abort", onAbort, { once: true });
+        permissionSlot.pending = resolve;
+        signal.addEventListener("abort", () => {
+          permissionSlot.pending = null;
+          resolve(false);
+        }, { once: true });
       });
       if (!allowed) {
         log(`canUseTool: ${toolName} denied`);
@@ -301,10 +211,10 @@ async function runQuery(userMessage) {
   }
   if (mcpServers && Object.keys(mcpServers).length > 0) options.mcpServers = mcpServers;
   if (allowedTools) options.allowedTools = allowedTools;
-  if (currentModel) options.model = currentModel;
-  if (currentReasoningEffort) {
+  if (state.currentModel) options.model = state.currentModel;
+  if (state.currentReasoningEffort) {
     const effortMap = { low: 1024, medium: 10000, high: 50000 };
-    options.maxThinkingTokens = effortMap[currentReasoningEffort];
+    options.maxThinkingTokens = effortMap[state.currentReasoningEffort];
   }
 
   try {
@@ -330,9 +240,6 @@ async function runQuery(userMessage) {
           log(`assistant event: content type=${typeof content}, stop_reason=${message.message?.stop_reason}, keys=${Object.keys(message).join(",")}`);
         }
       }
-
-      // AskUserQuestion is now handled via the canUseTool callback above,
-      // which uses the SDK's permission protocol (--permission-prompt-tool stdio).
     }
     emit({ type: "query_complete" });
   } catch (err) {
@@ -356,5 +263,5 @@ emit({
   type: "system",
   subtype: "bridge_ready",
   sessionId,
-  cwd: currentCwd || process.cwd(),
+  cwd: state.currentCwd || process.cwd(),
 });

@@ -16539,70 +16539,151 @@ function query({
 }
 
 // src-tauri/resources/agent-bridge.mjs
-import { existsSync as existsSync3, appendFileSync as appendFileSync3, writeFileSync, mkdirSync as mkdirSync3 } from "fs";
+import { existsSync as existsSync3, writeFileSync, mkdirSync as mkdirSync3 } from "fs";
 import { join as join4 } from "path";
 import { tmpdir } from "os";
 import { randomUUID as randomUUID4 } from "crypto";
-var logFile = "/tmp/agent-bridge-debug.log";
-var log = (msg) => {
-  const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
+
+// src-tauri/resources/bridge-utils.mjs
+import { appendFileSync as appendFileSync3 } from "fs";
+function emit(obj) {
+  process.stdout.write(JSON.stringify(obj) + "\n");
+}
+function createLogger(name) {
+  const suffix = name ? `-${name}` : "";
+  const logFile = `/tmp/agent-bridge${suffix}-debug.log`;
+  return (msg) => {
+    const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
 `;
-  process.stderr.write(line);
-  try {
-    appendFileSync3(logFile, line);
-  } catch {
+    process.stderr.write(line);
+    try {
+      appendFileSync3(logFile, line);
+    } catch {
+    }
+  };
+}
+function startStdinReader(onMessage, onEnd) {
+  let buf = "";
+  process.stdin.setEncoding("utf-8");
+  process.stdin.on("data", (chunk) => {
+    buf += chunk;
+    let idx;
+    while ((idx = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line) continue;
+      try {
+        onMessage(JSON.parse(line));
+      } catch (err) {
+        emit({ type: "error", error: `Invalid JSON on stdin: ${err.message}` });
+      }
+    }
+  });
+  process.stdin.on("end", onEnd);
+}
+function createBridgeState(config3) {
+  return {
+    currentCwd: config3.cwd || null,
+    currentModel: config3.model || null,
+    currentReasoningEffort: null,
+    currentPermissionMode: config3.permissionMode || "bypassPermissions"
+  };
+}
+function handleCommonSetters(msg, state2, log2) {
+  if (msg.type === "set_cwd") {
+    state2.currentCwd = msg.cwd;
+    log2(`cwd updated to: ${state2.currentCwd}`);
+    emit({ type: "cwd_updated", cwd: state2.currentCwd });
+    return true;
   }
-};
+  if (msg.type === "set_model") {
+    state2.currentModel = msg.model || null;
+    log2(`model updated to: ${state2.currentModel}`);
+    emit({ type: "model_updated", model: state2.currentModel });
+    return true;
+  }
+  if (msg.type === "set_reasoning_effort") {
+    state2.currentReasoningEffort = msg.effort || null;
+    log2(`reasoning effort updated to: ${state2.currentReasoningEffort}`);
+    emit({ type: "reasoning_effort_updated", effort: state2.currentReasoningEffort });
+    return true;
+  }
+  if (msg.type === "set_permission_mode") {
+    state2.currentPermissionMode = msg.permissionMode || "bypassPermissions";
+    log2(`permissionMode updated to: ${state2.currentPermissionMode}`);
+    emit({ type: "permission_mode_updated", permissionMode: state2.currentPermissionMode });
+    return true;
+  }
+  return false;
+}
+function createBlockingSlot() {
+  return {
+    /** The resolve function of the currently-pending promise, or null. */
+    pending: null,
+    /** Resolve the pending promise with value (no-op if nothing pending). */
+    resolve(value) {
+      if (this.pending) {
+        this.pending(value);
+        this.pending = null;
+      }
+    },
+    /** Resolve with a fallback value (convenience alias for abort/cancel). */
+    cancel(fallback) {
+      this.resolve(fallback);
+    }
+  };
+}
+function handleInteractionResponse(msg, permissionSlot2, askUserSlot2, log2) {
+  if (msg.type === "ask_user_answer") {
+    if (askUserSlot2.pending) {
+      log2(`Resolving AskUserQuestion with: ${String(msg.answer).substring(0, 100)}`);
+      askUserSlot2.resolve(msg.answer);
+    } else {
+      log2("ask_user_answer received but no pending askUserResolve \u2014 ignoring");
+    }
+    return true;
+  }
+  if (msg.type === "permission_response") {
+    if (permissionSlot2.pending) {
+      log2(`Resolving permission: ${msg.allowed ? "allow" : "deny"}`);
+      permissionSlot2.resolve(msg.allowed);
+    } else {
+      log2("permission_response received but no pending permissionResolve \u2014 ignoring");
+    }
+    return true;
+  }
+  return false;
+}
+function cancelPendingInteractions(permissionSlot2, askUserSlot2) {
+  permissionSlot2.cancel(false);
+  askUserSlot2.cancel(null);
+}
+
+// src-tauri/resources/agent-bridge.mjs
+var log = createLogger("");
 var config2 = JSON.parse(process.argv[2] || "{}");
 var {
   sessionId,
-  cwd: initialCwd,
   resume,
   mcpServers,
   systemPrompt,
   allowedTools,
-  claudeCliPath,
-  permissionMode: configPermissionMode
+  claudeCliPath
 } = config2;
-var currentCwd = initialCwd;
-var currentModel = config2.model || null;
-var currentReasoningEffort = null;
-function emit(obj) {
-  process.stdout.write(JSON.stringify(obj) + "\n");
-}
+var state = createBridgeState(config2);
 log(`PATH: ${process.env.PATH}`);
 log(`HOME: ${process.env.HOME}`);
 log(`node: ${process.execPath}`);
-log(`cwd config: ${initialCwd}`);
+log(`cwd config: ${config2.cwd}`);
 log(`cwd actual: ${process.cwd()}`);
-log(`cwd exists: ${existsSync3(initialCwd || process.cwd())}`);
+log(`cwd exists: ${existsSync3(config2.cwd || process.cwd())}`);
 var claudeSessionId = resume || null;
 var abortController = null;
 var queryInProgress = false;
 var queryGeneration = 0;
-var askUserResolve = null;
-var permissionResolve = null;
-var currentPermissionMode = configPermissionMode || "bypassPermissions";
-var stdinBuf = "";
-process.stdin.setEncoding("utf-8");
-process.stdin.on("data", (chunk) => {
-  stdinBuf += chunk;
-  let newlineIdx;
-  while ((newlineIdx = stdinBuf.indexOf("\n")) !== -1) {
-    const line = stdinBuf.slice(0, newlineIdx).trim();
-    stdinBuf = stdinBuf.slice(newlineIdx + 1);
-    if (!line) continue;
-    try {
-      const msg = JSON.parse(line);
-      handleStdinMessage(msg);
-    } catch (err) {
-      emit({ type: "error", error: `Invalid JSON on stdin: ${err.message}` });
-    }
-  }
-});
-process.stdin.on("end", () => {
-  process.exit(0);
-});
+var askUserSlot = createBlockingSlot();
+var permissionSlot = createBlockingSlot();
+startStdinReader(handleStdinMessage, () => process.exit(0));
 async function handleStdinMessage(msg) {
   if (msg.type === "abort") {
     queryGeneration++;
@@ -16611,61 +16692,12 @@ async function handleStdinMessage(msg) {
       abortController = null;
     }
     queryInProgress = false;
-    if (askUserResolve) {
-      askUserResolve(null);
-      askUserResolve = null;
-    }
-    if (permissionResolve) {
-      permissionResolve(false);
-      permissionResolve = null;
-    }
+    cancelPendingInteractions(permissionSlot, askUserSlot);
     emit({ type: "aborted" });
     return;
   }
-  if (msg.type === "set_cwd") {
-    currentCwd = msg.cwd;
-    log(`cwd updated to: ${currentCwd}`);
-    emit({ type: "cwd_updated", cwd: currentCwd });
-    return;
-  }
-  if (msg.type === "set_model") {
-    currentModel = msg.model || null;
-    log(`model updated to: ${currentModel}`);
-    emit({ type: "model_updated", model: currentModel });
-    return;
-  }
-  if (msg.type === "set_reasoning_effort") {
-    currentReasoningEffort = msg.effort || null;
-    log(`reasoning effort updated to: ${currentReasoningEffort}`);
-    emit({ type: "reasoning_effort_updated", effort: currentReasoningEffort });
-    return;
-  }
-  if (msg.type === "ask_user_answer") {
-    if (askUserResolve) {
-      log(`Resolving AskUserQuestion with: ${String(msg.answer).substring(0, 100)}`);
-      askUserResolve(msg.answer);
-      askUserResolve = null;
-    } else {
-      log("ask_user_answer received but no pending askUserResolve \u2014 ignoring");
-    }
-    return;
-  }
-  if (msg.type === "permission_response") {
-    if (permissionResolve) {
-      log(`Resolving permission: ${msg.allowed ? "allow" : "deny"}`);
-      permissionResolve(msg.allowed);
-      permissionResolve = null;
-    } else {
-      log("permission_response received but no pending permissionResolve \u2014 ignoring");
-    }
-    return;
-  }
-  if (msg.type === "set_permission_mode") {
-    currentPermissionMode = msg.permissionMode || "bypassPermissions";
-    log(`permissionMode updated to: ${currentPermissionMode}`);
-    emit({ type: "permission_mode_updated", permissionMode: currentPermissionMode });
-    return;
-  }
+  if (handleInteractionResponse(msg, permissionSlot, askUserSlot, log)) return;
+  if (handleCommonSetters(msg, state, log)) return;
   if (msg.type === "user") {
     await runQuery(msg.message);
     return;
@@ -16708,10 +16740,10 @@ async function runQuery(userMessage) {
   } else {
     prompt = String(userMessage);
   }
-  const isBypass = currentPermissionMode === "bypassPermissions";
+  const isBypass = state.currentPermissionMode === "bypassPermissions";
   const options = {
-    cwd: currentCwd || process.cwd(),
-    permissionMode: currentPermissionMode,
+    cwd: state.currentCwd || process.cwd(),
+    permissionMode: state.currentPermissionMode,
     allowDangerouslySkipPermissions: isBypass,
     abortController,
     settingSources: ["project"],
@@ -16723,11 +16755,11 @@ async function runQuery(userMessage) {
         log(`canUseTool: AskUserQuestion \u2014 waiting for user answer`);
         emit({ type: "ask_user_question", questions: input.questions });
         const answer = await new Promise((resolve) => {
-          askUserResolve = resolve;
-          const onAbort = () => {
+          askUserSlot.pending = resolve;
+          signal.addEventListener("abort", () => {
+            askUserSlot.pending = null;
             resolve(null);
-          };
-          signal.addEventListener("abort", onAbort, { once: true });
+          }, { once: true });
         });
         if (answer === null) {
           log("canUseTool: AskUserQuestion cancelled");
@@ -16746,11 +16778,11 @@ async function runQuery(userMessage) {
       log(`canUseTool: permission request for ${toolName}`);
       emit({ type: "permission_request", toolName, input });
       const allowed = await new Promise((resolve) => {
-        permissionResolve = resolve;
-        const onAbort = () => {
+        permissionSlot.pending = resolve;
+        signal.addEventListener("abort", () => {
+          permissionSlot.pending = null;
           resolve(false);
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
+        }, { once: true });
       });
       if (!allowed) {
         log(`canUseTool: ${toolName} denied`);
@@ -16773,10 +16805,10 @@ async function runQuery(userMessage) {
   }
   if (mcpServers && Object.keys(mcpServers).length > 0) options.mcpServers = mcpServers;
   if (allowedTools) options.allowedTools = allowedTools;
-  if (currentModel) options.model = currentModel;
-  if (currentReasoningEffort) {
+  if (state.currentModel) options.model = state.currentModel;
+  if (state.currentReasoningEffort) {
     const effortMap = { low: 1024, medium: 1e4, high: 5e4 };
-    options.maxThinkingTokens = effortMap[currentReasoningEffort];
+    options.maxThinkingTokens = effortMap[state.currentReasoningEffort];
   }
   try {
     log(`query() starting \u2014 cwd=${options.cwd}, resume=${claudeSessionId || "(new)"}`);
@@ -16819,5 +16851,5 @@ emit({
   type: "system",
   subtype: "bridge_ready",
   sessionId,
-  cwd: currentCwd || process.cwd()
+  cwd: state.currentCwd || process.cwd()
 });
