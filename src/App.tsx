@@ -49,7 +49,6 @@ const SessionPanel = memo(function SessionPanel({
   onModelChange,
   activeModels,
   setChatInputHeight,
-  onEditFile,
   onAvailableModels,
   onNavigateToSession,
   updatePermissionMode,
@@ -75,11 +74,10 @@ const SessionPanel = memo(function SessionPanel({
   currentModel: string;
   onModelChange: (modelId: string) => void;
   activeModels: import("./types").ModelOption[];
-  setChatInputHeight: ((h: number) => void) | undefined;
-  onEditFile?: (filePath: string, line?: number) => void;
+  setChatInputHeight: (h: number) => void;
   onAvailableModels?: (models: OpenCodeModel[]) => void;
   onNavigateToSession?: (sessionId: string) => void;
-  parentSession?: { id: string; name: string } | null;
+  parentSession?: { id: string; name: string; claudeSessionId?: string; directory?: string } | null;
   childSessions?: Array<{ id: string; name: string; claudeSessionId?: string; directory?: string; status: string }>;
 }) {
   const isVisible = isActive && activePanel === null;
@@ -98,6 +96,11 @@ const SessionPanel = memo(function SessionPanel({
   const handleMarkTitleGenerated = useCallback(() => markTitleGenerated(session.id), [session.id, markTitleGenerated]);
   const handleClearPendingPrompt = useCallback(() => clearPendingPrompt(session.id), [session.id, clearPendingPrompt]);
   const handlePermissionModeChange = useCallback((mode: "bypassPermissions" | "plan") => updatePermissionMode(session.id, mode), [session.id, updatePermissionMode]);
+  const handleEditFile = useCallback((filePath: string) => {
+    const dir = session.directory.endsWith("/") ? session.directory : session.directory + "/";
+    const editor = localStorage.getItem("claude-orchestrator-editor-command") || "code";
+    invoke("open_in_editor", { editor, filePath: dir + filePath });
+  }, [session.directory]);
 
   return (
     <div
@@ -127,7 +130,7 @@ const SessionPanel = memo(function SessionPanel({
           onModelChange={onModelChange}
           activeModels={activeModels}
           onInputHeightChange={isVisible ? setChatInputHeight : undefined}
-          onEditFile={onEditFile}
+          onEditFile={handleEditFile}
           onAvailableModels={onAvailableModels}
           onRename={handleRename}
           onMarkTitleGenerated={handleMarkTitleGenerated}
@@ -207,6 +210,23 @@ export default function App() {
     }
     return map;
   }, [sessions]);
+
+  // Pre-computed parent info map — avoids per-render IIFE that creates new object
+  // references on every render and defeats React.memo on SessionPanel.
+  const parentSessionMap = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; claudeSessionId?: string; directory?: string } | null>();
+    for (const s of sessions) {
+      if (s.parentSessionId) {
+        const parent = sessions.find((p) => p.id === s.parentSessionId);
+        map.set(s.id, parent
+          ? { id: parent.id, name: parent.name, claudeSessionId: parent.claudeSessionId, directory: jsonlDirectory(parent) }
+          : { id: s.parentSessionId, name: sessionNameMap.get(s.parentSessionId) || "Unknown" });
+      } else {
+        map.set(s.id, null);
+      }
+    }
+    return map;
+  }, [sessions, sessionNameMap]);
 
   // Directory dialog state
   const [showUsagePanel, setShowUsagePanel] = useState(false);
@@ -729,24 +749,11 @@ export default function App() {
                   currentModel={selectedModel}
                   onModelChange={handleModelChange}
                   activeModels={activeModels}
-                  setChatInputHeight={session.id === effectiveSessionId ? setChatInputHeight : undefined}
+                  setChatInputHeight={setChatInputHeight}
                   onAvailableModels={session.provider === "opencode" ? handleAvailableModels : undefined}
-                  onEditFile={(filePath) => {
-                    const dir = session.directory.endsWith("/") ? session.directory : session.directory + "/";
-                    const editor = localStorage.getItem("claude-orchestrator-editor-command") || "code";
-                    invoke("open_in_editor", { editor, filePath: dir + filePath });
-                  }}
                   onNavigateToSession={handleSelectSession}
                   updatePermissionMode={updatePermissionMode}
-                  parentSession={session.parentSessionId ? (() => {
-                    const parent = sessions.find(s => s.id === session.parentSessionId);
-                    return parent ? {
-                      id: parent.id,
-                      name: parent.name,
-                      claudeSessionId: parent.claudeSessionId,
-                      directory: jsonlDirectory(parent),
-                    } : { id: session.parentSessionId, name: sessionNameMap.get(session.parentSessionId) || "Unknown" };
-                  })() : null}
+                  parentSession={parentSessionMap.get(session.id)}
                   childSessions={childSessionsMap.get(session.id)}
                 />
               ))}

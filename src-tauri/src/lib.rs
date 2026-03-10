@@ -320,6 +320,31 @@ async fn create_agent_session(
             directory
         };
 
+        // Resolve git root so the agent always spawns from the project root.
+        // This lets Claude see the root CLAUDE.md / .claude/ even for worktree sessions.
+        let agent_cwd = find_git_root(&directory).unwrap_or_else(|| directory.clone());
+
+        // On fresh sessions where the selected dir differs from the git root (e.g. a worktree),
+        // prepend a cd instruction so Claude immediately navigates to the right directory.
+        let system_prompt = if !resume && agent_cwd != directory {
+            let cd_prefix = format!(
+                "Your working directory for this session is `{dir}`. \
+                 Start by running `cd {dir}` before doing any file work.",
+                dir = directory
+            );
+            match system_prompt {
+                Some(ref existing) if !existing.is_empty() => {
+                    Some(format!("{}\n\n{}", cd_prefix, existing))
+                }
+                _ => Some(cd_prefix),
+            }
+        } else {
+            system_prompt
+        };
+
+        // Shadow directory with git root — the agent bridge will use this as cwd.
+        let directory = agent_cwd;
+
         eprintln!("[create_agent_session] session_id={}, directory={:?}, claude_session_id={:?}, resume={}, provider={}", session_id, directory, claude_session_id, resume, provider);
 
         let agent_script = agent_script_paths

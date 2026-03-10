@@ -197,13 +197,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
 
+  // Track lastActiveAt in a ref to avoid triggering re-renders on every session switch.
+  // Values are merged into session metas on save.
+  const lastActiveAtRef = useRef<Map<string, number>>(new Map());
+
   // ── Helper to build session metadata for saving ───────────────────
   const buildSessionMetas = useCallback(() => {
     return sessionsRef.current.map((s) => ({
       id: s.id,
       name: s.name,
       createdAt: s.createdAt,
-      lastActiveAt: s.lastActiveAt,
+      lastActiveAt: lastActiveAtRef.current.get(s.id) ?? s.lastActiveAt,
       lastMessageAt: s.lastMessageAt,
       directory: s.directory,
       provider: s.provider || "claude-code",
@@ -287,7 +291,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const current = sessionsRef.current;
     const running = current
       .filter((s) => s.status === "running" && s.id !== excludeId)
-      .sort((a, b) => a.lastActiveAt - b.lastActiveAt);
+      .sort((a, b) => (lastActiveAtRef.current.get(a.id) ?? a.lastActiveAt) - (lastActiveAtRef.current.get(b.id) ?? b.lastActiveAt));
 
     const totalRunning = running.length + (excludeId ? 1 : 0);
     if (totalRunning <= MAX_RUNNING_SESSIONS) return;
@@ -311,8 +315,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const root = getRootSession(id, sessionsRef.current);
     const rootId = root.id;
     setActiveSessionId(rootId);
-    // Update lastActiveAt so recency-sorted views (cmd+k) reflect access order
-    dispatch({ type: "UPDATE", id: rootId, patch: { lastActiveAt: Date.now() } });
+    // Record access time in a ref — avoids mutating the sessions array (and the
+    // re-render cascade that would cause) on every session switch.
+    lastActiveAtRef.current.set(rootId, Date.now());
     const target = sessionsRef.current.find((s) => s.id === rootId);
     if (target) {
       activeSessionInWorkspace.current.set(target.directory || "~", rootId);
@@ -330,7 +335,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } else {
       const wsSessions = current
         .filter((s) => repoRootDir(s.directory || "~") === workspaceId && !s.parentSessionId)
-        .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+        .sort((a, b) => (lastActiveAtRef.current.get(b.id) ?? b.lastActiveAt) - (lastActiveAtRef.current.get(a.id) ?? a.lastActiveAt));
       if (wsSessions.length > 0) {
         setActiveSessionId(wsSessions[0].id);
         activeSessionInWorkspace.current.set(workspaceId, wsSessions[0].id);
@@ -346,7 +351,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } else {
       const wtSessions = current
         .filter((s) => (s.directory || "~") === worktreePath && !s.parentSessionId)
-        .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+        .sort((a, b) => (lastActiveAtRef.current.get(b.id) ?? b.lastActiveAt) - (lastActiveAtRef.current.get(a.id) ?? a.lastActiveAt));
       if (wtSessions.length > 0) {
         setActiveSessionId(wtSessions[0].id);
         activeSessionInWorkspace.current.set(worktreePath, wtSessions[0].id);
@@ -909,7 +914,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [sessions, sessionUsage, unreadSessions, activeSessionId]);
 
   const sortedSessions = useMemo(
-    () => [...sessions].sort((a, b) => b.lastActiveAt - a.lastActiveAt),
+    () => [...sessions].sort((a, b) => (lastActiveAtRef.current.get(b.id) ?? b.lastActiveAt) - (lastActiveAtRef.current.get(a.id) ?? a.lastActiveAt)),
     [sessions]
   );
 
