@@ -482,6 +482,7 @@ const AgentChat = memo(function AgentChat({
   onUsageUpdateRef.current = onUsageUpdate;
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
+  const [isAtBottom, setIsAtBottom] = useState(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const inputAreaRef = useRef<HTMLDivElement>(null);
 
@@ -883,13 +884,15 @@ const AgentChat = memo(function AgentChat({
   const rowVirtualizer = useVirtualizer({
     count: allMessages.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 200,
+    estimateSize: () => 100,
     overscan: 8,
     measureElement: (el) => {
       if (!el) return 0;
       return el.getBoundingClientRect().height || el.scrollHeight || 0;
     },
   });
+
+  const virtualizerTotalSize = rowVirtualizer.getTotalSize();
 
   const loadMore = useCallback(() => {
     setRenderCount((prev) => Math.min(prev + LOAD_MORE_CHUNK, messages.length));
@@ -920,32 +923,33 @@ const AgentChat = memo(function AgentChat({
 
   // Auto-scroll to bottom
   const scrollToBottom = useCallback(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      isAtBottomRef.current = true;
-    }
-  }, []);
+    if (!scrollRef.current) return;
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    isAtBottomRef.current = true;
+    setIsAtBottom(true);
+  }, [setIsAtBottom]);
 
   const handleScroll = useCallback(() => {
     if (!scrollRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-    isAtBottomRef.current = scrollHeight - scrollTop - clientHeight < 40;
+    const atBottom = scrollHeight - scrollTop - clientHeight < 100;
+    isAtBottomRef.current = atBottom;
+    setIsAtBottom(atBottom);
   }, []);
 
   useEffect(() => {
-    // Only auto-scroll if the user is already at the bottom
-    if (isAtBottomRef.current) {
+    // Only auto-scroll if the user is already at the bottom and the tab is active
+    if (isAtBottomRef.current && isActive) {
       requestAnimationFrame(() => scrollToBottom());
     }
-  }, [deferredMessages, trailingMessages, scrollToBottom]);
+  }, [deferredMessages, trailingMessages, virtualizerTotalSize, isActive, scrollToBottom]);
 
-  // Focus input and scroll to bottom when becoming active
+  // Focus input when becoming active
   useEffect(() => {
     if (isActive) {
       setTimeout(() => inputRef.current?.focus(), 50);
-      requestAnimationFrame(() => scrollToBottom());
     }
-  }, [isActive, scrollToBottom]);
+  }, [isActive]);
 
   // ── Load history on mount ────────────────────────────────────────
 
@@ -2404,16 +2408,23 @@ const AgentChat = memo(function AgentChat({
 
   // Restore scroll position when tab becomes active again
   const savedScrollRef = useRef<number | null>(null);
+  const savedIsAtBottomRef = useRef<boolean | null>(null);
   const wasActiveRef = useRef(isActive);
   useEffect(() => {
     if (!isActive && wasActiveRef.current && scrollRef.current) {
-      // Becoming inactive — save scroll position
+      // Becoming inactive — save scroll position and isAtBottom state
       savedScrollRef.current = scrollRef.current.scrollTop;
+      savedIsAtBottomRef.current = isAtBottomRef.current;
     }
     if (isActive && !wasActiveRef.current && scrollRef.current && savedScrollRef.current !== null) {
-      // Becoming active — restore scroll position
+      // Becoming active — restore scroll position and isAtBottom state
       scrollRef.current.scrollTop = savedScrollRef.current;
       savedScrollRef.current = null;
+      if (savedIsAtBottomRef.current !== null) {
+        isAtBottomRef.current = savedIsAtBottomRef.current;
+        setIsAtBottom(savedIsAtBottomRef.current);
+        savedIsAtBottomRef.current = null;
+      }
     }
     wasActiveRef.current = isActive;
   }, [isActive]);
@@ -2432,6 +2443,18 @@ const AgentChat = memo(function AgentChat({
             <span className="text-sm font-medium">Drop files to attach</span>
           </div>
         </div>
+      )}
+      {/* Scroll-to-bottom button */}
+      {!isAtBottom && (
+        <button
+          onClick={scrollToBottom}
+          className="absolute bottom-20 right-4 z-10 rounded-full bg-neutral-700 hover:bg-neutral-600 text-white p-2 shadow-lg transition-colors"
+          title="Scroll to bottom"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
       )}
       {/* Messages area */}
       <div

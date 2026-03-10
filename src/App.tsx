@@ -18,6 +18,7 @@ import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
 import { AGENT_PROVIDERS, defaultModelForProvider, jsonlDirectory, modelsForProvider, type AgentProvider, type ModelOption, type Session } from "./types";
 import CommandPalette from "./components/CommandPalette";
 import { useUpdater } from "./hooks/useUpdater";
+import { useToast } from "./components/Toast";
 
 export interface OpenCodeModel {
   id: string;
@@ -175,7 +176,8 @@ export default function App() {
     updatePermissionMode,
   } = useSessionContext();
 
-  const { update, installing, install, dismiss } = useUpdater();
+  const { showError } = useToast();
+  const { update, installing, install, dismiss } = useUpdater(showError);
 
   // Recent directories helpers
   const MAX_RECENT_DIRS = 8;
