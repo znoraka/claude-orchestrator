@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import type { Session, SessionUsage, Workspace } from "../types";
 import { shortenPath, repoColor, directoryColor } from "./SessionTab";
+import { useSessionLive } from "../contexts/SessionContext";
 
 interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
   sessions: Session[];
   workspaces: Workspace[];
-  sessionUsage: Map<string, SessionUsage>;
   activeSessionId: string | null;
   youngestDescendantMap?: Map<string, Session>;
   onSelectSession: (id: string) => void;
@@ -16,7 +16,6 @@ interface CommandPaletteProps {
   onOpenUsage: () => void;
   onOpenPRs: () => void;
   onOpenShell: () => void;
-  unreadSessions?: Set<string>;
 }
 
 interface ResultItem {
@@ -77,7 +76,6 @@ export default function CommandPalette({
   onClose,
   sessions,
   workspaces: _workspaces,
-  sessionUsage,
   activeSessionId,
   youngestDescendantMap,
   onSelectSession,
@@ -86,9 +84,9 @@ export default function CommandPalette({
   onOpenUsage,
   onOpenPRs,
   onOpenShell,
-  unreadSessions,
 }: CommandPaletteProps) {
   void _workspaces;
+  const { sessionUsage, unreadSessions } = useSessionLive();
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -214,7 +212,7 @@ export default function CommandPalette({
     }
 
     return items;
-  }, [query, sessions, commands, activeSessionId, sessionUsage, youngestDescendantMap, parentNameMap, childCountMap, unreadSessions]);
+  }, [query, sessions, commands, sessionUsage, youngestDescendantMap, parentNameMap, childCountMap, unreadSessions]);
 
   useEffect(() => {
     setSelectedIndex((i) => Math.min(i, Math.max(0, results.length - 1)));
@@ -274,28 +272,29 @@ export default function CommandPalette({
     [results, selectedIndex, executeItem, onClose],
   );
 
-  if (!isOpen) return null;
-
-  // Group results by section for rendering
-  const sections: { key: string; label: string; items: { item: ResultItem; globalIndex: number }[] }[] = [];
-  const seenSections: string[] = [];
-  for (const item of results) {
-    if (!seenSections.includes(item.section)) seenSections.push(item.section);
-  }
-  for (const sKey of seenSections) {
-    const sectionItems: { item: ResultItem; globalIndex: number }[] = [];
-    results.forEach((item, idx) => {
-      if (item.section === sKey) sectionItems.push({ item, globalIndex: idx });
-    });
-    if (sectionItems.length > 0) {
-      sections.push({ key: sKey, label: sKey.toUpperCase(), items: sectionItems });
+  const sections = useMemo(() => {
+    const secs: { key: string; label: string; items: { item: ResultItem; globalIndex: number }[] }[] = [];
+    const seenSections: string[] = [];
+    for (const item of results) {
+      if (!seenSections.includes(item.section)) seenSections.push(item.section);
     }
-  }
+    for (const sKey of seenSections) {
+      const sectionItems: { item: ResultItem; globalIndex: number }[] = [];
+      results.forEach((item, idx) => {
+        if (item.section === sKey) sectionItems.push({ item, globalIndex: idx });
+      });
+      if (sectionItems.length > 0) {
+        secs.push({ key: sKey, label: sKey.toUpperCase(), items: sectionItems });
+      }
+    }
+    return secs;
+  }, [results]);
 
   return (
     <div
       className="command-palette-backdrop fixed inset-0 z-50 flex items-start justify-center pt-[15vh]"
       onClick={onClose}
+      style={{ display: isOpen ? undefined : "none" }}
     >
       <div
         className="command-palette animate-slide-down flex flex-col rounded-xl shadow-2xl"

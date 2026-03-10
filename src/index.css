@@ -165,8 +165,7 @@ input:focus-visible, textarea:focus-visible {
 /* ── Command palette ─────────────────────────────────────────────── */
 
 .command-palette-backdrop {
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.6);
 }
 
 .command-palette {
