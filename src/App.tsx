@@ -675,7 +675,7 @@ export default function App() {
               </p>
               <button
                 onClick={handleNewSession}
-                className="px-6 py-2.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-lg text-sm font-medium transition-all duration-200"
+                className="px-6 py-2.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-xl text-sm font-medium transition-all duration-200 shadow-[0_0_20px_rgba(108,126,230,0.25)]"
               >
                 New Session
               </button>
@@ -689,17 +689,6 @@ export default function App() {
           <div className="absolute inset-0">
             {/* Content area */}
             <div className="absolute inset-0 flex flex-col">
-              {/* Content header bar */}
-              {activeSessionId && activePanel === null && activeSession && (
-                <div className="h-9 flex items-center gap-2 px-4 border-b border-[var(--border-subtle)] bg-[var(--bg-secondary)]/60 text-xs shrink-0">
-                  <span className="text-[var(--text-tertiary)]">{panelDirectory.split("/").filter(Boolean).pop() || panelDirectory}</span>
-                  <span className="text-[var(--text-tertiary)]">/</span>
-                  <span className="text-[var(--text-primary)] font-medium">{activeSession.name || "Untitled"}</span>
-                  {dialogBranches.get(panelDirectory) && (
-                    <span className="ml-auto px-2 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] font-mono text-[10px]">{dialogBranches.get(panelDirectory)}</span>
-                  )}
-                </div>
-              )}
               {/* Panel content */}
               <div className="flex-1 min-h-0 relative">
               {/* Empty state when no session is selected */}
@@ -767,9 +756,9 @@ export default function App() {
                 />
               ))}
 
-              {/* PRs panel — always mounted to preserve review state */}
+              {/* PRs panel — slides in as drawer overlay */}
               <div
-                className="absolute inset-0 right-11 bg-[var(--bg-primary)]"
+                className={`absolute inset-0 bg-[var(--bg-primary)] ${activePanel === "prs" ? "animate-slide-in-right" : ""}`}
                 style={{
                   zIndex: activePanel === "prs" ? 2 : 0,
                   pointerEvents: activePanel === "prs" ? "auto" : "none",
@@ -797,7 +786,7 @@ export default function App() {
               {/* Shell tabs — all mounted, visibility-toggled */}
               {shellTabsForDir(panelDirectory).length > 0 && (
                 <div
-                  className="absolute inset-0 right-11 bg-[var(--bg-primary)] flex flex-col"
+                  className={`absolute inset-0 bg-[var(--bg-primary)] flex flex-col ${activePanel === "shell" ? "animate-slide-in-right" : ""}`}
                   style={{
                     zIndex: activePanel === "shell" ? 2 : 0,
                     pointerEvents: activePanel === "shell" ? "auto" : "none",
@@ -912,78 +901,77 @@ export default function App() {
 
             </div>
 
-            {/* Activity bar — vertical icon tabs (right side, stops above input on Claude panel) */}
-            <div
-              className={`absolute top-0 right-0 w-11 flex flex-col items-center py-2 gap-1 border-l border-[var(--border-subtle)] bg-[var(--bg-secondary)]/95 backdrop-blur-sm z-10 ${!activeSessionId ? "hidden" : ""}`}
-              style={{ bottom: activePanel === null ? chatInputHeight : 0 }}
-            >
-              <button
-                onClick={() => setActivePanel(null)}
-                className={`relative w-8 h-8 flex items-center justify-center rounded-lg transition-all duration-150 ${
-                  activePanel === null
-                    ? "bg-[var(--accent)]/15 text-[var(--accent)]"
-                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60"
-                }`}
-                data-tooltip="Claude (⌘J)"
+            {/* Floating toolbar — bottom-right, semi-transparent until hovered */}
+            {activeSessionId && (
+              <div
+                className="absolute bottom-4 right-4 flex flex-col items-center gap-1.5 z-20 opacity-40 hover:opacity-100 transition-opacity duration-200"
+                style={{ bottom: activePanel === null ? `calc(${chatInputHeight}px + 12px)` : "16px" }}
               >
-                <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
-                </svg>
-              </button>
-              <button
-                onClick={() => {
-                  if (panelDirectory) {
-                    const editor = localStorage.getItem("claude-orchestrator-editor-command") || "code";
-                    invoke("open_in_editor", { editor, filePath: panelDirectory });
-                  }
-                }}
-                className="w-8 h-8 flex items-center justify-center rounded-lg transition-all duration-150 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60"
-                data-tooltip="Open in Editor (⌘E)"
-              >
-                <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-                </svg>
-              </button>
-              <button
-                onClick={() => togglePanel("prs")}
-                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all duration-150 ${
-                  activePanel === "prs"
-                    ? "bg-[var(--accent)]/15 text-[var(--accent)]"
-                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60"
-                }`}
-                data-tooltip="Pull Requests (⌘P)"
-              >
-                <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
-                </svg>
-              </button>
-              <button
-                onClick={() => togglePanel("shell")}
-                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-all duration-150 ${
-                  activePanel === "shell"
-                    ? "bg-[var(--accent)]/15 text-[var(--accent)]"
-                    : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60"
-                }`}
-                data-tooltip="Shell (⌘T)"
-              >
-                <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" />
-                </svg>
-              </button>
-
-              {/* Spacer to push bottom items down */}
-              <div className="flex-1" />
-              <ContextPieChart usage={activeUsage} model={activeSession?.model} />
-              <button
-                onClick={() => setShowUsagePanel(true)}
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]/60 transition-all duration-150"
-                data-tooltip="Usage stats"
-              >
-                <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-                </svg>
-              </button>
-            </div>
+                <button
+                  onClick={() => setActivePanel(null)}
+                  className={`w-8 h-8 flex items-center justify-center rounded-xl transition-all duration-150 backdrop-blur-sm ${
+                    activePanel === null
+                      ? "bg-[var(--accent)]/20 text-[var(--accent)] shadow-[0_0_0_1px_rgba(108,126,230,0.3)]"
+                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] bg-[var(--bg-elevated)]/80 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]"
+                  }`}
+                  data-tooltip="Claude (⌘J)"
+                >
+                  <svg className="w-[16px] h-[16px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => {
+                    if (panelDirectory) {
+                      const editor = localStorage.getItem("claude-orchestrator-editor-command") || "code";
+                      invoke("open_in_editor", { editor, filePath: panelDirectory });
+                    }
+                  }}
+                  className="w-8 h-8 flex items-center justify-center rounded-xl transition-all duration-150 backdrop-blur-sm text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] bg-[var(--bg-elevated)]/80 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]"
+                  data-tooltip="Open in Editor (⌘E)"
+                >
+                  <svg className="w-[16px] h-[16px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => togglePanel("prs")}
+                  className={`w-8 h-8 flex items-center justify-center rounded-xl transition-all duration-150 backdrop-blur-sm ${
+                    activePanel === "prs"
+                      ? "bg-[var(--accent)]/20 text-[var(--accent)] shadow-[0_0_0_1px_rgba(108,126,230,0.3)]"
+                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] bg-[var(--bg-elevated)]/80 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]"
+                  }`}
+                  data-tooltip="Pull Requests (⌘P)"
+                >
+                  <svg className="w-[16px] h-[16px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => togglePanel("shell")}
+                  className={`w-8 h-8 flex items-center justify-center rounded-xl transition-all duration-150 backdrop-blur-sm ${
+                    activePanel === "shell"
+                      ? "bg-[var(--accent)]/20 text-[var(--accent)] shadow-[0_0_0_1px_rgba(108,126,230,0.3)]"
+                      : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] bg-[var(--bg-elevated)]/80 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]"
+                  }`}
+                  data-tooltip="Shell (⌘T)"
+                >
+                  <svg className="w-[16px] h-[16px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" />
+                  </svg>
+                </button>
+                <ContextPieChart usage={activeUsage} model={activeSession?.model} />
+                <button
+                  onClick={() => setShowUsagePanel(true)}
+                  className="w-8 h-8 flex items-center justify-center rounded-xl text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] bg-[var(--bg-elevated)]/80 shadow-[0_0_0_1px_rgba(255,255,255,0.06)] transition-all duration-150 backdrop-blur-sm"
+                  data-tooltip="Usage stats"
+                >
+                  <svg className="w-[16px] h-[16px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+                  </svg>
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

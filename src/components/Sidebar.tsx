@@ -224,11 +224,11 @@ export default function Sidebar({
 
   return (
     <div className="w-64 h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-2 pt-3 pb-3">
-      {/* Search + New button merged into one row */}
-      <div className="pb-2 flex items-center gap-1.5">
-        <div className="relative flex-1 min-w-0">
+      {/* Search input — minimal styling */}
+      <div className="pb-2">
+        <div className="relative">
           <svg
-            className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)]"
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)]"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -245,19 +245,12 @@ export default function Sidebar({
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search sessions..."
-            className="sidebar-search w-full bg-[var(--bg-primary)]/80 border border-[var(--border-color)] rounded-lg pl-7 pr-3 py-2 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] focus:shadow-[0_0_0_3px_rgba(240,120,48,0.1)] transition-all duration-200"
+            className="sidebar-search w-full bg-transparent border-0 border-b border-[var(--border-subtle)] rounded-none pl-7 pr-6 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-all duration-200"
           />
           {contentSearching && (
-            <div className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
+            <div className="absolute right-1 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
           )}
         </div>
-        <button
-          onClick={onCreateSession}
-          className="w-7 h-7 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-medium transition-all duration-200 shrink-0 flex items-center justify-center"
-          title="New session"
-        >
-          +
-        </button>
       </div>
 
       {/* Tree */}
@@ -280,21 +273,19 @@ export default function Sidebar({
             if (filterQ && filteredWorktrees.length === 0) return null;
 
             const color = repoColor(workspace.directory);
-            const totalSessions = workspace.worktrees.reduce((n, wt) => n + wt.sessions.length, 0);
 
             return (
               <div
                 key={workspace.id}
-                className={wsIdx > 0 ? "mt-2" : ""}
+                className={wsIdx > 0 ? "mt-3" : ""}
               >
-                {/* Workspace header — bold section bar */}
+                {/* Workspace header — clean, minimal */}
                 <button
                   onClick={() => toggleRepo(workspace.id)}
-                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left hover:bg-[var(--bg-hover)]/50 transition-colors group"
+                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-left hover:bg-[var(--bg-hover)]/40 transition-colors group"
                 >
-                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
                   <svg
-                    className={`w-2.5 h-2.5 shrink-0 text-[var(--text-tertiary)] transition-transform ${
+                    className={`w-2.5 h-2.5 shrink-0 text-[var(--text-tertiary)] transition-transform duration-150 ${
                       isRepoCollapsed ? "" : "rotate-90"
                     }`}
                     fill="none"
@@ -304,11 +295,9 @@ export default function Sidebar({
                   >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
-                  <span className="text-xs font-bold text-[var(--text-primary)] truncate flex-1">
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0 opacity-70" style={{ background: color }} />
+                  <span className="text-[11px] font-semibold text-[var(--text-primary)] truncate flex-1 tracking-tight">
                     {repoName}
-                  </span>
-                  <span className="text-[10px] text-[var(--text-tertiary)] bg-[var(--bg-primary)]/50 px-1.5 py-0.5 rounded-full shrink-0">
-                    {totalSessions}
                   </span>
                 </button>
 
@@ -484,6 +473,16 @@ export default function Sidebar({
         )}
       </div>
 
+      {/* New session button — full-width at bottom */}
+      <button
+        onClick={onCreateSession}
+        className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] border border-[var(--border-subtle)] hover:border-[var(--border-color)] transition-all duration-150 shrink-0"
+      >
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        </svg>
+        New Session
+      </button>
     </div>
   );
 }
