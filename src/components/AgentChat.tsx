@@ -57,7 +57,7 @@ interface ContentBlock {
   tool_use_id?: string;
   content?: unknown;
   is_error?: boolean;
-  source?: { type: string; media_type?: string; data?: string; url?: string };
+  source?: { type: string; media_type?: string; data?: string; url?: string; path?: string };
   // For thinking blocks
   thinking?: string;
 }
@@ -883,9 +883,12 @@ const AgentChat = memo(function AgentChat({
   const rowVirtualizer = useVirtualizer({
     count: allMessages.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 120,
-    overscan: 5,
-    measureElement: (el) => el?.getBoundingClientRect().height ?? 0,
+    estimateSize: () => 200,
+    overscan: 8,
+    measureElement: (el) => {
+      if (!el) return 0;
+      return el.getBoundingClientRect().height || el.scrollHeight || 0;
+    },
   });
 
   const loadMore = useCallback(() => {
@@ -1242,8 +1245,9 @@ const AgentChat = memo(function AgentChat({
             }
           }).catch((err) => {
             const errStr = String(err);
-            if (attempt === 0 && errStr.includes("query is already in progress")) {
-              setTimeout(() => trySendAuto(1), 1000);
+            const MAX_RETRIES = 10;
+            if (attempt < MAX_RETRIES && errStr.includes("query is already in progress")) {
+              setTimeout(() => trySendAuto(attempt + 1), 500);
               return;
             }
             stopGenerating();
@@ -1652,6 +1656,27 @@ const AgentChat = memo(function AgentChat({
     return /^[a-z0-9]+\ntoolu_/.test(text) && text.includes("completed");
   }
 
+  const IMAGE_PATH_RE = /^(\/[^\n]*(?:claude-orchestrator[^/]*images|\.claude-orchestrator\/images)\/[a-f0-9-]+\.[a-z]+)$/i;
+
+  function parseContentWithImages(raw: string): ContentBlock[] {
+    const blocks: ContentBlock[] = [];
+    let textLines: string[] = [];
+    for (const line of raw.split("\n")) {
+      const m = line.trim().match(IMAGE_PATH_RE);
+      if (m) {
+        const text = textLines.join("\n").trim();
+        if (text) blocks.push({ type: "text", text });
+        textLines = [];
+        blocks.push({ type: "image", source: { type: "local-file", path: m[1] } } as ContentBlock);
+      } else {
+        textLines.push(line);
+      }
+    }
+    const trailing = textLines.join("\n").trim();
+    if (trailing) blocks.push({ type: "text", text: trailing });
+    return blocks.length > 0 ? blocks : [{ type: "text", text: raw }];
+  }
+
   function sdkMessageToChatMessage(msg: Record<string, unknown>, isHistoryReplay = false): ChatMessage | null {
     const msgType = msg.type as string;
 
@@ -1666,7 +1691,7 @@ const AgentChat = memo(function AgentChat({
       const rawContent = message?.content;
       let blocks: ContentBlock[];
       if (typeof rawContent === "string") {
-        blocks = [{ type: "text", text: rawContent }];
+        blocks = parseContentWithImages(rawContent);
       } else if (Array.isArray(rawContent)) {
         blocks = rawContent as ContentBlock[];
       } else {
@@ -1938,9 +1963,10 @@ const AgentChat = memo(function AgentChat({
         }
       } catch (err) {
         const errStr = String(err);
-        // Bridge still winding down after abort — retry once after a short delay
-        if (attempt === 0 && errStr.includes("query is already in progress")) {
-          setTimeout(() => trySend(1), 1000);
+        // Bridge still winding down after abort — retry with backoff
+        const MAX_RETRIES = 10;
+        if (attempt < MAX_RETRIES && errStr.includes("query is already in progress")) {
+          setTimeout(() => trySend(attempt + 1), 500);
           return;
         }
         stopGenerating();
@@ -2435,7 +2461,7 @@ const AgentChat = memo(function AgentChat({
                 const isLast = isGenerating && virtualItem.index === allMessages.length - 1;
                 return (
                   <div
-                    key={virtualItem.key}
+                    key={msg.id}
                     data-index={virtualItem.index}
                     ref={rowVirtualizer.measureElement}
                     style={{
@@ -2916,6 +2942,39 @@ const MessageBubble = memo(function MessageBubble({
         return [];
       })();
 
+  // These hooks MUST be called unconditionally (before any early returns)
+  // because the virtualizer may reuse this component instance for different
+  // message types, which would change the hook count and crash React.
+  const grouped = useMemo(
+    () => message.type === "assistant" ? groupToolBlocks(content, message.id) : { items: [] } as GroupedBlocks,
+    [content, message.id, message.type]
+  );
+
+  const bundledItems = useMemo(
+    () => message.type === "assistant" ? bundleConsecutiveToolGroups(grouped, isLastMessage) : [],
+    [grouped, isLastMessage, message.type]
+  );
+
+  const lastToolGroupId = useMemo(() => {
+    if (!isLastMessage || message.type !== "assistant") return null;
+    for (let i = bundledItems.length - 1; i >= 0; i--) {
+      const item = bundledItems[i];
+      if (item.type === "toolGroup") return item.group.blockId;
+      if (item.type === "toolBundle") {
+        return item.bundle.groups[item.bundle.groups.length - 1].blockId;
+      }
+    }
+    return null;
+  }, [bundledItems, isLastMessage, message.type]);
+
+  const lastBundleId = useMemo(() => {
+    if (!isLastMessage || message.type !== "assistant") return null;
+    for (let i = bundledItems.length - 1; i >= 0; i--) {
+      if (bundledItems[i].type === "toolBundle") return (bundledItems[i] as { type: "toolBundle"; bundle: ToolBundle }).bundle.id;
+    }
+    return null;
+  }, [bundledItems, isLastMessage, message.type]);
+
   if (message.type === "user") {
     // Filter out tool_result blocks (tool plumbing, not user content)
     const visible = content.filter((b) => b.type !== "tool_result");
@@ -3085,39 +3144,7 @@ const MessageBubble = memo(function MessageBubble({
     );
   }
 
-  // Assistant message - group tool blocks for consolidated display
-  const grouped = useMemo(
-    () => groupToolBlocks(content, message.id),
-    [content, message.id]
-  );
-
-  const bundledItems = useMemo(
-    () => bundleConsecutiveToolGroups(grouped, isLastMessage),
-    [grouped, isLastMessage]
-  );
-
-  // Find the last tool group ID across all items (for auto-expand of in-progress tool)
-  const lastToolGroupId = useMemo(() => {
-    if (!isLastMessage) return null;
-    for (let i = bundledItems.length - 1; i >= 0; i--) {
-      const item = bundledItems[i];
-      if (item.type === "toolGroup") return item.group.blockId;
-      if (item.type === "toolBundle") {
-        return item.bundle.groups[item.bundle.groups.length - 1].blockId;
-      }
-    }
-    return null;
-  }, [bundledItems, isLastMessage]);
-
-  // The last bundle in the last message defaults to expanded
-  const lastBundleId = useMemo(() => {
-    if (!isLastMessage) return null;
-    for (let i = bundledItems.length - 1; i >= 0; i--) {
-      if (bundledItems[i].type === "toolBundle") return (bundledItems[i] as { type: "toolBundle"; bundle: ToolBundle }).bundle.id;
-    }
-    return null;
-  }, [bundledItems, isLastMessage]);
-
+  // Assistant message
   return (
     <div className="w-full">
       <div className="flex flex-col gap-3">
@@ -3360,6 +3387,20 @@ function ImageWithLightbox({ src, thumbnail }: { src: string; thumbnail?: boolea
   );
 }
 
+// ── Local file image (loads from disk via Tauri) ───────────────────
+
+function LocalFileImage({ path }: { path: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    invoke<string>("read_file_base64", { filePath: path })
+      .then(b64 => setSrc(`data:image/png;base64,${b64}`))
+      .catch(() => setSrc(""));
+  }, [path]);
+  if (src === null) return null;
+  if (src === "") return <span className="text-xs text-[var(--muted)]">[image unavailable]</span>;
+  return <ImageWithLightbox src={src} />;
+}
+
 // ── Thinking block (collapsible) ───────────────────────────────────
 
 function ThinkingBlock({ thinking }: { thinking: string }) {
@@ -3404,6 +3445,9 @@ function ContentBlockView({ block }: { block: ContentBlock }) {
   }
 
   if (block.type === "image" && block.source) {
+    if (block.source.type === "local-file" && block.source.path) {
+      return <LocalFileImage path={block.source.path} />;
+    }
     const src = block.source.type === "base64"
       ? `data:${block.source.media_type};base64,${block.source.data}`
       : block.source.url ?? "";

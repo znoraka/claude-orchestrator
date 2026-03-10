@@ -11,6 +11,7 @@ import UsagePanel from "./components/UsagePanel";
 import FileEditor from "./components/FileEditor";
 import ContextPieChart from "./components/ContextPieChart";
 import { repoColor } from "./components/SessionTab";
+import { prewarmContextMenu } from "./components/ContextMenu";
 import { repoRootDir } from "./utils/workspaces";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
@@ -277,6 +278,11 @@ export default function App() {
       invoke("send_agent_message", { sessionId: activeSessionId, message: msg }).catch(() => {});
     }
   }, [activeSessionId, sessions]);
+
+  // ── Pre-warm context menu IPC + icon cache ─────────────────────
+  useEffect(() => {
+    prewarmContextMenu();
+  }, []);
 
   // ── Provider availability (detect installed CLIs) ─────────────
   const [providerAvailability, setProviderAvailability] = useState<Record<string, boolean>>({});

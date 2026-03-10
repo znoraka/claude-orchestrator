@@ -4,6 +4,7 @@ import type { Session, Workspace } from "../types";
 import { worktreeName } from "../utils/workspaces";
 import SessionTab, { repoColor } from "./SessionTab";
 import { useSessionLive } from "../contexts/SessionContext";
+import { showContextMenu } from "./ContextMenu";
 
 
 interface SidebarProps {
@@ -284,7 +285,9 @@ export default function Sidebar({
           filteredWorkspaces.map((workspace, wsIdx) => {
             const repoName = workspace.directory.split("/").filter(Boolean).pop() || workspace.directory;
             const isRepoCollapsed = collapsedRepos.has(workspace.id);
-            const filteredWorktrees = workspace.worktrees;
+            const filteredWorktrees = workspace.worktrees.filter(
+              (wt) => wt.isMain || wt.sessions.some((s) => !s.archived)
+            );
 
             const color = repoColor(workspace.directory);
 
@@ -351,7 +354,18 @@ export default function Sidebar({
                             )}
                             <button
                               onClick={() => toggleWorktree(wt.path)}
-                              className="w-full flex items-center gap-1.5 pl-4 pr-2 py-1 text-left transition-colors hover:text-[var(--text-primary)] group"
+                              onContextMenu={(e) => {
+                                if (wt.isMain || !onArchiveWorktree) return;
+                                e.preventDefault();
+                                e.stopPropagation();
+                                showContextMenu(e.clientX, e.clientY, [
+                                  {
+                                    label: "Archive worktree",
+                                    onClick: () => onArchiveWorktree(wt.path),
+                                  },
+                                ]);
+                              }}
+                              className="w-full flex items-center gap-1.5 pl-4 pr-2 py-1 text-left transition-colors hover:text-[var(--text-primary)]"
                             >
                               <svg
                                 className={`w-2 h-2 shrink-0 text-[var(--text-tertiary)] transition-transform ${
@@ -375,17 +389,6 @@ export default function Sidebar({
                                   <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="Shell process running" />
                                 )}
                                 {wt.sessions.filter((s) => !s.archived).length}
-                                {!wt.isMain && onArchiveWorktree && (
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); onArchiveWorktree(wt.path); }}
-                                    className="opacity-0 group-hover:opacity-100 ml-0.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-all"
-                                    title="Archive worktree (removes git worktree, archives sessions)"
-                                  >
-                                    <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor">
-                                      <path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v1.708a2.5 2.5 0 0 1 0 4.584V13.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5V8.792a2.5 2.5 0 0 1 0-4.584V2.5ZM3.5 2a.5.5 0 0 0-.5.5v1.543a2.5 2.5 0 0 1 0 4.914V13.5a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5V8.957a2.5 2.5 0 0 1 0-4.914V2.5a.5.5 0 0 0-.5-.5h-9ZM8 10a.75.75 0 0 1-.75-.75V7.06l-.72.72a.75.75 0 0 1-1.06-1.06l2-2a.75.75 0 0 1 1.06 0l2 2a.75.75 0 0 1-1.06 1.06l-.72-.72v2.19A.75.75 0 0 1 8 10Z" />
-                                    </svg>
-                                  </button>
-                                )}
                               </span>
                             </button>
                           </>

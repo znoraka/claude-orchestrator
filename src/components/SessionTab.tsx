@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, memo, useMemo } from "react";
+import { useState, useRef, useEffect, memo, useMemo, useCallback } from "react";
+import { showContextMenu } from "./ContextMenu";
 import type { Session, SessionUsage } from "../types";
 
 function timeAgo(ts: number): string {
@@ -76,6 +77,7 @@ export interface SessionTabProps {
   onUnarchive?: () => void;
 }
 
+
 export default memo(function SessionTab({
   session,
   isActive,
@@ -94,6 +96,20 @@ export default memo(function SessionTab({
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(session.name);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const items = [
+      { label: "Rename", onClick: () => { setEditName(session.name); setIsEditing(true); } },
+      null,
+      session.archived
+        ? { label: "Unarchive", disabled: !onUnarchive, onClick: () => onUnarchive?.() }
+        : { label: "Archive",   disabled: !onArchive,   onClick: () => onArchive?.()   },
+      { label: "Delete", onClick: onDelete },
+    ];
+    showContextMenu(e.clientX, e.clientY, items);
+  }, [session.name, session.archived, onUnarchive, onArchive, onDelete]);
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -132,8 +148,9 @@ export default memo(function SessionTab({
   return (
     <div
       onClick={onClick}
+      onContextMenu={handleContextMenu}
       className={`
-        session-tab group relative flex items-center gap-2 pl-4 pr-1.5 py-1.5 cursor-pointer
+        session-tab relative flex items-center gap-2 pl-4 pr-1.5 py-1.5 cursor-pointer
         rounded-lg mx-0.5
         ${rowBg}
         ${isActive
@@ -215,46 +232,13 @@ export default memo(function SessionTab({
         )}
       </div>
 
-      {/* Time-ago label + delete button */}
+      {/* Time-ago label */}
       {timeLabel && !isEditing && (
-        <span className="text-[10px] text-[var(--text-tertiary)] shrink-0 group-hover:opacity-0 transition-opacity">
+        <span className="text-[10px] text-[var(--text-tertiary)] shrink-0">
           {timeLabel}
         </span>
       )}
-      <div className="absolute right-1.5 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-        {session.archived ? (
-          onUnarchive && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onUnarchive(); }}
-              className="text-[var(--text-secondary)] hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 rounded-md p-0.5 transition-all duration-150 shrink-0"
-              title="Unarchive session"
-            >
-              <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v1.708a2.5 2.5 0 0 1 0 4.584V13.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5V8.792a2.5 2.5 0 0 1 0-4.584V2.5ZM3.5 2a.5.5 0 0 0-.5.5v1.543a2.5 2.5 0 0 1 0 4.914V13.5a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5V8.957a2.5 2.5 0 0 1 0-4.914V2.5a.5.5 0 0 0-.5-.5h-9ZM8 6a.75.75 0 0 1 .75.75v2.19l.72-.72a.75.75 0 1 1 1.06 1.06l-2 2a.75.75 0 0 1-1.06 0l-2-2a.75.75 0 1 1 1.06-1.06l.72.72V6.75A.75.75 0 0 1 8 6Z" />
-              </svg>
-            </button>
-          )
-        ) : (
-          onArchive && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onArchive(); }}
-              className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded-md p-0.5 transition-all duration-150 shrink-0"
-              title="Archive session"
-            >
-              <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v1.708a2.5 2.5 0 0 1 0 4.584V13.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5V8.792a2.5 2.5 0 0 1 0-4.584V2.5ZM3.5 2a.5.5 0 0 0-.5.5v1.543a2.5 2.5 0 0 1 0 4.914V13.5a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5V8.957a2.5 2.5 0 0 1 0-4.914V2.5a.5.5 0 0 0-.5-.5h-9ZM8 10a.75.75 0 0 1-.75-.75V7.06l-.72.72a.75.75 0 0 1-1.06-1.06l2-2a.75.75 0 0 1 1.06 0l2 2a.75.75 0 0 1-1.06 1.06l-.72-.72v2.19A.75.75 0 0 1 8 10Z" />
-              </svg>
-            </button>
-          )
-        )}
-        <button
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          className="text-[var(--text-secondary)] hover:text-[var(--danger)] hover:bg-red-500/10 rounded-md p-0.5 transition-all duration-150 text-xs shrink-0"
-          title="Delete session"
-        >
-          ✕
-        </button>
-      </div>
+
     </div>
   );
 });
