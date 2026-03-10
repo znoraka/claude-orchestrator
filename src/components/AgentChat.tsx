@@ -414,6 +414,7 @@ const AgentChat = memo(function AgentChat({
   const generationStartRef = useRef<number>(0);
   const isGeneratingRef = useRef(false);
   const isGeneratingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const generationCountRef = useRef(0);
   const [queuedMessage, setQueuedMessage] = useState<{
     text: string;
     images: Array<{ id: string; data: string; mediaType: string; name: string }>;
@@ -421,26 +422,36 @@ const AgentChat = memo(function AgentChat({
     pastedFiles: Array<{ id: string; name: string; content: string; mimeType: string }>;
   } | null>(null);
   const queuedMessageRef = useRef<typeof queuedMessage>(null);
+  const sendMessageRef = useRef<((...args: Parameters<typeof sendMessage>) => void) | null>(null);
   const stopGenerating = useCallback(() => {
+    // Early-return guard: consume the sentinel and return.
+    // This handles agent-exit (gen N) firing after the queue flush already started gen N+1.
     if (isGeneratingTimeoutRef.current) {
-      clearTimeout(isGeneratingTimeoutRef.current);
+      isGeneratingTimeoutRef.current = null; // consume so gen N+1's result can proceed
+      return;
     }
-    isGeneratingTimeoutRef.current = setTimeout(() => {
-      isGeneratingRef.current = false;
-      setIsGenerating(false);
-    }, 150);
+    isGeneratingTimeoutRef.current = 1 as unknown as ReturnType<typeof setTimeout>; // sentinel
+    const generation = generationCountRef.current;
+    queueMicrotask(() => {
+      isGeneratingTimeoutRef.current = null;
+      // Stale microtask from a prior generation — ignore
+      if (generationCountRef.current !== generation) return;
+      const queued = queuedMessageRef.current;
+      if (queued && !abortedRef.current && sendMessageRef.current) {
+        // Process queued message without dropping the spinner
+        queuedMessageRef.current = null;
+        setQueuedMessage(null);
+        isGeneratingRef.current = false;
+        sendMessageRef.current(queued.text || undefined, queued.images, queued.fileReferences, queued.pastedFiles);
+        // Re-arm sentinel so the upcoming agent-exit (for gen N) consumes it
+        // instead of queuing a microtask that would kill gen N+1.
+        isGeneratingTimeoutRef.current = 1 as unknown as ReturnType<typeof setTimeout>;
+      } else {
+        isGeneratingRef.current = false;
+        setIsGenerating(false);
+      }
+    });
   }, []);
-
-  useEffect(() => {
-    if (isGenerating) return;
-    if (abortedRef.current) return;
-    const queued = queuedMessageRef.current;
-    if (!queued) return;
-    queuedMessageRef.current = null;
-    setQueuedMessage(null);
-    sendMessage(queued.text || undefined, queued.images, queued.fileReferences, queued.pastedFiles);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isGenerating]);
 
   const [currentTodo, setCurrentTodo] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] = useState<{ toolName: string; input: Record<string, unknown> } | null>(null);
@@ -841,6 +852,7 @@ const AgentChat = memo(function AgentChat({
   // ── Windowed rendering: only render tail of messages ───────────
   const INITIAL_WINDOW = 40;
   const LOAD_MORE_CHUNK = 40;
+  const VIRTUAL_THRESHOLD = 80;
   const [renderCount, setRenderCount] = useState(INITIAL_WINDOW);
 
   // Reset window when messages are bulk-loaded (history replay)
@@ -881,8 +893,10 @@ const AgentChat = memo(function AgentChat({
     [deferredMessages, trailingMessages],
   );
 
+  const useVirtualRendering = allMessages.length >= VIRTUAL_THRESHOLD;
+
   const rowVirtualizer = useVirtualizer({
-    count: allMessages.length,
+    count: useVirtualRendering ? allMessages.length : 0,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 100,
     overscan: 8,
@@ -1403,7 +1417,7 @@ const AgentChat = memo(function AgentChat({
         acc.cacheCreationInputTokens += cc;
         acc.contextTokens = inp + cr + cc; // latest turn's context window usage
         acc.costUsd += (result.cost_usd as number) || 0;
-        onUsageUpdateRef.current?.({ ...acc, isBusy: false });
+        onUsageUpdateRef.current?.({ ...acc, isBusy: !!queuedMessageRef.current });
       }
 
       setMessages((prev) => {
@@ -1432,7 +1446,7 @@ const AgentChat = memo(function AgentChat({
       setCurrentTodo(null);
       setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
-      onUsageUpdateRef.current?.({ ...accumulatedUsageRef.current, isBusy: false });
+      onUsageUpdateRef.current?.({ ...accumulatedUsageRef.current, isBusy: !!queuedMessageRef.current });
       // Restore plan mode for next message (may have been switched to bypass by auto-classify)
       if (session?.permissionMode === "plan") {
         const restoreMsg = JSON.stringify({ type: "set_permission_mode", permissionMode: "plan" });
@@ -1801,6 +1815,19 @@ const AgentChat = memo(function AgentChat({
         return idx >= 0 ? prev.slice(0, idx) : prev;
       });
       setEditingMessageId(null);
+      // Dismiss any pending question/permission — the edited message restarts the conversation
+      if (pendingQuestion) {
+        setPendingQuestion(null);
+        onQuestionChangeRef.current?.(false);
+      }
+      if (pendingPermission) {
+        setPendingPermission(null);
+        onQuestionChangeRef.current?.(false);
+        stopGenerating();
+        onUsageUpdateRef.current?.({ ...accumulatedUsageRef.current, isBusy: false });
+        const deny = JSON.stringify({ type: "permission_response", allowed: false });
+        invoke("send_agent_message", { sessionId: targetSessionId, message: deny }).catch(() => {});
+      }
     }
 
     // Handle local-only built-in commands (these don't work through the SDK)
@@ -1907,6 +1934,7 @@ const AgentChat = memo(function AgentChat({
     setPastedFiles([]);
     abortedRef.current = false;
     generationStartRef.current = Date.now();
+    generationCountRef.current += 1;
     isGeneratingRef.current = true;
     setIsGenerating(true);
     onActivityRef.current(); // Update session timestamp when user sends a message
@@ -1986,17 +2014,15 @@ const AgentChat = memo(function AgentChat({
       }
     };
     trySend(0);
-  }, [inputText, images, pastedFiles, targetSessionId, isReadOnly, editingMessageId, fileReferences, scrollToBottom]);
+  }, [inputText, images, pastedFiles, targetSessionId, isReadOnly, editingMessageId, fileReferences, scrollToBottom, pendingQuestion, pendingPermission]);
+  sendMessageRef.current = sendMessage;
 
   const handleAbort = useCallback(() => {
     queuedMessageRef.current = null;
     setQueuedMessage(null);
     invoke("abort_agent", { sessionId: targetSessionId }).catch(() => {});
     abortedRef.current = true;
-    if (isGeneratingTimeoutRef.current) {
-      clearTimeout(isGeneratingTimeoutRef.current);
-      isGeneratingTimeoutRef.current = null;
-    }
+    isGeneratingTimeoutRef.current = null;
     isGeneratingRef.current = false;
     setIsGenerating(false);
     setCurrentTodo(null);
@@ -2038,6 +2064,15 @@ const AgentChat = memo(function AgentChat({
     const msg = JSON.stringify({ type: "permission_response", allowed });
     invoke("send_agent_message", { sessionId: targetSessionId, message: msg }).catch(() => {});
   }, [targetSessionId]);
+
+  // Send feedback on a plan — deny the current permission, then send a follow-up message
+  const sendPlanFeedback = useCallback((text: string) => {
+    respondPermission(false);
+    // Small delay to ensure the deny is processed before sending the follow-up
+    setTimeout(() => {
+      sendMessage(text);
+    }, 100);
+  }, [respondPermission, sendMessage]);
 
   // Allow in a new conversation: fork with plan as pending prompt, deny current
   const allowInNewConversation = useCallback(async () => {
@@ -2476,42 +2511,66 @@ const AgentChat = memo(function AgentChat({
           <>
             {hasMore && <div ref={sentinelRef} className="h-1" />}
 
-            <div
-              style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}
-            >
-              {rowVirtualizer.getVirtualItems().map((virtualItem) => {
-                const msg = allMessages[virtualItem.index];
-                const isLast = isGenerating && virtualItem.index === allMessages.length - 1;
-                return (
-                  <div
-                    key={msg.id}
-                    data-index={virtualItem.index}
-                    ref={rowVirtualizer.measureElement}
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      left: 0,
-                      width: "100%",
-                      transform: `translateY(${virtualItem.start}px)`,
-                      paddingBottom: "20px",
-                    }}
-                  >
-                    <MessageBubble
-                      message={msg}
-                      toolStates={toolStates}
-                      onToggleTool={toggleTool}
-                      isLastMessage={isLast}
-                      planContent={session?.planContent}
-                      onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
-                      onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
-                      onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
-                      onCopy={copyMessage}
-                      onNavigateToSession={onNavigateToSession}
-                    />
-                  </div>
-                );
-              })}
-            </div>
+            {useVirtualRendering ? (
+              <div
+                style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}
+              >
+                {rowVirtualizer.getVirtualItems().map((virtualItem) => {
+                  const msg = allMessages[virtualItem.index];
+                  const isLast = isGenerating && virtualItem.index === allMessages.length - 1;
+                  return (
+                    <div
+                      key={msg.id}
+                      data-index={virtualItem.index}
+                      ref={rowVirtualizer.measureElement}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualItem.start}px)`,
+                        paddingBottom: "20px",
+                      }}
+                    >
+                      <MessageBubble
+                        message={msg}
+                        toolStates={toolStates}
+                        onToggleTool={toggleTool}
+                        isLastMessage={isLast}
+                        planContent={session?.planContent}
+                        onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
+                        onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
+                        onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
+                        onCopy={copyMessage}
+                        onNavigateToSession={onNavigateToSession}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex flex-col">
+                {allMessages.map((msg, index) => {
+                  const isLast = isGenerating && index === allMessages.length - 1;
+                  return (
+                    <div key={msg.id} style={{ paddingBottom: "20px" }}>
+                      <MessageBubble
+                        message={msg}
+                        toolStates={toolStates}
+                        onToggleTool={toggleTool}
+                        isLastMessage={isLast}
+                        planContent={session?.planContent}
+                        onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
+                        onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
+                        onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
+                        onCopy={copyMessage}
+                        onNavigateToSession={onNavigateToSession}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
             {isGenerating && !pendingPermission && !pendingQuestion && (
               <div className="flex items-center gap-2 px-1 py-2">
@@ -2631,7 +2690,7 @@ const AgentChat = memo(function AgentChat({
         )}
 
         {/* Inline question / permission composer OR normal input */}
-        {pendingQuestion ? (
+        {pendingQuestion && !editingMessageId ? (
           <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-3">
             <div className="text-[10px] font-semibold text-[var(--accent)] uppercase tracking-wide mb-1.5">Agent is asking</div>
             <InlineQuestionComposer
@@ -2639,13 +2698,14 @@ const AgentChat = memo(function AgentChat({
               onAnswer={answerQuestion}
             />
           </div>
-        ) : pendingPermission ? (
+        ) : pendingPermission && !editingMessageId ? (
           <div className="rounded-lg border border-[var(--warning-border,var(--border-color))] bg-[var(--bg-secondary)] p-3">
             <InlinePermissionComposer
               permission={pendingPermission}
               onAllow={() => respondPermission(true)}
               onDeny={() => respondPermission(false)}
               onAllowInNew={allowInNewConversation}
+              onFeedback={sendPlanFeedback}
             />
           </div>
         ) : (
@@ -3919,13 +3979,17 @@ function InlinePermissionComposer({
   onAllow,
   onDeny,
   onAllowInNew,
+  onFeedback,
 }: {
   permission: { toolName: string; input: Record<string, unknown> };
   onAllow: () => void;
   onDeny: () => void;
   onAllowInNew: () => void;
+  onFeedback: (text: string) => void;
 }) {
   const isExitPlan = permission.toolName === "ExitPlanMode";
+  const [feedback, setFeedback] = useState("");
+  const feedbackRef = useRef<HTMLTextAreaElement>(null);
   return (
     <div className="flex flex-col gap-2">
       <div className="text-xs text-[var(--text-secondary)]">
@@ -3944,6 +4008,32 @@ function InlinePermissionComposer({
               {String(permission.input.file_path)}
             </span>
           )}
+        </div>
+      )}
+      {isExitPlan && (
+        <div className="flex gap-1.5 items-end">
+          <textarea
+            ref={feedbackRef}
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && feedback.trim()) {
+                e.preventDefault();
+                onFeedback(feedback.trim());
+                setFeedback("");
+              }
+            }}
+            placeholder="Suggest changes to the plan..."
+            rows={1}
+            className="flex-1 resize-none rounded-md border border-[var(--border-color)] bg-[var(--bg-primary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent)]"
+          />
+          <button
+            onClick={() => { if (feedback.trim()) { onFeedback(feedback.trim()); setFeedback(""); } }}
+            disabled={!feedback.trim()}
+            className="px-2.5 py-1.5 text-xs rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] font-medium disabled:opacity-40"
+          >
+            Send
+          </button>
         </div>
       )}
       <div className="flex gap-2">

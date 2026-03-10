@@ -23,6 +23,34 @@ else
   echo "Warning: .env.signing not found — build will be unsigned."
 fi
 
+# ── Bump patch version ────────────────────────────────────────────
+python3 - <<'PYEOF'
+import json, re, pathlib
+
+# tauri.conf.json
+conf = pathlib.Path("src-tauri/tauri.conf.json")
+data = json.loads(conf.read_text())
+major, minor, patch = map(int, data["version"].split("."))
+patch += 1
+new_ver = f"{major}.{minor}.{patch}"
+data["version"] = new_ver
+conf.write_text(json.dumps(data, indent=2) + "\n")
+
+# package.json
+pkg = pathlib.Path("package.json")
+pkg_data = json.loads(pkg.read_text())
+pkg_data["version"] = new_ver
+pkg.write_text(json.dumps(pkg_data, indent=2) + "\n")
+
+# Cargo.toml — patch first occurrence of version = "x.y.z" under [package]
+cargo = pathlib.Path("src-tauri/Cargo.toml")
+text = cargo.read_text()
+text = re.sub(r'^(version\s*=\s*")[^"]+(")', rf'\g<1>{new_ver}\2', text, count=1, flags=re.MULTILINE)
+cargo.write_text(text)
+
+print(f"Bumped version to {new_ver}")
+PYEOF
+
 # ── Read version from tauri.conf.json ─────────────────────────────
 VERSION=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
 TAG="v${VERSION}"
@@ -63,12 +91,15 @@ echo "  .app:    $APP"
 [[ -n "$TARGZ" ]] && echo "  .tar.gz: $TARGZ"
 [[ -n "$SIG" ]]   && echo "  .sig:    $SIG"
 
-# ── Install locally ──────────────────────────────────────────────
-echo ""
-echo "Installing to /Applications..."
-rm -rf "/Applications/${APP_NAME}.app"
-cp -R "$APP" "/Applications/${APP_NAME}.app"
-echo "Installed!"
+# ── Open DMG for installation ─────────────────────────────────────
+if [[ -n "$DMG" ]]; then
+  echo ""
+  echo "Opening DMG for installation..."
+  open "$DMG"
+else
+  echo ""
+  echo "No DMG found — manually copy $APP to /Applications/."
+fi
 
 # ── Create GitHub Release (optional) ─────────────────────────────
 if [[ "$RELEASE" == true ]]; then

@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import type { Session, Workspace } from "../types";
 import { worktreeName } from "../utils/workspaces";
 import SessionTab, { repoColor } from "./SessionTab";
@@ -41,6 +42,7 @@ export default function Sidebar({
   youngestDescendantMap,
 }: SidebarProps) {
   const { sessionUsage, unreadSessions } = useSessionLive();
+  const [appVersion, setAppVersion] = useState<string>("");
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(() => {
@@ -53,6 +55,10 @@ export default function Sidebar({
     try { const v = localStorage.getItem("sidebar:expandedWorktrees"); return v ? new Set(JSON.parse(v)) : new Set(); } catch { return new Set(); }
   });
   const [showArchived, setShowArchived] = useState(false);
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
 
   useEffect(() => { localStorage.setItem("sidebar:collapsedRepos", JSON.stringify([...collapsedRepos])); }, [collapsedRepos]);
   useEffect(() => { localStorage.setItem("sidebar:collapsedWorktrees", JSON.stringify([...collapsedWorktrees])); }, [collapsedWorktrees]);
@@ -541,6 +547,11 @@ export default function Sidebar({
         </svg>
         New Session
       </button>
+      {appVersion && (
+        <div className="pt-1 text-center">
+          <span className="text-[10px] text-[var(--text-tertiary)]">v{appVersion}</span>
+        </div>
+      )}
     </div>
   );
 }
