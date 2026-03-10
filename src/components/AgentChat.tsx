@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue, memo } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -872,6 +873,20 @@ const AgentChat = memo(function AgentChat({
     }
     return trailing;
   }, [deferredMessages, visibleMessages]);
+
+  // Combined message array for the virtualizer
+  const allMessages = useMemo(
+    () => [...deferredMessages, ...trailingMessages],
+    [deferredMessages, trailingMessages],
+  );
+
+  const rowVirtualizer = useVirtualizer({
+    count: allMessages.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 120,
+    overscan: 5,
+    measureElement: (el) => el?.getBoundingClientRect().height ?? 0,
+  });
 
   const loadMore = useCallback(() => {
     setRenderCount((prev) => Math.min(prev + LOAD_MORE_CHUNK, messages.length));
@@ -2412,36 +2427,42 @@ const AgentChat = memo(function AgentChat({
           <>
             {hasMore && <div ref={sentinelRef} className="h-1" />}
 
-            {deferredMessages.map((msg, idx) => (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  toolStates={toolStates}
-                  onToggleTool={toggleTool}
-                  isLastMessage={isGenerating && idx === deferredMessages.length - 1 && trailingMessages.length === 0}
-                  planContent={session?.planContent}
-                  onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
-                  onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
-                  onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
-                  onCopy={copyMessage}
-                  onNavigateToSession={onNavigateToSession}
-                />
-            ))}
-            {trailingMessages.map((msg, idx) => (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  toolStates={toolStates}
-                  onToggleTool={toggleTool}
-                  isLastMessage={isGenerating && idx === trailingMessages.length - 1}
-                  planContent={session?.planContent}
-                  onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
-                  onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
-                  onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
-                  onCopy={copyMessage}
-                  onNavigateToSession={onNavigateToSession}
-                />
-            ))}
+            <div
+              style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualItem) => {
+                const msg = allMessages[virtualItem.index];
+                const isLast = isGenerating && virtualItem.index === allMessages.length - 1;
+                return (
+                  <div
+                    key={virtualItem.key}
+                    data-index={virtualItem.index}
+                    ref={rowVirtualizer.measureElement}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${virtualItem.start}px)`,
+                      paddingBottom: "20px",
+                    }}
+                  >
+                    <MessageBubble
+                      message={msg}
+                      toolStates={toolStates}
+                      onToggleTool={toggleTool}
+                      isLastMessage={isLast}
+                      planContent={session?.planContent}
+                      onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
+                      onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
+                      onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
+                      onCopy={copyMessage}
+                      onNavigateToSession={onNavigateToSession}
+                    />
+                  </div>
+                );
+              })}
+            </div>
 
             {isGenerating && !pendingPermission && !pendingQuestion && (
               <div className="flex items-center gap-2 px-1 py-2">
