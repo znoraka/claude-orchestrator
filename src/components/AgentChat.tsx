@@ -2248,19 +2248,19 @@ const AgentChat = memo(function AgentChat({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-5 pr-16 py-4 flex flex-col gap-5"
+        className="flex-1 overflow-y-auto py-6 flex flex-col"
       >
+      {isActive && messages.length === 0 && !isGenerating && !session?.planContent && (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-xs text-[var(--text-tertiary)] opacity-50">
+            Send a message to start the conversation
+          </p>
+        </div>
+      )}
+      <div className="w-full max-w-[720px] mx-auto px-6 flex flex-col gap-5">
         {/* Skip rendering message DOM for inactive tabs to avoid layout thrash */}
         {isActive ? (
           <>
-            {messages.length === 0 && !isGenerating && !session?.planContent && (
-              <div className="flex items-center justify-center h-full">
-                <p className="text-sm text-[var(--text-tertiary)]">
-                  Send a message to start the conversation
-                </p>
-              </div>
-            )}
-
             {hasMore && <div ref={sentinelRef} className="h-1" />}
 
             {deferredMessages.map((msg, idx) => (
@@ -2295,11 +2295,11 @@ const AgentChat = memo(function AgentChat({
             ))}
 
             {isGenerating && !pendingPermission && !pendingQuestion && (
-              <div className="flex items-center gap-2 px-3 py-2">
+              <div className="flex items-center gap-2 px-1 py-2">
                 <div className="flex gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse [animation-delay:150ms]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse [animation-delay:300ms]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-thinking-pulse" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-thinking-pulse [animation-delay:200ms]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-thinking-pulse [animation-delay:400ms]" />
                 </div>
                 <span className="text-xs text-[var(--text-tertiary)]">
                   {currentTodo || "Thinking…"}
@@ -2309,9 +2309,11 @@ const AgentChat = memo(function AgentChat({
           </>
         ) : null}
       </div>
+      </div>
 
-      {/* Input area */}
-      <div className="border-t border-[var(--border-subtle)] px-5 py-4 bg-[var(--bg-secondary)]/40 relative flex flex-col gap-2" ref={inputAreaRef}>
+      {/* Input area — hero card, centered */}
+      <div className="px-6 pb-5 pt-2 relative flex flex-col items-center" ref={inputAreaRef}>
+      <div className="w-full max-w-[720px] mx-auto flex flex-col gap-2">
         {/* Slash command autocomplete */}
         {showSlashMenu && filteredSlashCommands.length > 0 && (
           <div
@@ -2460,12 +2462,14 @@ const AgentChat = memo(function AgentChat({
               </div>
             )}
 
-            <div className="flex gap-2 items-end">
-              <div className="flex-1 flex items-end min-h-[38px] bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl focus-within:border-[var(--accent)] transition-colors">
+            {/* Hero input card */}
+            <div className="rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] focus-within:border-[var(--accent)]/50 focus-within:shadow-[0_0_0_3px_rgba(108,126,230,0.08)] transition-all duration-200 shadow-[0_2px_16px_rgba(0,0,0,0.25)]">
+              {/* Textarea row */}
+              <div className="flex items-end">
               {sessionDir && (
                 <button
                   onClick={() => setShowFilePicker(true)}
-                  className="p-2 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors shrink-0 self-center"
+                  className="p-3 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors shrink-0 self-center"
                   title="Attach file (⌘O)"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -2481,34 +2485,19 @@ const AgentChat = memo(function AgentChat({
                 onPaste={handlePaste}
                 placeholder="Message…"
                 rows={1}
-                className="flex-1 resize-none bg-transparent border-none px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none max-h-32 overflow-y-auto"
-                style={{ minHeight: "20px" }}
+                className="flex-1 resize-none bg-transparent border-none px-3 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none max-h-40 overflow-y-auto"
+                style={{ minHeight: "44px" }}
                 onInput={(e) => {
                   const target = e.target as HTMLTextAreaElement;
                   target.style.height = "auto";
-                  target.style.height = `${Math.min(target.scrollHeight, 128)}px`;
+                  target.style.height = `${Math.min(target.scrollHeight, 160)}px`;
                 }}
               />
               </div>
-              {isGenerating ? (
-                <button
-                  onClick={handleAbort}
-                  className="px-3 min-h-[38px] bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg text-sm font-medium transition-colors shrink-0"
-                >
-                  Stop
-                </button>
-              ) : (
-                <button
-                  onClick={() => sendMessage()}
-                  disabled={!inputText.trim() && images.length === 0 && fileReferences.length === 0}
-                  className="px-3 min-h-[38px] bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors shrink-0"
-                >
-                  Send
-                </button>
-              )}
-            </div>
+              {/* Bottom bar: pills + send button */}
+              <div className="flex items-center gap-1.5 px-3 pb-3 border-t border-[var(--border-subtle)] pt-2.5">
             {/* Pill row: Model, Mode, Effort */}
-            <div ref={pillRowRef} className="flex items-center gap-1.5 mt-1 opacity-80 hover:opacity-100 transition-opacity">
+            <div ref={pillRowRef} className="flex items-center gap-1.5 flex-1 min-w-0">
               {/* Model pill */}
               <div className="relative">
                 <button
@@ -2617,7 +2606,7 @@ const AgentChat = memo(function AgentChat({
               </div>
               {/* Branch info */}
               {currentBranch && (
-                <span className="flex items-center gap-1 ml-auto text-[10px] text-[var(--text-tertiary)]">
+                <span className="flex items-center gap-1 text-[10px] text-[var(--text-tertiary)]">
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
                   </svg>
@@ -2625,8 +2614,28 @@ const AgentChat = memo(function AgentChat({
                 </span>
               )}
             </div>
+                {/* Send / Stop button — inside bottom bar */}
+                {isGenerating ? (
+                  <button
+                    onClick={handleAbort}
+                    className="ml-auto px-3 py-1.5 bg-red-500/15 hover:bg-red-500/25 text-red-400 rounded-lg text-sm font-medium transition-colors shrink-0 border border-red-500/20"
+                  >
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => sendMessage()}
+                    disabled={!inputText.trim() && images.length === 0 && fileReferences.length === 0}
+                    className="ml-auto px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-35 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-all duration-150 shrink-0 shadow-[0_0_12px_rgba(108,126,230,0.2)]"
+                  >
+                    Send
+                  </button>
+                )}
+              </div>
+            </div>
           </>
         )}
+      </div>
       </div>
 
       {/* File picker modal */}
@@ -2713,7 +2722,7 @@ const MessageBubble = memo(function MessageBubble({
       return false;
     });
     return (
-      <div className="flex flex-col items-end gap-1">
+      <div className="flex flex-col items-end gap-1 animate-message-enter">
         <div className="group flex justify-end items-end gap-1">
           <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-0.5 mb-1">
             {/* Retry */}
@@ -2777,7 +2786,7 @@ const MessageBubble = memo(function MessageBubble({
               </button>
             )}
           </div>
-          <div className="max-w-[80%] max-h-96 overflow-y-auto bg-[var(--bg-tertiary)] border border-[var(--border-color)] text-[var(--text-primary)] rounded-2xl rounded-br-md px-5 py-3 shadow-sm">
+          <div className="max-w-[85%] max-h-96 overflow-y-auto bg-[var(--accent-muted)] text-[var(--text-primary)] rounded-2xl px-5 py-3">
             {visible.map((block, i) => {
               // If this is a plan execution message loaded from JSONL, show short label instead of full plan text
               if (hasPlan && block.type === "text" && block.text && block.text.length > 200) {
