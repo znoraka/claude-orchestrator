@@ -17281,13 +17281,28 @@ var BAD_TITLE_PHRASES = [
 ];
 async function generateTitle(userMessage) {
   log(`Calling SDK query() for title generation`);
-  const raw = await runSdkQuery(TITLE_SYSTEM_PROMPT, userMessage);
+  let raw = await runSdkQuery(TITLE_SYSTEM_PROMPT, userMessage);
+  if (!raw.trim()) {
+    log(`Empty title, retrying with explicit prompt`);
+    raw = await runSdkQuery(
+      TITLE_SYSTEM_PROMPT,
+      `Generate a 4-5 word title for this request:
+
+${userMessage}`
+    );
+  }
+  raw = raw.replace(/^["']+|["']+$/g, "").replace(/[.!?]+$/, "").trim();
   const lower = raw.toLowerCase();
   if (BAD_TITLE_PHRASES.some((p) => lower.includes(p))) {
     log(`Discarding bad title: ${raw}`);
     return "";
   }
   if (raw.split(/\s+/).length > 12) {
+    const firstSentence = raw.split(/[.!?\n]/)[0].trim();
+    if (firstSentence && firstSentence.split(/\s+/).length <= 8 && !BAD_TITLE_PHRASES.some((p) => firstSentence.toLowerCase().includes(p))) {
+      log(`Truncated long title to: ${firstSentence}`);
+      return firstSentence;
+    }
     log(`Discarding too-long title: ${raw}`);
     return "";
   }

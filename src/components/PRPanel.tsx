@@ -250,6 +250,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
   const [loading, setLoading] = useState(true);
   const [currentBranch, setCurrentBranch] = useState("");
   const [reviewingPr, setReviewingPr] = useState<PullRequest | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Expose reset function to parent via ref
   useEffect(() => {
@@ -393,8 +394,23 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
     );
   }
 
+  const filterPRs = (prs: PullRequest[]) => {
+    if (!searchQuery.trim()) return prs;
+    const q = searchQuery.toLowerCase();
+    return prs.filter(
+      (pr) =>
+        pr.title.toLowerCase().includes(q) ||
+        String(pr.number).includes(q) ||
+        pr.author.toLowerCase().includes(q) ||
+        pr.headRefName.toLowerCase().includes(q)
+    );
+  };
+
+  const filteredMyPrs = filterPRs(result?.myPrs ?? []);
+  const filteredReviewRequested = filterPRs(result?.reviewRequested ?? []);
   const totalCount =
     (result?.reviewRequested.length ?? 0) + (result?.myPrs.length ?? 0);
+  const filteredCount = filteredMyPrs.length + filteredReviewRequested.length;
 
   return (
     <div className="flex flex-col h-full">
@@ -408,7 +424,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
         </span>
         {totalCount > 0 && (
           <span className="text-[10px] text-[var(--text-tertiary)] tabular-nums">
-            {totalCount} open
+            {searchQuery.trim() ? `${filteredCount}/${totalCount}` : `${totalCount} open`}
           </span>
         )}
         <div className="ml-auto flex-shrink-0">
@@ -431,6 +447,28 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
         </div>
       </div>
 
+      {totalCount > 0 && (
+        <div className="px-3 py-1.5 border-b border-[var(--border-color)] flex-shrink-0">
+          <div className="relative">
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--text-tertiary)] pointer-events-none"
+            >
+              <path d="M10.68 11.74a6 6 0 01-7.922-8.982 6 6 0 018.982 7.922l3.04 3.04a.749.749 0 11-1.06 1.06l-3.04-3.04zM11.5 7a4.499 4.499 0 11-8.997 0A4.499 4.499 0 0111.5 7z" />
+            </svg>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search PRs..."
+              className="w-full bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded pl-6 pr-2 py-1 text-xs text-[var(--text-primary)] placeholder-[var(--text-tertiary)] outline-none focus:border-[var(--accent)]/50 transition-colors"
+            />
+          </div>
+        </div>
+      )}
       {totalCount === 0 ? (
         <div className="flex flex-col items-center justify-center flex-1 gap-2 text-[var(--text-tertiary)]">
           <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" className="opacity-40">
@@ -438,14 +476,18 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
           </svg>
           <span className="text-xs">No open pull requests</span>
         </div>
+      ) : filteredCount === 0 ? (
+        <div className="flex flex-col items-center justify-center flex-1 gap-2 text-[var(--text-tertiary)]">
+          <span className="text-xs">No PRs match your search</span>
+        </div>
       ) : (
         <div className="flex-1 overflow-y-auto">
-          {result!.myPrs.length > 0 && (
+          {filteredMyPrs.length > 0 && (
             <div className="py-1">
               <div className="text-[10px] uppercase tracking-wider text-[var(--text-tertiary)] px-3 py-1.5 font-semibold">
-                My Pull Requests ({result!.myPrs.length})
+                My Pull Requests ({filteredMyPrs.length})
               </div>
-              {result!.myPrs.map((pr) => (
+              {filteredMyPrs.map((pr) => (
                 <PRRow
                   key={`my-${pr.url}`}
                   pr={pr}
@@ -458,15 +500,15 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
               ))}
             </div>
           )}
-          {result!.myPrs.length > 0 && result!.reviewRequested.length > 0 && (
+          {filteredMyPrs.length > 0 && filteredReviewRequested.length > 0 && (
             <div className="mx-3 border-t border-[var(--border-color)]" />
           )}
-          {result!.reviewRequested.length > 0 && (
+          {filteredReviewRequested.length > 0 && (
             <div className="py-1">
               <div className="text-[10px] uppercase tracking-wider text-[var(--text-tertiary)] px-3 py-1.5 font-semibold">
-                Review Requested ({result!.reviewRequested.length})
+                Review Requested ({filteredReviewRequested.length})
               </div>
-              {result!.reviewRequested.map((pr) => (
+              {filteredReviewRequested.map((pr) => (
                 <PRRow
                   key={`review-${pr.url}`}
                   pr={pr}

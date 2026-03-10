@@ -3898,6 +3898,8 @@ function ConsolidatedToolGroup({
       }
       case "LSP":
         return input.command as string || "";
+      case "ExitPlanMode":
+        return "Plan ready for review";
       default: {
         // For unknown tools (e.g. MCP), try to generate a useful summary
         const vals = Object.values(input);
