@@ -2250,18 +2250,17 @@ const AgentChat = memo(function AgentChat({
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto py-6 flex flex-col"
       >
+      {isActive && messages.length === 0 && !isGenerating && !session?.planContent && (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-xs text-[var(--text-tertiary)] opacity-50">
+            Send a message to start the conversation
+          </p>
+        </div>
+      )}
       <div className="w-full max-w-[720px] mx-auto px-6 flex flex-col gap-5">
         {/* Skip rendering message DOM for inactive tabs to avoid layout thrash */}
         {isActive ? (
           <>
-            {messages.length === 0 && !isGenerating && !session?.planContent && (
-              <div className="flex items-center justify-center h-32">
-                <p className="text-sm text-[var(--text-tertiary)]">
-                  Send a message to start the conversation
-                </p>
-              </div>
-            )}
-
             {hasMore && <div ref={sentinelRef} className="h-1" />}
 
             {deferredMessages.map((msg, idx) => (
@@ -2313,7 +2312,7 @@ const AgentChat = memo(function AgentChat({
       </div>
 
       {/* Input area — hero card, centered */}
-      <div className="px-6 pb-5 pt-2 relative flex flex-col" ref={inputAreaRef}>
+      <div className="px-6 pb-5 pt-2 relative flex flex-col items-center" ref={inputAreaRef}>
       <div className="w-full max-w-[720px] mx-auto flex flex-col gap-2">
         {/* Slash command autocomplete */}
         {showSlashMenu && filteredSlashCommands.length > 0 && (
