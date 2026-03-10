@@ -1,5 +1,5 @@
 // Plan mode test comment
-import { useRef, useState, useEffect, useMemo, useCallback, memo } from "react";
+import { useRef, useState, useEffect, useMemo, useCallback, memo, startTransition } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionContext } from "./contexts/SessionContext";
 import Terminal from "./components/Terminal";
@@ -635,7 +635,9 @@ export default function App() {
   };
 
   const handleSelectSession = (id: string) => {
-    selectSession(id);
+    startTransition(() => {
+      selectSession(id);
+    });
     setActivePanel(null);
   };
 
@@ -768,7 +770,6 @@ export default function App() {
                 }}
               >
                 <PRPanel
-                  key={panelDirectory}
                   directory={panelDirectory}
                   isActive={activePanel === "prs"}
                   onResetRef={prPanelResetRef}

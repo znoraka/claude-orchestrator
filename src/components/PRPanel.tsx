@@ -327,6 +327,17 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
 
   const hasFetched = useRef(false);
 
+  // Reset state when directory changes so we fetch fresh data for the new workspace
+  const prevDirectoryRef = useRef(directory);
+  useEffect(() => {
+    if (prevDirectoryRef.current === directory) return;
+    prevDirectoryRef.current = directory;
+    hasFetched.current = false;
+    setResult(null);
+    setReviewingPr(null);
+    setCurrentBranch("");
+  }, [directory]);
+
   useEffect(() => {
     if (isActive && !hasFetched.current) {
       hasFetched.current = true;
