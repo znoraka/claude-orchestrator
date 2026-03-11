@@ -59,7 +59,7 @@ TAG="v${VERSION}"
 echo "Building ${APP_NAME} ${TAG}..."
 
 # ── Build ─────────────────────────────────────────────────────────
-pnpm tauri build
+pnpm tauri build -- --bundles app,updater
 
 # ── Locate artifacts ──────────────────────────────────────────────
 DMG=$(find "${BUNDLE_DIR}/dmg" -name '*.dmg' 2>/dev/null | head -1)
