@@ -23,7 +23,8 @@ else
   echo "Warning: .env.signing not found — build will be unsigned."
 fi
 
-# ── Bump patch version ────────────────────────────────────────────
+# ── Bump patch version (only on --release) ────────────────────────
+if [[ "$RELEASE" == true ]]; then
 python3 - <<'PYEOF'
 import json, re, pathlib
 
@@ -50,6 +51,7 @@ cargo.write_text(text)
 
 print(f"Bumped version to {new_ver}")
 PYEOF
+fi
 
 # ── Read version from tauri.conf.json ─────────────────────────────
 VERSION=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")

@@ -977,23 +977,23 @@ const AgentChat = memo(function AgentChat({
   );
 
   useEffect(() => {
-    mountedRef.current = true;
+    let cancelled = false;
 
     // Defer loading until the session is actually visible to avoid
     // loading history for all sessions on app start.
     if (!isActive && lastLoadedClaudeSessionIdRef.current === null) {
-      return;
+      return () => { cancelled = true; };
     }
 
     // Skip reload if we already loaded for this exact claudeSessionId.
     // We must reload when claudeSessionId changes because the JSONL path depends on it.
     const currentClaudeSessionId = session?.claudeSessionId ?? null;
     if (lastLoadedClaudeSessionIdRef.current === currentClaudeSessionId && currentClaudeSessionId !== null) {
-      return;
+      return () => { cancelled = true; };
     }
 
     async function loadHistory() {
-      if (!mountedRef.current) return;
+      if (cancelled) return;
 
       const claudeSessionId = session?.claudeSessionId;
       const dir = session ? jsonlDirectory(session) : "";
@@ -1049,7 +1049,7 @@ const AgentChat = memo(function AgentChat({
 
       // Helper to merge replayed messages into state
       const mergeMessages = (replayed: ChatMessage[]) => {
-        if (!mountedRef.current) return;
+        if (cancelled) return;
         replayed = filterForkContext(replayed);
         if (replayed.length > 0) {
           console.log(`[loadHistory] ${sessionId}: ${replayed.length} messages, first=${replayed[0].type}:${replayed[0].id.substring(0, 20)}, last=${replayed[replayed.length-1].type}:${replayed[replayed.length-1].id.substring(0, 20)}`);
@@ -1133,7 +1133,7 @@ const AgentChat = memo(function AgentChat({
             claudeSessionId,
             directory: dir,
           });
-          if (!mountedRef.current) return;
+          if (cancelled) return;
           const replayed = await parseHistoryLines(allLines, sdkMessageToChatMessage);
           mergeMessages(replayed);
         } catch {}
@@ -1158,7 +1158,7 @@ const AgentChat = memo(function AgentChat({
                 childLines = await invoke<string[]>("get_agent_history", { sessionId: child.id });
               } catch {}
             }
-            if (!mountedRef.current) return;
+            if (cancelled) return;
             if (childLines.length > 0) {
               const parsed = await parseHistoryLines(childLines, sdkMessageToChatMessage);
               // Filter out fork-context system prompt from child messages
@@ -1193,7 +1193,7 @@ const AgentChat = memo(function AgentChat({
     loadHistory();
 
     return () => {
-      mountedRef.current = false;
+      cancelled = true;
     };
   }, [sessionId, session?.claudeSessionId, isActive, childSessionsKey]);
 

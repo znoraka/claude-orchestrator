@@ -687,8 +687,8 @@ export default function App() {
   const handleSelectSession = (id: string) => {
     startTransition(() => {
       selectSession(id);
+      setActivePanel(null);
     });
-    setActivePanel(null);
   };
 
   return (
@@ -890,13 +890,13 @@ export default function App() {
               </div>
 
               {/* Shell tabs */}
-              {shellTabsForDir(panelDirectory).length > 0 && (
+              {shellTabs.size > 0 && (
                 <div
                   className={`absolute inset-0 bg-[var(--bg-primary)] flex flex-col ${activePanel === "shell" ? "animate-slide-in-right" : ""}`}
                   style={{
-                    zIndex: activePanel === "shell" ? 2 : 0,
-                    pointerEvents: activePanel === "shell" ? "auto" : "none",
-                    visibility: activePanel === "shell" ? "visible" : "hidden",
+                    zIndex: activePanel === "shell" && shellTabsForDir(panelDirectory).length > 0 ? 2 : 0,
+                    pointerEvents: activePanel === "shell" && shellTabsForDir(panelDirectory).length > 0 ? "auto" : "none",
+                    visibility: activePanel === "shell" && shellTabsForDir(panelDirectory).length > 0 ? "visible" : "hidden",
                   }}
                 >
                   {/* Shell tab bar */}
@@ -962,44 +962,47 @@ export default function App() {
                       </svg>
                     </button>
                   </div>
-                  {/* Shell terminals */}
+                  {/* Shell terminals — render ALL directories to keep xterm instances mounted across workspace switches */}
                   <div className="flex-1 min-h-0 relative">
-                    {shellTabsForDir(panelDirectory).map((tab) => {
-                      const isTabActive = tab.id === activeShellForDir(panelDirectory);
-                      return (
-                        <div
-                          key={tab.id}
-                          className="absolute inset-0"
-                          style={{
-                            zIndex: isTabActive ? 1 : 0,
-                            pointerEvents: isTabActive ? "auto" : "none",
-                            visibility: isTabActive ? "visible" : "hidden",
-                          }}
-                        >
-                          <Terminal
-                            sessionId={tab.id}
-                            isActive={activePanel === "shell" && isTabActive}
-                            onExit={() => {
-                              setShellTabs((prev) => {
-                                const next = new Map(prev);
-                                const tabs = (prev.get(panelDirectory) || []).filter((t) => t.id !== tab.id);
-                                if (tabs.length === 0) next.delete(panelDirectory);
-                                else next.set(panelDirectory, tabs);
-                                return next;
-                              });
-                              const remaining = shellTabsForDir(panelDirectory).filter((t) => t.id !== tab.id);
-                              if (remaining.length > 0) {
-                                setActiveShellId((prev) => new Map(prev).set(panelDirectory, remaining[0].id));
-                              } else {
-                                setActiveShellId((prev) => { const next = new Map(prev); next.delete(panelDirectory); return next; });
-                                setActivePanel(null);
-                              }
+                    {[...shellTabs.entries()].map(([dir, tabs]) =>
+                      tabs.map((tab) => {
+                        const isThisDir = dir === panelDirectory;
+                        const isTabActive = tab.id === activeShellForDir(dir);
+                        return (
+                          <div
+                            key={tab.id}
+                            className="absolute inset-0"
+                            style={{
+                              zIndex: isThisDir && isTabActive ? 1 : 0,
+                              pointerEvents: isThisDir && isTabActive ? "auto" : "none",
+                              visibility: isThisDir && isTabActive ? "visible" : "hidden",
                             }}
-                            onTitleChange={() => {}}
-                          />
-                        </div>
-                      );
-                    })}
+                          >
+                            <Terminal
+                              sessionId={tab.id}
+                              isActive={activePanel === "shell" && isThisDir && isTabActive}
+                              onExit={() => {
+                                setShellTabs((prev) => {
+                                  const next = new Map(prev);
+                                  const remaining = (prev.get(dir) || []).filter((t) => t.id !== tab.id);
+                                  if (remaining.length === 0) next.delete(dir);
+                                  else next.set(dir, remaining);
+                                  return next;
+                                });
+                                const remaining = (shellTabs.get(dir) || []).filter((t) => t.id !== tab.id);
+                                if (remaining.length > 0) {
+                                  setActiveShellId((prev) => new Map(prev).set(dir, remaining[0].id));
+                                } else {
+                                  setActiveShellId((prev) => { const next = new Map(prev); next.delete(dir); return next; });
+                                  if (isThisDir) setActivePanel(null);
+                                }
+                              }}
+                              onTitleChange={() => {}}
+                            />
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
                 </div>
               )}
@@ -1011,18 +1014,28 @@ export default function App() {
 
         {/* Context rail */}
         <div
-          className="overflow-hidden shrink-0 transition-all duration-200"
+          className="overflow-hidden shrink-0"
           style={{ width: railOpen && activeSessionId ? 320 : 0 }}
         >
-          {railOpen && activeSessionId && (
-            <ContextRail
-              directory={panelDirectory}
-              sessionUsage={sessionUsage}
-              activeSessionId={activeSessionId}
-              defaultTab={railTab}
-              onTabChange={setRailTab}
-            />
-          )}
+          <div
+            className="h-full"
+            style={{
+              width: 320,
+              transform: railOpen && activeSessionId ? "translateX(0)" : "translateX(320px)",
+              transition: "transform 150ms ease",
+              willChange: "transform",
+            }}
+          >
+            {activeSessionId && (
+              <ContextRail
+                directory={panelDirectory}
+                sessionUsage={sessionUsage}
+                activeSessionId={activeSessionId}
+                defaultTab={railTab}
+                onTabChange={setRailTab}
+              />
+            )}
+          </div>
         </div>
       </div>
 
