@@ -475,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "claude-orchestrator"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "base64 0.22.1",
  "grep-matcher",
