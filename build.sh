@@ -59,12 +59,12 @@ TAG="v${VERSION}"
 echo "Building ${APP_NAME} ${TAG}..."
 
 # ── Build ─────────────────────────────────────────────────────────
-pnpm tauri build -- --bundles app,updater
+pnpm tauri build --bundles app
 
 # ── Locate artifacts ──────────────────────────────────────────────
 DMG=$(find "${BUNDLE_DIR}/dmg" -name '*.dmg' 2>/dev/null | head -1)
 APP=$(find "${BUNDLE_DIR}/macos" -name '*.app' 2>/dev/null | head -1)
-TARGZ=$(find "${BUNDLE_DIR}/macos" -name "*${VERSION}*.tar.gz" 2>/dev/null | grep -v '\.sig$' | head -1)
+TARGZ=$(find "${BUNDLE_DIR}/macos" -name "*${VERSION}*.tar.gz" 2>/dev/null | head -1)
 SIG=$(find "${BUNDLE_DIR}/macos" -name "*${VERSION}*.tar.gz.sig" 2>/dev/null | head -1)
 
 if [[ -z "$APP" ]]; then
