@@ -16,8 +16,6 @@
       "allow": [{ "event": "pty-*" }, { "event": "notification:*" }]
     },
     "notification:default",
-    "updater:default",
-    "process:allow-restart",
     "core:menu:default"
   ]
 }

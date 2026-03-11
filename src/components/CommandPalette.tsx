@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import type { Session, SessionUsage, Workspace } from "../types";
 import { shortenPath, repoColor, directoryColor } from "./SessionTab";
 import { useSessionLive } from "../contexts/SessionContext";
+import SessionStatusBadge from "./SessionStatusBadge";
+import type { SessionStatus } from "./SessionStatusBadge";
 
 interface CommandPaletteProps {
   isOpen: boolean;
@@ -70,6 +72,66 @@ function formatDuration(ms: number): string {
   if (hours === 0) return `${minutes}m`;
   return `${hours}h ${minutes}m`;
 }
+
+function timeAgo(ts: number): string {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
+// Command icons (18×18, strokeWidth 1.75)
+const CommandIcon = ({ id }: { id: string }) => {
+  if (id === "cmd-new") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M9 3.75v10.5M3.75 9h10.5" />
+      </svg>
+    );
+  }
+  if (id === "cmd-sidebar") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2.25" y="2.25" width="13.5" height="13.5" rx="2" />
+        <path d="M6.75 2.25v13.5" />
+      </svg>
+    );
+  }
+  if (id === "cmd-prs") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="4.5" cy="4.5" r="1.75" />
+        <circle cx="4.5" cy="13.5" r="1.75" />
+        <circle cx="13.5" cy="4.5" r="1.75" />
+        <path d="M4.5 6.25v5.5" />
+        <path d="M13.5 6.25c0 3-4.5 4.5-4.5 7.25" />
+      </svg>
+    );
+  }
+  if (id === "cmd-shell") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2.25" y="3" width="13.5" height="12" rx="2" />
+        <path d="M5.25 7.5l2.25 2.25-2.25 2.25" />
+        <path d="M9.75 12h3" />
+      </svg>
+    );
+  }
+  if (id === "cmd-usage") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="10.5" width="2.5" height="4.5" rx="0.5" />
+        <rect x="7.75" y="6.75" width="2.5" height="8.25" rx="0.5" />
+        <rect x="12.5" y="3" width="2.5" height="12" rx="0.5" />
+      </svg>
+    );
+  }
+  return null;
+};
 
 export default function CommandPalette({
   isOpen,
@@ -298,15 +360,15 @@ export default function CommandPalette({
     >
       <div
         className="command-palette animate-slide-down flex flex-col rounded-xl shadow-2xl"
-        style={{ width: 520, maxHeight: 480 }}
+        style={{ width: 580, maxHeight: 560 }}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
       >
         {/* Search input */}
-        <div className="flex items-center gap-2 px-4 py-3" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.4, flexShrink: 0 }}>
-            <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.5" />
-            <path d="M11 11L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        <div className="flex items-center gap-3 px-4 py-3.5" style={{ borderBottom: "1px solid var(--card-border)" }}>
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{ opacity: 0.4, flexShrink: 0 }}>
+            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.75" />
+            <path d="M13 13L16 16" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
           </svg>
           <input
             ref={inputRef}
@@ -317,8 +379,8 @@ export default function CommandPalette({
               setSelectedIndex(0);
             }}
             placeholder="Search sessions, commands..."
-            className="flex-1 bg-transparent text-sm outline-none"
-            style={{ fontSize: 14, color: "var(--text-primary)" }}
+            className="flex-1 bg-transparent outline-none"
+            style={{ fontSize: 15, color: "var(--text-primary)" }}
           />
           {query && (
             <button
@@ -326,7 +388,7 @@ export default function CommandPalette({
                 setQuery("");
                 inputRef.current?.focus();
               }}
-              className="text-xs opacity-40 hover:opacity-70"
+              className="text-xs opacity-40 hover:opacity-70 transition-opacity"
               style={{ color: "var(--text-secondary)" }}
             >
               Clear
@@ -335,18 +397,19 @@ export default function CommandPalette({
         </div>
 
         {/* Results */}
-        <div ref={listRef} className="flex-1 overflow-y-auto py-1" style={{ maxHeight: 420 }}>
+        <div ref={listRef} className="flex-1 overflow-y-auto py-1.5" style={{ maxHeight: 460 }}>
           {sections.length === 0 && (
-            <div className="px-4 py-8 text-center text-sm" style={{ color: "var(--text-tertiary)" }}>
+            <div className="px-4 py-10 text-center text-sm" style={{ color: "var(--text-tertiary)" }}>
               No results found
             </div>
           )}
 
           {sections.map((section) => (
             <div key={section.key} className="mb-1">
+              {/* Section header */}
               <div
-                className="px-4 py-1 text-[10px] font-semibold tracking-widest"
-                style={{ color: "var(--text-tertiary)" }}
+                className="px-3 pt-3 pb-1 text-[11px] font-semibold tracking-wider"
+                style={{ color: "var(--section-label)" }}
               >
                 {section.label}
               </div>
@@ -360,24 +423,33 @@ export default function CommandPalette({
                       key={item.id}
                       data-index={gi}
                       onClick={() => executeItem(item)}
-                      className="mx-2 flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 transition-colors"
+                      className="mx-2 flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2.5 transition-colors relative overflow-hidden"
                       style={{
-                        background: isSelected ? "var(--accent-muted)" : "transparent",
-                        borderLeft: isSelected ? "2px solid var(--accent)" : "2px solid transparent",
+                        background: isSelected ? "var(--accent-glow)" : "transparent",
                       }}
                     >
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ opacity: 0.5, flexShrink: 0 }}>
-                        <path d="M2 4L7 8L2 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                        <path d="M7 12H12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                      </svg>
-                      <span className="text-xs" style={{ color: "var(--text-primary)" }}>
+                      {/* Left accent bar */}
+                      {isSelected && (
+                        <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 rounded-r" style={{ background: "var(--accent)" }} />
+                      )}
+                      {/* Icon container */}
+                      <span
+                        className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors"
+                        style={{
+                          background: isSelected ? "var(--accent-muted)" : "var(--bg-tertiary)",
+                          color: isSelected ? "var(--accent)" : "var(--text-secondary)",
+                        }}
+                      >
+                        <CommandIcon id={item.id} />
+                      </span>
+                      <span className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
                         {item.label}
                       </span>
                     </div>
                   );
                 }
 
-                // Session item — matches SessionTab rendering
+                // Session item
                 const session = item.session!;
                 const usage = item.usage;
                 const isRunning = session.status === "running" || session.status === "starting";
@@ -387,8 +459,21 @@ export default function CommandPalette({
                 const hasDraft = session.hasDraft && isRunning;
                 const unread = item.unread;
 
+                // Derive SessionStatus for badge
+                let badgeStatus: SessionStatus = session.status as SessionStatus;
+                if (hasError) badgeStatus = "error";
+                else if (hasQuestion) badgeStatus = "waiting";
+
+                // Status description text
+                let statusDesc: string | null = null;
+                if (hasQuestion) statusDesc = "Needs input";
+                else if (isBusy) statusDesc = "Working…";
+                else if (hasDraft) statusDesc = "Has draft";
+                else if (hasError) statusDesc = "Error";
+                else if (!isRunning) statusDesc = timeAgo(session.lastActiveAt);
+
                 const rowBg = hasQuestion
-                  ? "bg-orange-500/12 animate-pulse-glow"
+                  ? "bg-orange-500/10 animate-pulse-glow"
                   : hasError
                   ? "bg-red-500/5"
                   : "";
@@ -398,54 +483,77 @@ export default function CommandPalette({
                     key={item.id}
                     data-index={gi}
                     onClick={() => executeItem(item)}
-                    className={`mx-1 flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 my-px transition-colors ${rowBg}`}
+                    className={`mx-2 flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 my-px transition-colors relative overflow-hidden ${rowBg}`}
                     style={{
-                      background: isSelected ? "var(--accent-muted)" : undefined,
-                      borderLeft: isSelected ? "2px solid var(--accent)" : "2px solid transparent",
+                      background: isSelected && !hasQuestion ? "var(--accent-glow)" : undefined,
                     }}
                   >
-                    {/* Status indicator — same as SessionTab */}
-                    <span className="shrink-0 w-3 h-3 flex items-center justify-center">
-                      {hasError ? (
-                        <svg className="w-3 h-3 text-red-400" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575ZM8 5a.75.75 0 0 0-.75.75v2.5a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8 5Zm1 6a1 1 0 1 0-2 0 1 1 0 0 0 2 0Z" />
-                        </svg>
-                      ) : hasQuestion ? (
-                        <svg className="w-3 h-3 text-orange-400" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M4.5 2a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 4.5 2Zm7 0a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 11.5 2Z" />
-                        </svg>
-                      ) : isBusy ? (
-                        <span className="w-2.5 h-2.5 border-[1.5px] border-[var(--accent)] border-t-transparent rounded-full animate-spin will-change-transform drop-shadow-[0_0_4px_rgba(240,120,48,0.4)]" />
-                      ) : hasDraft ? (
-                        <svg className="w-2.5 h-2.5 text-blue-400" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.25.25 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z" />
-                        </svg>
-                      ) : unread ? (
-                        <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />
-                      ) : null}
+                    {/* Left accent bar */}
+                    {isSelected && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 rounded-r" style={{ background: "var(--accent)" }} />
+                    )}
+
+                    {/* Status badge */}
+                    <span className="shrink-0 w-5 flex items-center justify-center">
+                      {unread && !isRunning && !hasQuestion && !hasError ? (
+                        <span className="w-2 h-2 rounded-full" style={{ background: "var(--accent)" }} />
+                      ) : (
+                        <SessionStatusBadge status={badgeStatus} size="md" />
+                      )}
                     </span>
 
-                    {/* Name + directory + usage — same as SessionTab */}
+                    {/* Name + directory + usage */}
                     <div className="flex-1 min-w-0">
-                      <span className="text-xs truncate flex items-center gap-1.5 leading-snug">
+                      <div className="flex items-center gap-1.5 leading-snug">
                         {item.childCount !== undefined && item.childCount > 0 && (
-                          <span className="inline-flex items-center gap-0.5 shrink-0 text-[9px] px-1 py-px rounded bg-blue-500/15 text-blue-400 font-medium align-middle" title={`${item.childCount} execution session${item.childCount !== 1 ? "s" : ""}`}>
-                            <svg className="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor"><path d="M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75v-.878a2.25 2.25 0 1 1 1.5 0v.878a2.25 2.25 0 0 1-2.25 2.25h-1.5v2.128a2.251 2.251 0 1 1-1.5 0V8.5h-1.5A2.25 2.25 0 0 1 3.5 6.25v-.878a2.25 2.25 0 1 1 1.5 0Z" /></svg>
+                          <span
+                            className="inline-flex items-center gap-0.5 shrink-0 text-[9px] px-1 py-px rounded font-medium"
+                            style={{ background: "rgba(96,165,250,0.15)", color: "rgb(147,197,253)" }}
+                            title={`${item.childCount} execution session${item.childCount !== 1 ? "s" : ""}`}
+                          >
+                            <svg className="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
+                              <path d="M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75v-.878a2.25 2.25 0 1 1 1.5 0v.878a2.25 2.25 0 0 1-2.25 2.25h-1.5v2.128a2.251 2.251 0 1 1-1.5 0V8.5h-1.5A2.25 2.25 0 0 1 3.5 6.25v-.878a2.25 2.25 0 1 1 1.5 0Z" />
+                            </svg>
                             {item.childCount}
                           </span>
                         )}
-                        {session.name}
+                        <span className="text-sm font-medium truncate" style={{ color: "var(--text-primary)" }}>
+                          {session.name}
+                        </span>
                         {session.provider && (
-                          <span className="ml-1.5 text-[9px] px-1 py-px rounded bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] uppercase tracking-wider font-semibold align-middle">
+                          <span
+                            className="ml-1 text-[9px] px-1 py-px rounded uppercase tracking-wider font-semibold shrink-0"
+                            style={{ background: "var(--bg-tertiary)", color: "var(--text-tertiary)" }}
+                          >
                             {session.provider === "opencode" ? "OC" : session.provider === "claude-code" ? "CC" : session.provider}
                           </span>
                         )}
-                      </span>
+                      </div>
+
+                      {/* Status description */}
+                      {statusDesc && (
+                        <span
+                          className="text-[11px] truncate block mt-0.5"
+                          style={{
+                            color: hasQuestion
+                              ? "var(--status-waiting)"
+                              : hasError
+                              ? "var(--danger)"
+                              : isBusy
+                              ? "var(--status-running)"
+                              : "var(--text-tertiary)",
+                          }}
+                        >
+                          {statusDesc}
+                        </span>
+                      )}
+
                       {item.parentName && (
-                        <span className="text-[10px] text-violet-400/70 truncate block mt-0.5">
+                        <span className="text-[10px] truncate block mt-0.5" style={{ color: "rgba(167,139,250,0.7)" }}>
                           from: {item.parentName}
                         </span>
                       )}
+
                       {session.directory && (() => {
                         const isWorktree = session.directory.includes("/.worktrees/") || session.directory.includes("/.claude/worktrees/");
                         if (isWorktree) {
@@ -469,8 +577,9 @@ export default function CommandPalette({
                           </span>
                         );
                       })()}
+
                       {usage && (usage.inputTokens > 0 || usage.outputTokens > 0) && (
-                        <span className="text-[10px] text-[var(--text-tertiary)] truncate block mt-0.5">
+                        <span className="text-[10px] truncate block mt-0.5" style={{ color: "var(--text-tertiary)" }}>
                           {formatTokens(usage.inputTokens + usage.outputTokens)} tokens · ${usage.costUsd.toFixed(2)}
                           {session.activeTime ? ` · ${formatDuration(session.activeTime)}` : ""}
                         </span>
@@ -485,22 +594,30 @@ export default function CommandPalette({
 
         {/* Footer hints */}
         <div
-          className="flex items-center gap-4 px-4 py-2 text-[10px]"
-          style={{ borderTop: "1px solid var(--border-subtle)", color: "var(--text-tertiary)" }}
+          className="flex items-center gap-4 px-4 py-2.5 text-[11px]"
+          style={{ borderTop: "1px solid var(--card-border)", color: "var(--text-tertiary)" }}
         >
-          <span>
-            <kbd className="rounded px-1 py-0.5" style={{ background: "rgba(255,255,255,0.06)" }}>↑↓</kbd>{" "}
-            <kbd className="rounded px-1 py-0.5" style={{ background: "rgba(255,255,255,0.06)" }}>^P/^N</kbd> navigate
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded-md font-mono text-[10px] border" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)" }}>↑↓</kbd>
+            <span>navigate</span>
           </span>
-          <span>
-            <kbd className="rounded px-1 py-0.5" style={{ background: "rgba(255,255,255,0.06)" }}>↵</kbd> select
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded-md font-mono text-[10px] border" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)" }}>↵</kbd>
+            <span>select</span>
           </span>
-          <span>
-            <kbd className="rounded px-1 py-0.5" style={{ background: "rgba(255,255,255,0.06)" }}>esc</kbd> close
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 rounded-md font-mono text-[10px] border" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)" }}>esc</kbd>
+            <span>close</span>
           </span>
-          <span className="ml-auto opacity-60">
-            <span className="mr-2">&gt; commands</span>
-            <span># status</span>
+          <span className="ml-auto flex items-center gap-2 opacity-60">
+            <span>
+              <kbd className="px-1 py-0.5 rounded font-mono text-[10px] border" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)" }}>&gt;</kbd>
+              {" "}commands
+            </span>
+            <span>
+              <kbd className="px-1 py-0.5 rounded font-mono text-[10px] border" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)"}}>#</kbd>
+              {" "}status
+            </span>
           </span>
         </div>
       </div>

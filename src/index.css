@@ -26,6 +26,14 @@
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
+  --activity-bar-bg: #080a0f;
+  --drawer-bg:       #0e1118;
+  --rail-bg:         #0e1118;
+  --card-bg:         #13161f;
+  --card-border:     #1e2333;
+  --status-running:  #3ecf8e;
+  --status-waiting:  #f59e0b;
+  --status-stopped:  #3a3f52;
 }
 
 * {
@@ -216,9 +224,9 @@ input:focus-visible, textarea:focus-visible {
 }
 
 .command-palette {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
 }
 
 @keyframes slide-down {
@@ -442,4 +450,54 @@ input:focus-visible, textarea:focus-visible {
 
 .dialog-backdrop {
   backdrop-filter: blur(4px);
+}
+
+/* Activity bar tooltip — appears to the right */
+.activity-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 8px);
+  right: auto;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+  box-shadow: var(--shadow-md);
+  z-index: 100;
+}
+.activity-tooltip:hover::after {
+  opacity: 1;
+}
+
+/* Running session border animation */
+@keyframes running-border {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+/* Amber pulse for waiting sessions */
+@keyframes amber-pulse {
+  0%, 100% { opacity: 0.7; box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
+  50% { opacity: 1; box-shadow: 0 0 0 4px rgba(245, 158, 11, 0); }
+}
+.animate-amber-pulse {
+  animation: amber-pulse 2s ease-in-out infinite;
+}
+
+/* Green ring for running sessions */
+@keyframes green-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(62, 207, 142, 0.5); }
+  50% { box-shadow: 0 0 0 3px rgba(62, 207, 142, 0); }
+}
+.animate-green-ring {
+  animation: green-ring 1.5s ease-in-out infinite;
 }

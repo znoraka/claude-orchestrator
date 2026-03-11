@@ -1001,6 +1001,48 @@ fn get_conversation_title(
     Ok(result)
 }
 
+/// Query the OpenCode SQLite database for the latest session title matching a directory.
+/// OpenCode stores its DB at ~/.local/share/opencode/opencode.db with a `session` table.
+#[tauri::command]
+fn get_opencode_session_title(directory: String) -> Result<Option<String>, String> {
+    let expanded_dir = if directory.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            directory.replacen('~', &home, 1)
+        } else {
+            directory.clone()
+        }
+    } else {
+        directory.clone()
+    };
+
+    let db_path = dirs_opencode_db();
+    let db_path = match db_path {
+        Some(p) if p.exists() => p,
+        _ => return Ok(None),
+    };
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| format!("Failed to open opencode DB: {}", e))?;
+
+    let mut stmt = conn
+        .prepare("SELECT title FROM session WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1")
+        .map_err(|e| format!("SQL prepare error: {}", e))?;
+
+    let title: Option<String> = stmt
+        .query_row(rusqlite::params![expanded_dir], |row| row.get(0))
+        .ok();
+
+    Ok(title)
+}
+
+fn dirs_opencode_db() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    Some(std::path::PathBuf::from(home).join(".local/share/opencode/opencode.db"))
+}
+
 #[derive(Serialize, Clone, Default)]
 struct SessionUsage {
     #[serde(rename = "inputTokens")]
@@ -3553,8 +3595,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let watcher = JsonlWatcher::new(app.handle().clone())
                 .expect("Failed to create file watcher");
@@ -3752,6 +3792,7 @@ pub fn run() {
             create_worktree,
             remove_worktree,
             get_conversation_title,
+            get_opencode_session_title,
             get_session_usage,
             get_total_usage_today,
             get_usage_dashboard,
