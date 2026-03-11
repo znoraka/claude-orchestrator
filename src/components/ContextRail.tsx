@@ -5,6 +5,13 @@ import type { SessionUsage } from "../types";
 interface GitFile {
   path: string;
   status: string;
+  staged: boolean;
+}
+
+interface GitStatusResult {
+  branch: string;
+  files: GitFile[];
+  isGitRepo: boolean;
 }
 
 interface Props {
@@ -41,22 +48,10 @@ const ContextRail = memo(function ContextRail({
 
     const fetch = async () => {
       try {
-        const [statusResult, branchResult] = await Promise.all([
-          invoke<string>("git_status", { directory }).catch(() => ""),
-          invoke<string>("git_branch", { directory }).catch(() => ""),
-        ]);
+        const result = await invoke<GitStatusResult>("get_git_status", { directory });
         if (cancelled) return;
-        setGitBranch(branchResult.trim());
-
-        // Parse git status output
-        const files: GitFile[] = [];
-        for (const line of statusResult.split("\n")) {
-          if (!line.trim()) continue;
-          const status = line.substring(0, 2).trim() || "?";
-          const path = line.substring(3).trim();
-          if (path) files.push({ status, path });
-        }
-        setGitFiles(files);
+        setGitBranch(result.branch);
+        setGitFiles(result.files);
       } catch {
         // ignore
       } finally {
@@ -155,7 +150,7 @@ const ContextRail = memo(function ContextRail({
               <div className="rounded-lg border border-[var(--card-border)] p-3" style={{ background: "var(--card-bg)" }}>
                 <div className="text-[10px] font-medium text-[var(--text-tertiary)] uppercase tracking-wider mb-2">Current Session</div>
                 <div className="text-2xl font-bold text-[var(--text-primary)]">
-                  ${activeUsage.costUsd.toFixed(4)}
+                  ${activeUsage.costUsd.toFixed(2)}
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-1 text-[10px] text-[var(--text-tertiary)]">
                   <div>In: {(activeUsage.inputTokens / 1000).toFixed(1)}k</div>
@@ -170,7 +165,7 @@ const ContextRail = memo(function ContextRail({
             <div className="rounded-lg border border-[var(--card-border)] p-3" style={{ background: "var(--card-bg)" }}>
               <div className="text-[10px] font-medium text-[var(--text-tertiary)] uppercase tracking-wider mb-2">Total Today</div>
               <div className="text-2xl font-bold text-[var(--text-primary)]">
-                ${totalCost.toFixed(4)}
+                ${totalCost.toFixed(2)}
               </div>
               <div className="text-[10px] text-[var(--text-tertiary)] mt-1">
                 across {sessionUsage.size} session{sessionUsage.size !== 1 ? "s" : ""}
