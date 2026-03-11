@@ -159,6 +159,10 @@ struct SessionMeta {
     plan_content: Option<String>,
     #[serde(default, rename = "parentSessionId", skip_serializing_if = "Option::is_none")]
     parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    archived: Option<bool>,
+    #[serde(default, rename = "archivedAt", skip_serializing_if = "Option::is_none")]
+    archived_at: Option<f64>,
 }
 
 fn sessions_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {

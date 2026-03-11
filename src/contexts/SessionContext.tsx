@@ -162,6 +162,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         hasTitleBeenGenerated?: boolean;
         planContent?: string;
         parentSessionId?: string;
+        archived?: boolean;
+        archivedAt?: number;
       }>
     >("load_sessions")
       .then((saved) => {
@@ -184,6 +186,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             hasTitleBeenGenerated: s.hasTitleBeenGenerated,
             planContent: s.planContent,
             parentSessionId: s.parentSessionId,
+            archived: s.archived,
+            archivedAt: s.archivedAt,
           }));
           dispatch({ type: "SET_ALL", sessions: restored });
         }
@@ -223,6 +227,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       hasTitleBeenGenerated: s.hasTitleBeenGenerated,
       planContent: s.planContent,
       parentSessionId: s.parentSessionId,
+      archived: s.archived,
+      archivedAt: s.archivedAt,
     }));
   }, []);
 
@@ -248,7 +254,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const saveKey = useMemo(
     () =>
       sessions
-        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.provider}:${s.model}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.lastMessageAt}:${s.dangerouslySkipPermissions}:${s.hasTitleBeenGenerated}:${s.permissionMode}:${s.parentSessionId}`)
+        .map((s) => `${s.id}:${s.name}:${s.directory}:${s.provider}:${s.model}:${s.homeDirectory}:${s.claudeSessionId}:${s.status}:${s.lastActiveAt}:${s.lastMessageAt}:${s.dangerouslySkipPermissions}:${s.hasTitleBeenGenerated}:${s.permissionMode}:${s.parentSessionId}:${s.archived}`)
         .join("|"),
     [sessions]
   );

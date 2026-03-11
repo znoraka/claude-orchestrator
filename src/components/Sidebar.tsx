@@ -328,7 +328,7 @@ export default function Sidebar({
                 {isRepoCollapsed && (() => {
                   const important = filteredWorktrees
                     .flatMap((wt) => wt.sessions)
-                    .filter((s) => isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
+                    .filter((s) => !s.parentSessionId && !s.archived && isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
                   return important.map((session) => (
                     <div key={session.id}>
                       {renderSession(session, { hideDirectory: true })}
@@ -402,7 +402,7 @@ export default function Sidebar({
 
                         {/* Important sessions shown even when worktree is collapsed */}
                         {isWtCollapsed && hasMultipleWorktrees && (() => {
-                          const important = wt.sessions.filter((s) => !s.archived && isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
+                          const important = wt.sessions.filter((s) => !s.parentSessionId && !s.archived && isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
                           return important.map((session) => (
                             <div key={session.id}>
                               {renderSession(session, { hideDirectory: true })}
