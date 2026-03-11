@@ -151,7 +151,7 @@ export default memo(function WorkspaceCard({
       {/* Footer */}
       {costToday > 0 && (
         <div className="text-[10px] text-[var(--text-tertiary)] border-t border-[var(--card-border)] pt-2 mt-1">
-          ${costToday.toFixed(3)} today
+          ${costToday.toFixed(2)} today
         </div>
       )}
     </div>

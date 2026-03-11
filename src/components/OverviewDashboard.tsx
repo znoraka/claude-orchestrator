@@ -88,7 +88,7 @@ export default memo(function OverviewDashboard({
         {totalCost > 0 && (
           <div className="text-sm text-[var(--text-secondary)] ml-auto">
             <span className="text-[var(--text-tertiary)]">Today </span>
-            <span className="font-medium text-[var(--text-primary)]">${totalCost.toFixed(3)}</span>
+            <span className="font-medium text-[var(--text-primary)]">${totalCost.toFixed(2)}</span>
           </div>
         )}
         <button

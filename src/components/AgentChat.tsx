@@ -3221,7 +3221,7 @@ const MessageBubble = memo(function MessageBubble({
           <span>{formatDuration(durationMs)}</span>
         )}
         {cost !== undefined && cost > 0 && (
-          <span>${cost.toFixed(4)}</span>
+          <span>${cost.toFixed(2)}</span>
         )}
       </div>
     );
