@@ -9,9 +9,9 @@ import type { PrComment, PrFileEntry } from "../types";
 // Tree node for the file tree
 interface FileTreeNode {
   name: string;
-  path: string; // full path for this segment
+  path: string;
   children: FileTreeNode[];
-  file?: PrFileEntry; // present only for leaf nodes
+  file?: PrFileEntry;
 }
 
 function buildFileTree(files: PrFileEntry[]): FileTreeNode[] {
@@ -36,7 +36,6 @@ function buildFileTree(files: PrFileEntry[]): FileTreeNode[] {
       current = existing.children;
     }
   }
-  // Collapse single-child directories (e.g. "src/components" becomes one node)
   function collapse(nodes: FileTreeNode[]): FileTreeNode[] {
     return nodes.map((node) => {
       node.children = collapse(node.children);
@@ -50,11 +49,19 @@ function buildFileTree(files: PrFileEntry[]): FileTreeNode[] {
   return collapse(root);
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  A: "text-green-400",
-  M: "text-yellow-400",
-  D: "text-red-400",
-  R: "text-blue-400",
+// Colored dot per file status
+const STATUS_DOT: Record<string, string> = {
+  A: "bg-[var(--success)]",
+  M: "bg-[var(--status-waiting)]",
+  D: "bg-[var(--danger)]",
+  R: "bg-blue-400",
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  A: "Added",
+  M: "Modified",
+  D: "Deleted",
+  R: "Renamed",
 };
 
 interface PRReviewViewProps {
@@ -79,7 +86,6 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
     () => (localStorage.getItem("git-diff-mode") as DiffMode) || "unified"
   );
 
-  // Inline comment state
   const [commentLine, setCommentLine] = useState<number | null>(null);
   const [commentText, setCommentText] = useState("");
   const [posting, setPosting] = useState(false);
@@ -93,19 +99,16 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       if (next.has(file)) next.delete(file); else next.add(file);
       return next;
     });
-    // Sync to GitHub in the background
     invoke("set_pr_file_viewed", { directory, prNumber, path: file, viewed: willBeViewed })
       .catch((e) => console.error("Failed to sync viewed state:", e));
   }, [directory, prNumber, viewedFiles]);
 
-  // Fetch viewed state from GitHub
   useEffect(() => {
     invoke<string[]>("get_pr_viewed_files", { directory, prNumber })
       .then((viewed) => setViewedFiles(new Set(viewed)))
       .catch((e) => console.error("Failed to fetch viewed files:", e));
   }, [directory, prNumber]);
 
-  // Load PR files
   useEffect(() => {
     setLoading(true);
     invoke<{ files: PrFileEntry[]; fullDiff: string }>("get_pr_diff", { directory, prNumber })
@@ -117,7 +120,6 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       .finally(() => setLoading(false));
   }, [directory, prNumber]);
 
-  // Load comments
   const loadComments = useCallback(async () => {
     try {
       const result = await invoke<PrComment[]>("get_pr_comments", { directory, prNumber });
@@ -131,7 +133,6 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
     loadComments();
   }, [loadComments]);
 
-  // Load file diff
   useEffect(() => {
     if (!selectedFile) {
       setFileDiff("");
@@ -144,7 +145,6 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       .finally(() => setDiffLoading(false));
   }, [selectedFile, directory, prNumber]);
 
-  // Comments for current file
   const fileComments = useMemo(
     () => comments.filter((c) => c.path === selectedFile),
     [comments, selectedFile]
@@ -196,16 +196,18 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
 
   const renderTreeNode = useCallback((node: FileTreeNode, depth: number) => {
     if (node.file) {
-      // Leaf node (file)
       const file = node.file;
       const commentCount = comments.filter((c) => c.path === file.path).length;
       const isViewed = viewedFiles.has(file.path);
       const isSelected = selectedFile === file.path;
+      const dotColor = STATUS_DOT[file.status] || "bg-[var(--text-tertiary)]";
+      const statusLabel = STATUS_LABEL[file.status] || file.status;
+
       return (
         <div
           key={file.path}
           onClick={() => { setSelectedFile(file.path); setCommentLine(null); }}
-          className={`w-full text-left py-0.5 pr-2 text-xs font-mono flex items-center gap-1.5 rounded transition-colors cursor-pointer ${
+          className={`w-full text-left py-1 pr-2 text-xs font-mono flex items-center gap-1.5 rounded-lg transition-colors cursor-pointer ${
             isSelected
               ? "bg-[var(--accent)] text-white"
               : isViewed
@@ -219,35 +221,37 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
             role="checkbox"
             aria-checked={isViewed}
             onClick={(e) => { e.stopPropagation(); toggleViewed(file.path); }}
-            className={`flex-shrink-0 w-3.5 h-3.5 rounded border flex items-center justify-center cursor-pointer transition-all ${
+            className={`flex-shrink-0 w-4 h-4 rounded border flex items-center justify-center cursor-pointer transition-all ${
               isViewed
                 ? isSelected
                   ? "bg-white/90 border-white/90"
-                  : "bg-green-500 border-green-500"
+                  : "bg-[var(--success)] border-[var(--success)]"
                 : isSelected
                   ? "border-white/50 hover:border-white/80"
-                  : "border-[var(--text-tertiary)] hover:border-[var(--text-secondary)]"
+                  : "border-[var(--text-tertiary)]/50 hover:border-[var(--text-secondary)]"
             }`}
             title="Mark as viewed"
           >
             {isViewed && (
-              <svg width="8" height="8" viewBox="0 0 12 12" fill="none" stroke={isSelected ? "var(--accent)" : "white"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke={isSelected ? "var(--accent)" : "white"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M2 6l3 3 5-5" />
               </svg>
             )}
           </span>
           <FileIcon filename={file.path} />
-          <span className={`truncate flex-1 ${isViewed && !isSelected ? "line-through opacity-60" : ""}`}>
+          <span className={`truncate flex-1 ${isViewed && !isSelected ? "line-through opacity-50" : ""}`}>
             {node.name}
           </span>
           {commentCount > 0 && (
-            <span className={`text-[10px] flex-shrink-0 ${isSelected ? "text-white/70" : "text-yellow-400"}`}>
+            <span className={`text-[10px] flex-shrink-0 tabular-nums ${isSelected ? "text-white/70" : "text-[var(--status-waiting)]"}`}>
               {commentCount}
             </span>
           )}
-          <span className={`text-[10px] flex-shrink-0 font-semibold ${isSelected ? "text-white/70" : (STATUS_COLORS[file.status] || "text-[var(--text-tertiary)]")}`}>
-            {file.status}
-          </span>
+          {/* Colored dot instead of letter, with tooltip */}
+          <span
+            className={`flex-shrink-0 w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white/70" : dotColor}`}
+            title={statusLabel}
+          />
         </div>
       );
     }
@@ -258,7 +262,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       <div key={node.path}>
         <div
           onClick={() => toggleDir(node.path)}
-          className="w-full text-left py-0.5 pr-2 text-xs flex items-center gap-1 rounded transition-colors cursor-pointer text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+          className="w-full text-left py-1 pr-2 text-xs flex items-center gap-1.5 rounded-lg transition-colors cursor-pointer text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
           style={{ paddingLeft: `${depth * 16 + 8}px` }}
         >
           <svg
@@ -270,14 +274,14 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
           >
             <path d="M6 4l4 4-4 4" />
           </svg>
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" className="flex-shrink-0 opacity-50">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" className="flex-shrink-0 opacity-40">
             {isCollapsed ? (
               <path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z" />
             ) : (
               <path d="M.513 1.513A1.75 1.75 0 011.75 1h3.5c.55 0 1.07.26 1.4.7l.9 1.2a.25.25 0 00.2.1h6.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0114.25 15H1.75A1.75 1.75 0 010 13.25V2.75c0-.464.184-.91.513-1.237z" />
             )}
           </svg>
-          <span className="truncate font-medium">{node.name}</span>
+          <span className="truncate font-medium text-xs">{node.name}</span>
         </div>
         {!isCollapsed && node.children.map((child) => renderTreeNode(child, depth + 1))}
       </div>
@@ -286,74 +290,97 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-2 text-[var(--text-tertiary)]">
-        <svg className="animate-spin h-5 w-5 opacity-50" viewBox="0 0 24 24" fill="none">
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-[var(--text-tertiary)]">
+        <svg className="animate-spin h-5 w-5 opacity-40" viewBox="0 0 24 24" fill="none">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
         </svg>
-        <span className="text-xs">Loading PR diff</span>
+        <span className="text-xs">Loading PR diff…</span>
       </div>
     );
   }
 
+  const progressPct = files.length > 0 ? (viewedFiles.size / files.length) * 100 : 0;
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--border-color)] flex-shrink-0">
+      <div className="flex items-center gap-2 pl-3 pr-10 py-2 border-b border-[var(--border-color)] flex-shrink-0">
         <button
           onClick={onBack}
-          className="flex items-center gap-1 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--bg-tertiary)]"
+          className="flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors px-2 py-1 rounded-lg hover:bg-[var(--bg-tertiary)] flex-shrink-0"
         >
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-            <path fillRule="evenodd" d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z" />
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
           </svg>
-          PRs
+          Pull Requests
         </button>
-        <div className="w-px h-4 bg-[var(--border-color)]" />
+        <div className="w-px h-4 bg-[var(--border-color)] flex-shrink-0" />
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          <span className="text-[11px] font-mono text-[var(--text-tertiary)] flex-shrink-0">#{prNumber}</span>
-          <span className="text-xs text-[var(--text-primary)] truncate font-medium">{prTitle}</span>
+          <span className="text-[11px] font-mono font-semibold text-[var(--accent)] flex-shrink-0">#{prNumber}</span>
+          <span className="text-xs text-[var(--text-primary)] truncate font-semibold">{prTitle}</span>
         </div>
+
+        {/* Right side controls */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          <span className="text-[10px] text-[var(--text-tertiary)] tabular-nums">
-            {viewedFiles.size}/{files.length}
-          </span>
+          {/* Progress bar */}
+          {files.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-[var(--text-tertiary)] tabular-nums whitespace-nowrap">
+                {viewedFiles.size}/{files.length}
+              </span>
+              <div className="w-14 h-1.5 rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${progressPct}%`,
+                    background: progressPct === 100 ? "var(--success)" : "var(--accent)",
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
           <div className="w-px h-3.5 bg-[var(--border-color)]" />
+
           <button
             onClick={() => openUrl(prUrl)}
-            className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors p-1 rounded hover:bg-[var(--bg-tertiary)]"
+            className="p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
             title="Open on GitHub"
           >
             <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
               <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
             </svg>
           </button>
+
           {onAskClaude && selectedFile && (
             <button
               onClick={handleAskClaude}
-              className="text-[10px] text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--accent)]/10 font-medium"
+              className="text-[11px] font-medium text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors px-2 py-1 rounded-lg hover:bg-[var(--accent)]/10"
             >
               Ask Claude
             </button>
           )}
+
           {onClaudeReview && (
             <button
               onClick={() => onClaudeReview(prNumber, headRefName)}
-              className="text-[var(--text-tertiary)] hover:text-[var(--accent)] transition-colors p-1 rounded hover:bg-[var(--bg-tertiary)]"
+              className="p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
               title="Claude review in new session"
             >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M1.5 2.75a.25.25 0 01.25-.25h8.5a.25.25 0 01.25.25v5.5a.25.25 0 01-.25.25h-3.5a.75.75 0 00-.53.22L3.5 11.44V9.25a.75.75 0 00-.75-.75h-1a.25.25 0 01-.25-.25v-5.5zM1.75 1A1.75 1.75 0 000 2.75v5.5C0 9.216.784 10 1.75 10H2v1.543a1.457 1.457 0 002.487 1.03L7.061 10h3.189A1.75 1.75 0 0012 8.25v-5.5A1.75 1.75 0 0010.25 1h-8.5zM14.5 4.75a.25.25 0 00-.25-.25h-.5a.75.75 0 110-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0114.25 12H14v1.543a1.457 1.457 0 01-2.487 1.03L9.22 12.28a.75.75 0 111.06-1.06l2.22 2.22v-2.19a.75.75 0 01.75-.75h1a.25.25 0 00.25-.25v-5.5z" />
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
               </svg>
             </button>
           )}
+
           <button
             onClick={() => {
               const next = diffMode === "unified" ? "split" : "unified";
               setDiffMode(next);
               localStorage.setItem("git-diff-mode", next);
             }}
-            className="text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors px-1.5 py-0.5 rounded hover:bg-[var(--bg-tertiary)]"
+            className="text-[11px] font-medium text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors px-2 py-1 rounded-lg hover:bg-[var(--bg-tertiary)]"
           >
             {diffMode === "unified" ? "Split" : "Unified"}
           </button>
@@ -361,29 +388,29 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       </div>
 
       {files.length === 0 ? (
-        <div className="flex flex-col items-center justify-center flex-1 gap-2 text-[var(--text-tertiary)]">
-          <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" className="opacity-40">
-            <path fillRule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z" />
+        <div className="flex flex-col items-center justify-center flex-1 gap-3 text-[var(--text-tertiary)]">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-25">
+            <polyline points="20 6 9 17 4 12" />
           </svg>
-          <span className="text-xs">No files changed</span>
+          <span className="text-xs font-medium">No files changed</span>
         </div>
       ) : (
         <div className="flex flex-1 min-h-0">
-          {/* File list */}
-          <div className="w-64 flex-shrink-0 border-r border-[var(--border-color)] overflow-y-auto py-1 px-1">
+          {/* File tree */}
+          <div className="w-72 flex-shrink-0 border-r border-[var(--border-color)] overflow-y-auto py-2 px-1.5" style={{ background: "var(--drawer-bg)" }}>
             {fileTree.map((node) => renderTreeNode(node, 0))}
           </div>
 
-          {/* Diff viewer with inline comments */}
+          {/* Diff viewer */}
           <div className="flex-1 w-0 flex flex-col bg-[var(--bg-primary)]">
             <div className="flex-1 overflow-auto">
               {diffLoading ? (
-                <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-sm gap-2">
-                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] gap-2">
+                  <svg className="animate-spin h-4 w-4 opacity-50" viewBox="0 0 24 24" fill="none">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
-                  Loading diff...
+                  <span className="text-sm">Loading diff…</span>
                 </div>
               ) : selectedFile ? (
                 <DiffViewer
@@ -404,8 +431,12 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
                   }}
                 />
               ) : (
-                <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-sm">
-                  Select a file to review
+                <div className="flex flex-col items-center justify-center h-full gap-2 text-[var(--text-tertiary)]">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-25">
+                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                  </svg>
+                  <span className="text-sm">Select a file to review</span>
                 </div>
               )}
             </div>

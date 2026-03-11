@@ -537,17 +537,7 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* New session button — full-width at bottom */}
-      <button
-        onClick={onCreateSession}
-        className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] border border-[var(--border-subtle)] hover:border-[var(--border-color)] transition-all duration-150 shrink-0"
-      >
-        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-        </svg>
-        New Session
-      </button>
-      {appVersion && (
+{appVersion && (
         <div className="pt-1 text-center">
           <span className="text-[10px] text-[var(--text-tertiary)]">v{appVersion}</span>
         </div>
