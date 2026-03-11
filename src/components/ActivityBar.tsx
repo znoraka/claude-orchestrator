@@ -31,16 +31,14 @@ function ActivityIcon({
     <button
       onClick={onClick}
       data-tooltip={tooltip}
-      className={`activity-tooltip relative w-10 h-10 flex items-center justify-center rounded-xl transition-all duration-150 ${
+      className={`activity-tooltip relative w-10 h-10 flex items-center justify-center rounded-xl ${
         active
           ? "bg-[var(--accent)]/20 text-[var(--accent)]"
           : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-white/5"
       }`}
     >
       {children}
-      {active && (
-        <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r bg-[var(--accent)]" />
-      )}
+      <span className={`absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r bg-[var(--accent)] ${active ? "opacity-100" : "opacity-0"}`} />
     </button>
   );
 }
