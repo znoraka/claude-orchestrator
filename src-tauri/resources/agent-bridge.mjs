@@ -55,6 +55,7 @@ let claudeSessionId = resume || null;
 let abortController = null;
 let queryInProgress = false;
 let queryGeneration = 0;
+let pendingAbort = false;
 
 // Interaction slots for AskUserQuestion and permission prompts
 const askUserSlot = createBlockingSlot();
@@ -67,6 +68,7 @@ startStdinReader(handleStdinMessage, () => process.exit(0));
 async function handleStdinMessage(msg) {
   if (msg.type === "abort") {
     queryGeneration++;  // invalidate the current query's finally block
+    pendingAbort = true;
     if (abortController) {
       abortController.abort();
       abortController = null;
@@ -136,7 +138,7 @@ async function runQuery(userMessage) {
     permissionMode: state.currentPermissionMode,
     allowDangerouslySkipPermissions: isBypass,
     abortController,
-    settingSources: ["project"],
+    settingSources: ["project", "user"],
     // Handle AskUserQuestion and permission prompts via the SDK's canUseTool protocol.
     // In bypassPermissions mode, only AskUserQuestion triggers this callback.
     // In plan mode, write/execute tools also trigger it — we forward to the frontend.
@@ -245,11 +247,14 @@ async function runQuery(userMessage) {
   } catch (err) {
     log(`query() error: ${err.message}\n${err.stack}`);
     if (err.name === "AbortError") {
-      emit({ type: "aborted" });
-    } else {
+      // Abort handler already emitted "aborted" and set pendingAbort
+      if (!pendingAbort) emit({ type: "aborted" });
+    } else if (!pendingAbort) {
+      // Only emit non-abort errors; skip if abort was already handled
       emit({ type: "error", error: err.message, stack: err.stack });
     }
   } finally {
+    pendingAbort = false;
     // Only reset if this query is still the current one (not superseded by abort + new query)
     if (queryGeneration === myGeneration) {
       abortController = null;

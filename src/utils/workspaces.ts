@@ -54,7 +54,7 @@ export function deriveWorkspaces(sessions: Session[]): Workspace[] {
     const worktrees: Worktree[] = [];
     for (const [dir, dirSessions] of worktreeMap) {
       const sorted = [...dirSessions].sort((a, b) =>
-        (b.lastMessageAt - a.lastMessageAt) || (b.createdAt - a.createdAt)
+        (b.lastActiveAt - a.lastActiveAt) || (b.createdAt - a.createdAt)
       );
       const isMain = dir === repo;
       worktrees.push({

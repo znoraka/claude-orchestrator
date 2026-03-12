@@ -16681,12 +16681,14 @@ var claudeSessionId = resume || null;
 var abortController = null;
 var queryInProgress = false;
 var queryGeneration = 0;
+var pendingAbort = false;
 var askUserSlot = createBlockingSlot();
 var permissionSlot = createBlockingSlot();
 startStdinReader(handleStdinMessage, () => process.exit(0));
 async function handleStdinMessage(msg) {
   if (msg.type === "abort") {
     queryGeneration++;
+    pendingAbort = true;
     if (abortController) {
       abortController.abort();
       abortController = null;
@@ -16746,7 +16748,7 @@ async function runQuery(userMessage) {
     permissionMode: state.currentPermissionMode,
     allowDangerouslySkipPermissions: isBypass,
     abortController,
-    settingSources: ["project"],
+    settingSources: ["project", "user"],
     // Handle AskUserQuestion and permission prompts via the SDK's canUseTool protocol.
     // In bypassPermissions mode, only AskUserQuestion triggers this callback.
     // In plan mode, write/execute tools also trigger it — we forward to the frontend.
@@ -16836,11 +16838,12 @@ async function runQuery(userMessage) {
     log(`query() error: ${err.message}
 ${err.stack}`);
     if (err.name === "AbortError") {
-      emit({ type: "aborted" });
-    } else {
+      if (!pendingAbort) emit({ type: "aborted" });
+    } else if (!pendingAbort) {
       emit({ type: "error", error: err.message, stack: err.stack });
     }
   } finally {
+    pendingAbort = false;
     if (queryGeneration === myGeneration) {
       abortController = null;
       queryInProgress = false;

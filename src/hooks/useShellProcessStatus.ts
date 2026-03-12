@@ -8,7 +8,7 @@ import { useAppVisible } from "./useAppVisible";
  * Pauses polling when the app is not visible.
  */
 export function useShellProcessStatus(
-  shellTabs: Map<string, { id: string; num: number }[]>,
+  shellTabs: { id: string; directory: string }[],
   pollInterval = 5000
 ): Map<string, number> {
   const [activeCounts, setActiveCounts] = useState<Map<string, number>>(new Map());
@@ -22,7 +22,7 @@ export function useShellProcessStatus(
 
     const poll = async () => {
       const tabs = shellTabsRef.current;
-      if (tabs.size === 0) {
+      if (tabs.length === 0) {
         setActiveCounts((prev) => (prev.size === 0 ? prev : new Map()));
         return;
       }
@@ -30,16 +30,14 @@ export function useShellProcessStatus(
       const next = new Map<string, number>();
       const promises: Promise<void>[] = [];
 
-      for (const [dir, shells] of tabs) {
-        for (const shell of shells) {
-          promises.push(
-            invoke<boolean>("pty_has_child_process", { sessionId: shell.id })
-              .then((has) => {
-                if (has) next.set(dir, (next.get(dir) || 0) + 1);
-              })
-              .catch(() => {})
-          );
-        }
+      for (const tab of tabs) {
+        promises.push(
+          invoke<boolean>("pty_has_child_process", { sessionId: tab.id })
+            .then((has) => {
+              if (has) next.set(tab.directory, (next.get(tab.directory) || 0) + 1);
+            })
+            .catch(() => {})
+        );
       }
 
       await Promise.all(promises);

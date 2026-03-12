@@ -1457,7 +1457,8 @@ const AgentChat = memo(function AgentChat({
 
     // Abort
     if (msgType === "aborted") {
-      stopGenerating();
+      // Guard: skip if a new query has already started (abortedRef cleared in sendMessage)
+      if (abortedRef.current) stopGenerating();
       setCurrentTodo(null);
       setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
@@ -1466,17 +1467,24 @@ const AgentChat = memo(function AgentChat({
 
     // Error
     if (msgType === "error") {
+      const errorText = (msg.error as string) || "";
+      // Suppress "aborted by user" errors — treat like a silent abort
+      // (SDK's AbortError class doesn't set name="AbortError", so the bridge
+      // emits it as a regular error instead of the "aborted" event type)
+      if (errorText.includes("aborted by user")) {
+        // Guard: skip if a new query has already started
+        if (abortedRef.current) {
+          stopGenerating();
+          setCurrentTodo(null);
+          setPendingQuestion(null);
+          accumulatedBlocksRef.current.clear();
+        }
+        return;
+      }
       stopGenerating();
       setCurrentTodo(null);
       setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
-      // Suppress "aborted by user" errors — treat like a silent abort
-      // (SDK's AbortError class doesn't set name="AbortError", so the bridge
-      // emits it as a regular error instead of the "aborted" event type)
-      const errorText = (msg.error as string) || "";
-      if (errorText.includes("aborted by user")) {
-        return;
-      }
       setMessages((prev) => [
         ...prev.filter((m) => !m.isStreaming),
         {
@@ -4258,7 +4266,7 @@ function ConsolidatedToolGroup({
         return input.description as string || "";
       case "TodoWrite": {
         const todos = input.todos as Array<{ content: string; status: string }> | undefined;
-        if (!todos || todos.length === 0) return "";
+        if (!Array.isArray(todos) || todos.length === 0) return "";
         const completed = todos.filter(t => t.status === "completed").length;
         const inProgress = todos.filter(t => t.status === "in_progress").length;
         const pending = todos.filter(t => t.status === "pending").length;

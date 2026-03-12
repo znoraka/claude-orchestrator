@@ -61,6 +61,25 @@ echo "Building ${APP_NAME} ${TAG}..."
 # ── Build ─────────────────────────────────────────────────────────
 pnpm tauri build --bundles app
 
+# ── Create DMG manually (Tauri --bundles dmg is broken on macOS 26) ──
+DMG_NAME="${APP_NAME}_${VERSION}_aarch64.dmg"
+DMG_STAGING="$(mktemp -d)"
+DMG_OUTPUT_DIR="${BUNDLE_DIR}/dmg"
+DMG_OUTPUT="${DMG_OUTPUT_DIR}/${DMG_NAME}"
+
+echo "Creating DMG: ${DMG_NAME}..."
+cp -R "${BUNDLE_DIR}/macos/${APP_NAME}.app" "${DMG_STAGING}/"
+ln -s /Applications "${DMG_STAGING}/Applications"
+mkdir -p "${DMG_OUTPUT_DIR}"
+hdiutil create \
+  -volname "${APP_NAME}" \
+  -srcfolder "${DMG_STAGING}" \
+  -ov \
+  -format UDZO \
+  -o "${DMG_OUTPUT}"
+rm -rf "${DMG_STAGING}"
+echo "DMG created: ${DMG_OUTPUT}"
+
 # ── Locate artifacts ──────────────────────────────────────────────
 DMG=$(find "${BUNDLE_DIR}/dmg" -name '*.dmg' 2>/dev/null | head -1)
 APP=$(find "${BUNDLE_DIR}/macos" -name '*.app' 2>/dev/null | head -1)

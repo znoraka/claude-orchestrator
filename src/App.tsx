@@ -11,7 +11,7 @@ import UsagePanel from "./components/UsagePanel";
 import FileEditor from "./components/FileEditor";
 import { repoColor } from "./components/SessionTab";
 import { prewarmContextMenu } from "./components/ContextMenu";
-import { repoRootDir } from "./utils/workspaces";
+import { repoRootDir, worktreeName } from "./utils/workspaces";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
 import { AGENT_PROVIDERS, defaultModelForProvider, jsonlDirectory, modelsForProvider, type AgentProvider, type ModelOption, type Session } from "./types";
@@ -386,13 +386,11 @@ export default function App() {
   // Tauri v2 event names only allow alphanumeric, '-', '/', ':', '_'.
   const sanitizeDir = (dir: string) => dir.replace(/[^a-zA-Z0-9\-_/:]/g, "_");
 
-  // Multiple shell tabs per directory
-  type ShellTab = { id: string; num: number };
-  const [shellTabs, setShellTabs] = useState<Map<string, ShellTab[]>>(new Map());
-  const [activeShellId, setActiveShellId] = useState<Map<string, string>>(new Map());
-
-  const shellTabsForDir = (dir: string) => shellTabs.get(dir) || [];
-  const activeShellForDir = (dir: string) => activeShellId.get(dir) || "";
+  // Global shell tabs (not scoped to any workspace)
+  type ShellTab = { id: string; num: number; directory: string };
+  const [shellTabs, setShellTabs] = useState<ShellTab[]>([]);
+  const [activeShellId, setActiveShellId] = useState<string | null>(null);
+  const [showShellPicker, setShowShellPicker] = useState(false);
 
   const shellCounter = useRef(0);
   const shellProcessDirs = useShellProcessStatus(shellTabs);
@@ -406,21 +404,12 @@ export default function App() {
     const sid = `shell-${sanitizeDir(dir)}-${num}`;
     try {
       await invoke("create_shell_pty_session", { sessionId: sid, directory: dir });
-      const tab: ShellTab = { id: sid, num };
-      setShellTabs((prev) => {
-        const next = new Map(prev);
-        next.set(dir, [...(prev.get(dir) || []), tab]);
-        return next;
-      });
-      setActiveShellId((prev) => new Map(prev).set(dir, sid));
+      const tab: ShellTab = { id: sid, num, directory: dir };
+      setShellTabs((prev) => [...prev, tab]);
+      setActiveShellId(sid);
     } catch (err) {
       console.error("Failed to create shell PTY:", err);
     }
-  };
-
-  const ensureShellPty = async (dir: string) => {
-    if ((shellTabs.get(dir) || []).length > 0) return;
-    await addShellTab(dir);
   };
 
   // Ref to notify PRPanel to reset to list view
@@ -433,13 +422,15 @@ export default function App() {
       return;
     }
     setActivePanel(panel);
-    if (panel === "shell") ensureShellPty(panelDirectory);
   };
 
-  // Auto-create shell PTY when panelDirectory changes while shell is active
+  // Close shell picker when clicking outside
   useEffect(() => {
-    if (activePanel === "shell") ensureShellPty(panelDirectory);
-  }, [panelDirectory]);
+    if (!showShellPicker) return;
+    const close = () => setShowShellPicker(false);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [showShellPicker]);
 
   // Cmd+N to open new session dialog, Cmd+G/P/T to toggle panels
   useEffect(() => {
@@ -560,9 +551,19 @@ export default function App() {
 
   // Filtered workspaces and recent dirs for search mode
   const filteredWorkspaces = useMemo(() => {
-    if (!searchFilter) return workspaces;
+    // Filter out worktrees where all sessions are archived
+    const activeWorkspaces = workspaces
+      .map((ws) => ({
+        ...ws,
+        worktrees: ws.worktrees.filter(
+          (wt) => wt.sessions.length === 0 || wt.sessions.some((s) => !s.archived)
+        ),
+      }))
+      .filter((ws) => ws.worktrees.length > 0);
+
+    if (!searchFilter) return activeWorkspaces;
     const lower = searchFilter.toLowerCase();
-    return workspaces.flatMap((ws) => {
+    return activeWorkspaces.flatMap((ws) => {
       const repoName = ws.directory.split("/").filter(Boolean).pop() || "";
       if (repoName.toLowerCase().includes(lower)) return [ws];
       const filteredWts = ws.worktrees.filter((wt) => {
@@ -889,123 +890,177 @@ export default function App() {
                 />
               </div>
 
-              {/* Shell tabs */}
-              {shellTabs.size > 0 && (
-                <div
-                  className={`absolute inset-0 bg-[var(--bg-primary)] flex flex-col ${activePanel === "shell" ? "animate-slide-in-right" : ""}`}
-                  style={{
-                    zIndex: activePanel === "shell" && shellTabsForDir(panelDirectory).length > 0 ? 2 : 0,
-                    pointerEvents: activePanel === "shell" && shellTabsForDir(panelDirectory).length > 0 ? "auto" : "none",
-                    visibility: activePanel === "shell" && shellTabsForDir(panelDirectory).length > 0 ? "visible" : "hidden",
-                  }}
-                >
-                  {/* Shell tab bar */}
-                  <div className="flex items-center gap-0.5 px-2 py-0.5 border-b border-[var(--border-color)] flex-shrink-0">
-                    {shellTabsForDir(panelDirectory).map((tab, i) => {
-                      const isActive = tab.id === activeShellForDir(panelDirectory);
-                      return (
-                        <div key={tab.id} className="flex items-center group">
-                          <button
-                            onClick={() => setActiveShellId((prev) => new Map(prev).set(panelDirectory, tab.id))}
-                            className={`px-2 py-0.5 text-[11px] rounded-l transition-colors ${
-                              isActive
-                                ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
-                                : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
-                            }`}
-                          >
-                            Shell {i + 1}
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              // Remove this tab
-                              setShellTabs((prev) => {
-                                const next = new Map(prev);
-                                const tabs = (prev.get(panelDirectory) || []).filter((t) => t.id !== tab.id);
-                                if (tabs.length === 0) next.delete(panelDirectory);
-                                else next.set(panelDirectory, tabs);
-                                return next;
-                              });
-                              // If closing the active tab, switch to another or close panel
-                              if (isActive) {
-                                const remaining = shellTabsForDir(panelDirectory).filter((t) => t.id !== tab.id);
-                                if (remaining.length > 0) {
-                                  const nextTab = remaining[Math.min(i, remaining.length - 1)];
-                                  setActiveShellId((prev) => new Map(prev).set(panelDirectory, nextTab.id));
-                                } else {
-                                  setActiveShellId((prev) => { const next = new Map(prev); next.delete(panelDirectory); return next; });
-                                  setActivePanel(null);
-                                }
-                              }
-                            }}
-                            className={`px-1 py-0.5 text-[11px] rounded-r transition-colors opacity-0 group-hover:opacity-100 ${
-                              isActive
-                                ? "text-[var(--text-tertiary)] bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
-                                : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
-                            }`}
-                            title="Close shell"
-                          >
-                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                          </button>
-                        </div>
-                      );
-                    })}
-                    <button
-                      onClick={() => addShellTab(panelDirectory)}
-                      className="px-1.5 py-0.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
-                      title="New shell tab"
-                    >
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                      </svg>
-                    </button>
+              {/* Shell panel — global view, not scoped to active workspace */}
+              <div
+                className={`absolute inset-0 bg-[var(--bg-primary)] flex flex-col ${activePanel === "shell" ? "animate-slide-in-right" : ""}`}
+                style={{
+                  zIndex: activePanel === "shell" ? 2 : 0,
+                  pointerEvents: activePanel === "shell" ? "auto" : "none",
+                  visibility: activePanel === "shell" ? "visible" : "hidden",
+                }}
+              >
+                {shellTabs.length === 0 ? (
+                  /* Empty state — workspace/worktree picker */
+                  <div className="flex-1 flex flex-col items-center justify-center gap-3">
+                    <div className="text-sm font-medium text-[var(--text-primary)]">Open a terminal</div>
+                    <div className="w-full max-w-xs overflow-auto rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)]">
+                      {workspaces.map((ws) => {
+                        const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
+                        return (
+                          <div key={ws.id}>
+                            <div className="px-3 py-1.5 text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider border-b border-[var(--border-subtle)]">{repoName}</div>
+                            {ws.worktrees.map((wt) => {
+                              const wtName = worktreeName(wt.path);
+                              return (
+                                <button
+                                  key={wt.path}
+                                  onClick={() => addShellTab(wt.path)}
+                                  className="w-full text-left px-4 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                                >
+                                  {wtName}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                  {/* Shell terminals — render ALL directories to keep xterm instances mounted across workspace switches */}
-                  <div className="flex-1 min-h-0 relative">
-                    {[...shellTabs.entries()].map(([dir, tabs]) =>
-                      tabs.map((tab) => {
-                        const isThisDir = dir === panelDirectory;
-                        const isTabActive = tab.id === activeShellForDir(dir);
+                ) : (
+                  <>
+                    {/* Shell tab bar */}
+                    <div className="flex items-center gap-0.5 px-2 py-0.5 border-b border-[var(--border-color)] flex-shrink-0">
+                      {shellTabs.map((tab, i) => {
+                        const isActive = tab.id === activeShellId;
+                        const repoName = repoRootDir(tab.directory).split("/").filter(Boolean).pop() || tab.directory;
+                        const wtName = worktreeName(tab.directory);
+                        const label = wtName === "main" ? repoName : `${repoName} / ${wtName}`;
+                        return (
+                          <div key={tab.id} className="flex items-center group">
+                            <button
+                              onClick={() => setActiveShellId(tab.id)}
+                              className={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-l transition-colors ${
+                                isActive
+                                  ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
+                                  : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
+                              }`}
+                            >
+                              <span
+                                className="w-1.5 h-1.5 rounded-full shrink-0 opacity-70"
+                                style={{ background: repoColor(tab.directory) }}
+                              />
+                              {label}
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setShellTabs((prev) => {
+                                  const remaining = prev.filter((t) => t.id !== tab.id);
+                                  if (isActive) {
+                                    if (remaining.length > 0) {
+                                      setActiveShellId(remaining[Math.min(i, remaining.length - 1)].id);
+                                    } else {
+                                      setActiveShellId(null);
+                                      setActivePanel(null);
+                                    }
+                                  }
+                                  return remaining;
+                                });
+                              }}
+                              className={`px-1 py-0.5 text-[11px] rounded-r transition-colors opacity-0 group-hover:opacity-100 ${
+                                isActive
+                                  ? "text-[var(--text-tertiary)] bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+                                  : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
+                              }`}
+                              title="Close shell"
+                            >
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </div>
+                        );
+                      })}
+                      {/* "+" button with workspace/worktree picker dropdown */}
+                      <div className="relative" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => setShowShellPicker((v) => !v)}
+                          className="px-1.5 py-0.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
+                          title="New shell tab"
+                        >
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                          </svg>
+                        </button>
+                        {showShellPicker && (
+                          <div className="absolute top-full left-0 mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg min-w-[180px] max-h-64 overflow-auto py-1">
+                            {workspaces.map((ws) => {
+                              const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
+                              return (
+                                <div key={ws.id}>
+                                  <div className="px-3 py-1 text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">{repoName}</div>
+                                  {ws.worktrees.map((wt) => {
+                                    const wtName = worktreeName(wt.path);
+                                    return (
+                                      <button
+                                        key={wt.path}
+                                        onClick={() => {
+                                          setShowShellPicker(false);
+                                          addShellTab(wt.path);
+                                        }}
+                                        className="w-full text-left px-4 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                                      >
+                                        {wtName}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    {/* Shell terminals — all mounted, visibility driven by activeShellId */}
+                    <div className="flex-1 min-h-0 relative">
+                      {shellTabs.map((tab) => {
+                        const isTabActive = tab.id === activeShellId;
                         return (
                           <div
                             key={tab.id}
                             className="absolute inset-0"
                             style={{
-                              zIndex: isThisDir && isTabActive ? 1 : 0,
-                              pointerEvents: isThisDir && isTabActive ? "auto" : "none",
-                              visibility: isThisDir && isTabActive ? "visible" : "hidden",
+                              zIndex: isTabActive ? 1 : 0,
+                              pointerEvents: isTabActive ? "auto" : "none",
+                              visibility: isTabActive ? "visible" : "hidden",
                             }}
                           >
                             <Terminal
                               sessionId={tab.id}
-                              isActive={activePanel === "shell" && isThisDir && isTabActive}
+                              isActive={activePanel === "shell" && isTabActive}
                               onExit={() => {
                                 setShellTabs((prev) => {
-                                  const next = new Map(prev);
-                                  const remaining = (prev.get(dir) || []).filter((t) => t.id !== tab.id);
-                                  if (remaining.length === 0) next.delete(dir);
-                                  else next.set(dir, remaining);
-                                  return next;
+                                  const remaining = prev.filter((t) => t.id !== tab.id);
+                                  if (tab.id === activeShellId) {
+                                    if (remaining.length > 0) {
+                                      setActiveShellId(remaining[0].id);
+                                    } else {
+                                      setActiveShellId(null);
+                                      setActivePanel(null);
+                                    }
+                                  }
+                                  return remaining;
                                 });
-                                const remaining = (shellTabs.get(dir) || []).filter((t) => t.id !== tab.id);
-                                if (remaining.length > 0) {
-                                  setActiveShellId((prev) => new Map(prev).set(dir, remaining[0].id));
-                                } else {
-                                  setActiveShellId((prev) => { const next = new Map(prev); next.delete(dir); return next; });
-                                  if (isThisDir) setActivePanel(null);
-                                }
                               }}
                               onTitleChange={() => {}}
                             />
                           </div>
                         );
-                      })
-                    )}
-                  </div>
-                </div>
-              )}
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
               </div>
             </div>
 
@@ -1239,7 +1294,7 @@ export default function App() {
                         const isMain = wt.isMain;
                         const wtLabel = isMain ? "main" : wt.path.split("/").filter(Boolean).pop() || wt.path;
                         const branch = dialogBranches.get(wt.path) || "";
-                        const sessionCount = wt.sessions.length;
+                        const sessionCount = wt.sessions.filter((s) => !s.archived).length;
 
                         return (
                           <button

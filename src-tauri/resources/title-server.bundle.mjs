@@ -17230,7 +17230,7 @@ var log = (msg) => {
   } catch {
   }
 };
-var MODEL = "claude-haiku-4-5-20251001";
+var MODEL = "claude-sonnet-4-6";
 var TITLE_SYSTEM_PROMPT = "You are a title generator. Given a user message, respond with ONLY a 4-5 word title summarizing the request. No quotes, no punctuation, no explanation.";
 var CLASSIFY_SYSTEM_PROMPT = `You classify coding requests as "simple" or "complex".
 

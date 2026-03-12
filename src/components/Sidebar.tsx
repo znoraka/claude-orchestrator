@@ -55,6 +55,9 @@ export default function Sidebar({
     try { const v = localStorage.getItem("sidebar:expandedWorktrees"); return v ? new Set(JSON.parse(v)) : new Set(); } catch { return new Set(); }
   });
   const [showArchived, setShowArchived] = useState(false);
+  const [keyboardSelectedId, setKeyboardSelectedId] = useState<string | null>(null);
+  const sessionItemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const flatSessionsRef = useRef<Session[]>([]);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => {});
@@ -73,6 +76,7 @@ export default function Sidebar({
         // Stop propagation so the App-level Cmd+K (command palette) doesn't also fire
         e.stopPropagation();
         searchRef.current?.focus();
+        setKeyboardSelectedId(flatSessionsRef.current[0]?.id ?? null);
       }
     };
     document.addEventListener("keydown", handleKeyDown);
@@ -207,6 +211,51 @@ export default function Sidebar({
       .filter((workspace) => workspace.worktrees.length > 0);
   }, [workspaces, filterQ, sessionMatchesFilter]);
 
+  const flatSessions = useMemo(() => {
+    const list = filteredWorkspaces.flatMap((ws) =>
+      ws.worktrees.flatMap((wt) =>
+        wt.sessions.filter((s) => !s.parentSessionId && !s.archived)
+      )
+    );
+    flatSessionsRef.current = list;
+    return list;
+  }, [filteredWorkspaces]);
+
+  // Auto-select first item when filter changes
+  useEffect(() => {
+    setKeyboardSelectedId(flatSessions[0]?.id ?? null);
+  }, [filterQ, flatSessions]);
+
+  // Scroll keyboard-selected item into view
+  useEffect(() => {
+    if (!keyboardSelectedId) return;
+    const el = sessionItemRefs.current.get(keyboardSelectedId);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [keyboardSelectedId]);
+
+  const handleSearchKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    const list = flatSessionsRef.current;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const idx = keyboardSelectedId ? list.findIndex((s) => s.id === keyboardSelectedId) : -1;
+      const next = e.key === "ArrowDown"
+        ? Math.min(idx + 1, list.length - 1)
+        : Math.max(idx - 1, 0);
+      setKeyboardSelectedId(list[next]?.id ?? null);
+    } else if (e.key === "Enter") {
+      if (keyboardSelectedId) {
+        onSelectSession(keyboardSelectedId);
+        setFilter("");
+        setKeyboardSelectedId(null);
+        searchRef.current?.blur();
+      }
+    } else if (e.key === "Escape") {
+      setFilter("");
+      setKeyboardSelectedId(null);
+      searchRef.current?.blur();
+    }
+  }, [keyboardSelectedId, onSelectSession]);
+
   const toggleRepo = (repoId: string) => {
     setCollapsedRepos((prev) => {
       const next = new Set(prev);
@@ -233,23 +282,32 @@ export default function Sidebar({
       ? { ...session, hasQuestion: youngest.hasQuestion, hasDraft: youngest.hasDraft, status: youngest.status }
       : session;
 
+    const isKeyboardSelected = session.id === keyboardSelectedId;
     return (
-      <SessionTab
+      <div
         key={session.id}
-        session={displaySession}
-        isActive={session.id === activeSessionId}
-        usage={displayUsage}
-        contentOnly={contentOnlyIds.has(session.id)}
-        unread={unreadSessions?.has(session.id)}
-        parentName={parentNameMap.get(session.id)}
-        childCount={childCountMap.get(session.id)}
-        onClick={() => onSelectSession(session.id)}
-        onRename={(name) => onRenameSession(session.id, name)}
-        onDelete={() => onDeleteSession(session.id)}
-        onArchive={onArchiveSession ? () => onArchiveSession(session.id) : undefined}
-        onUnarchive={onUnarchiveSession ? () => onUnarchiveSession(session.id) : undefined}
-        {...extraProps}
-      />
+        ref={(el) => {
+          if (el) sessionItemRefs.current.set(session.id, el);
+          else sessionItemRefs.current.delete(session.id);
+        }}
+        className={isKeyboardSelected ? "ring-1 ring-inset ring-[var(--accent)]/50 rounded-md" : undefined}
+      >
+        <SessionTab
+          session={displaySession}
+          isActive={session.id === activeSessionId}
+          usage={displayUsage}
+          contentOnly={contentOnlyIds.has(session.id)}
+          unread={unreadSessions?.has(session.id) && session.status !== "stopped"}
+          parentName={parentNameMap.get(session.id)}
+          childCount={childCountMap.get(session.id)}
+          onClick={() => onSelectSession(session.id)}
+          onRename={(name) => onRenameSession(session.id, name)}
+          onDelete={() => onDeleteSession(session.id)}
+          onArchive={onArchiveSession ? () => onArchiveSession(session.id) : undefined}
+          onUnarchive={onUnarchiveSession ? () => onUnarchiveSession(session.id) : undefined}
+          {...extraProps}
+        />
+      </div>
     );
   };
 
@@ -276,6 +334,7 @@ export default function Sidebar({
             ref={searchRef}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
             placeholder="Search sessions..."
             className="sidebar-search w-full bg-transparent border-0 border-b border-[var(--border-subtle)] rounded-none pl-7 pr-6 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-all duration-200"
           />
@@ -329,11 +388,7 @@ export default function Sidebar({
                   const important = filteredWorktrees
                     .flatMap((wt) => wt.sessions)
                     .filter((s) => !s.parentSessionId && !s.archived && isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
-                  return important.map((session) => (
-                    <div key={session.id}>
-                      {renderSession(session, { hideDirectory: true })}
-                    </div>
-                  ));
+                  return important.map((session) => renderSession(session, { hideDirectory: true }));
                 })()}
 
                 {/* Worktrees */}
@@ -403,11 +458,7 @@ export default function Sidebar({
                         {/* Important sessions shown even when worktree is collapsed */}
                         {isWtCollapsed && hasMultipleWorktrees && (() => {
                           const important = wt.sessions.filter((s) => !s.parentSessionId && !s.archived && isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
-                          return important.map((session) => (
-                            <div key={session.id}>
-                              {renderSession(session, { hideDirectory: true })}
-                            </div>
-                          ));
+                          return important.map((session) => renderSession(session, { hideDirectory: true }));
                         })()}
 
                         {/* Sessions */}
@@ -441,11 +492,7 @@ export default function Sidebar({
                                   Show less
                                 </button>
                               )}
-                              {visible.map((session) => (
-                                <div key={session.id}>
-                                  {renderSession(session, { hideDirectory: true })}
-                                </div>
-                              ))}
+                              {visible.map((session) => renderSession(session, { hideDirectory: true }))}
                               {hiddenCount > 0 && (
                                 <button
                                   onClick={() => setExpandedWorktrees((prev) => {
@@ -487,7 +534,7 @@ export default function Sidebar({
                                       {archivedSessions.length} archived
                                     </button>
                                     {showArchived && archivedSessions.map((session) => (
-                                      <div key={session.id} className="opacity-50">
+                                      <div key={`archived-${session.id}`} className="opacity-50">
                                         {renderSession(session, { hideDirectory: true })}
                                       </div>
                                     ))}

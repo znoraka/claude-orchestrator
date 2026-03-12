@@ -866,7 +866,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           ? session.parentSessionId
           : session.id;
         const isTargetActive = prevActiveSessionIdRef.current === targetId;
-        if (!isTargetActive) {
+        const targetSession = sessionsRef.current.find(s => s.id === targetId);
+        if (!isTargetActive && targetSession?.status !== "stopped") {
           setUnreadSessions((prev) => {
             if (prev.has(targetId)) return prev;
             const next = new Set(prev);

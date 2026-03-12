@@ -37,7 +37,7 @@ const log = (msg) => {
   try { appendFileSync(logFile, line); } catch {}
 };
 
-const MODEL = "claude-haiku-4-5-20251001";
+const MODEL = "claude-sonnet-4-6";
 
 let freeModel = null;
 
