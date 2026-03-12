@@ -189,8 +189,8 @@ function bundleConsecutiveToolGroups(grouped: GroupedBlocks, isLastMessage: bool
     } else if (
       item.type === "content" &&
       (item.block.type === "thinking" ||
-       item.block.type === "redacted_thinking" ||
-       (item.block.type === "text" && (!item.block.text || !item.block.text.trim())))
+        item.block.type === "redacted_thinking" ||
+        (item.block.type === "text" && (!item.block.text || !item.block.text.trim())))
     ) {
       // Thinking blocks, redacted_thinking blocks, and empty text blocks don't end a tool run
       result.push(item);
@@ -316,7 +316,7 @@ function parseHistoryLines(
                 const matchIdx = block.type === "tool_use" && block.id
                   ? existing.findIndex((b: ContentBlock) => b.type === "tool_use" && b.id === block.id)
                   : block.type === "text"
-                  ? (() => {
+                    ? (() => {
                       let lastTextIdx = -1;
                       let lastToolUseIdx = -1;
                       for (let i = existing.length - 1; i >= 0; i--) {
@@ -326,7 +326,7 @@ function parseHistoryLines(
                       }
                       return lastTextIdx > lastToolUseIdx ? lastTextIdx : -1;
                     })()
-                  : -1;
+                    : -1;
                 if (matchIdx !== -1) {
                   existing[matchIdx] = block;
                 } else {
@@ -353,7 +353,7 @@ function parseHistoryLines(
               messageMap.set(chatMsg.id, chatMsg);
             }
           }
-        } catch {}
+        } catch { }
       }
       offset = end;
       if (offset < lines.length) {
@@ -587,7 +587,7 @@ const AgentChat = memo(function AgentChat({
     let cancelled = false;
     invoke<{ branch: string; files: unknown[]; is_git_repo: boolean }>("get_git_status", { directory: sessionDir })
       .then((result) => { if (!cancelled && result.is_git_repo) setCurrentBranch(result.branch); })
-      .catch(() => {});
+      .catch(() => { });
     return () => { cancelled = true; };
   }, [sessionDir]);
 
@@ -752,10 +752,10 @@ const AgentChat = memo(function AgentChat({
               const content = await invoke<string>("read_file", { filePath });
               const firstLine = content.split("\n")[0] || "";
               description = firstLine.trim().replace(/^#+\s*/, "");
-            } catch {}
+            } catch { }
             commands.push({ name, description, source });
           }
-        } catch {}
+        } catch { }
       };
 
       await scanDir(sessionDir + "/.claude/commands/", "project");
@@ -852,7 +852,7 @@ const AgentChat = memo(function AgentChat({
   // ── Windowed rendering: only render tail of messages ───────────
   const INITIAL_WINDOW = 40;
   const LOAD_MORE_CHUNK = 40;
-  const VIRTUAL_THRESHOLD = 80;
+  const VIRTUAL_THRESHOLD = 0;
   const [renderCount, setRenderCount] = useState(INITIAL_WINDOW);
 
   // Reset window when messages are bulk-loaded (history replay)
@@ -1023,7 +1023,7 @@ const AgentChat = memo(function AgentChat({
               const parsed = await parseHistoryLines(parentLines, sdkMessageToChatMessage);
               parentMessages = parsed.map(m => ({ ...m, id: `parent-${m.id}`, isParentMessage: true }));
             }
-          } catch {}
+          } catch { }
         }
         // Fallback: load from agent history (OpenCode sessions don't write Claude JSONL files)
         if (parentMessages.length === 0) {
@@ -1033,7 +1033,7 @@ const AgentChat = memo(function AgentChat({
               const parsed = await parseHistoryLines(histLines, sdkMessageToChatMessage);
               parentMessages = parsed.map(m => ({ ...m, id: `parent-${m.id}`, isParentMessage: true }));
             }
-          } catch {}
+          } catch { }
         }
       }
 
@@ -1052,7 +1052,7 @@ const AgentChat = memo(function AgentChat({
         if (cancelled) return;
         replayed = filterForkContext(replayed);
         if (replayed.length > 0) {
-          console.log(`[loadHistory] ${sessionId}: ${replayed.length} messages, first=${replayed[0].type}:${replayed[0].id.substring(0, 20)}, last=${replayed[replayed.length-1].type}:${replayed[replayed.length-1].id.substring(0, 20)}`);
+          console.log(`[loadHistory] ${sessionId}: ${replayed.length} messages, first=${replayed[0].type}:${replayed[0].id.substring(0, 20)}, last=${replayed[replayed.length - 1].type}:${replayed[replayed.length - 1].id.substring(0, 20)}`);
         }
         setMessages((prev) => {
           lastLoadedClaudeSessionIdRef.current = claudeSessionId ?? null;
@@ -1108,7 +1108,7 @@ const AgentChat = memo(function AgentChat({
             const replayed = await parseHistoryLines(tail.lines, sdkMessageToChatMessage);
             mergeMessages(replayed);
           }
-        } catch {}
+        } catch { }
       }
 
       // If no JSONL tail (brand-new session), fall back to in-memory history
@@ -1116,7 +1116,7 @@ const AgentChat = memo(function AgentChat({
         let lines: string[] = [];
         try {
           lines = await invoke<string[]>("get_agent_history", { sessionId });
-        } catch {}
+        } catch { }
         if (lines.length > 0) {
           const replayed = await parseHistoryLines(lines, sdkMessageToChatMessage);
           mergeMessages(replayed);
@@ -1136,7 +1136,7 @@ const AgentChat = memo(function AgentChat({
           if (cancelled) return;
           const replayed = await parseHistoryLines(allLines, sdkMessageToChatMessage);
           mergeMessages(replayed);
-        } catch {}
+        } catch { }
       }
 
       // Phase 3: Load child session messages (for parent sessions with forked children)
@@ -1150,13 +1150,13 @@ const AgentChat = memo(function AgentChat({
                   claudeSessionId: child.claudeSessionId,
                   directory: child.directory,
                 });
-              } catch {}
+              } catch { }
             }
             // Fallback: agent history for OpenCode child sessions
             if (childLines.length === 0) {
               try {
                 childLines = await invoke<string[]>("get_agent_history", { sessionId: child.id });
-              } catch {}
+              } catch { }
             }
             if (cancelled) return;
             if (childLines.length > 0) {
@@ -1185,7 +1185,7 @@ const AgentChat = memo(function AgentChat({
                 return [...prev, separator, ...childMessages];
               });
             }
-          } catch {}
+          } catch { }
         }
       }
     }
@@ -1222,7 +1222,7 @@ const AgentChat = memo(function AgentChat({
       // Set the selected model on the new agent
       if (currentModelRef.current !== "claude-opus-4-6") {
         const setModelMsg = JSON.stringify({ type: "set_model", model: currentModelRef.current });
-        invoke("send_agent_message", { sessionId, message: setModelMsg }).catch(() => {});
+        invoke("send_agent_message", { sessionId, message: setModelMsg }).catch(() => { });
       }
       // Auto-send pending prompt (e.g. from PR review) once the bridge is ready
       if (session?.pendingPrompt && !pendingPromptConsumedRef.current) {
@@ -1259,7 +1259,7 @@ const AgentChat = memo(function AgentChat({
                     onMarkTitleGeneratedRef.current?.();
                   }
                 })
-                .catch(() => {});
+                .catch(() => { });
             }
           }).catch((err) => {
             const errStr = String(err);
@@ -1313,7 +1313,7 @@ const AgentChat = memo(function AgentChat({
           const matchIdx = block.type === "tool_use" && block.id
             ? merged.findIndex((b) => b.type === "tool_use" && b.id === block.id)
             : block.type === "text"
-            ? (() => {
+              ? (() => {
                 let lastTextIdx = -1;
                 let lastToolUseIdx = -1;
                 for (let i = merged.length - 1; i >= 0; i--) {
@@ -1323,7 +1323,7 @@ const AgentChat = memo(function AgentChat({
                 }
                 return lastTextIdx > lastToolUseIdx ? lastTextIdx : -1;
               })()
-            : -1;
+              : -1;
           if (matchIdx !== -1) {
             merged[matchIdx] = block; // Update existing block in place
           } else {
@@ -1450,7 +1450,7 @@ const AgentChat = memo(function AgentChat({
       // Restore plan mode for next message (may have been switched to bypass by auto-classify)
       if (session?.permissionMode === "plan") {
         const restoreMsg = JSON.stringify({ type: "set_permission_mode", permissionMode: "plan" });
-        invoke("send_agent_message", { sessionId, message: restoreMsg }).catch(() => {});
+        invoke("send_agent_message", { sessionId, message: restoreMsg }).catch(() => { });
       }
       return;
     }
@@ -1576,7 +1576,7 @@ const AgentChat = memo(function AgentChat({
         try {
           const msg = JSON.parse(event.payload);
           handleAgentMessage(msg);
-        } catch {}
+        } catch { }
       }
     ));
 
@@ -1608,7 +1608,7 @@ const AgentChat = memo(function AgentChat({
                 if (apiId) msg.message.id = `child-${child.id}-${apiId}`;
               }
               handleAgentMessage(msg);
-            } catch {}
+            } catch { }
           }
         ));
 
@@ -1643,7 +1643,7 @@ const AgentChat = memo(function AgentChat({
       invoke("send_agent_message", {
         sessionId,
         message: JSON.stringify({ type: "get_usage" }),
-      }).catch(() => {});
+      }).catch(() => { });
     };
 
     // Fetch immediately, then every 30s
@@ -1834,7 +1834,7 @@ const AgentChat = memo(function AgentChat({
         stopGenerating();
         onUsageUpdateRef.current?.({ ...accumulatedUsageRef.current, isBusy: false });
         const deny = JSON.stringify({ type: "permission_response", allowed: false });
-        invoke("send_agent_message", { sessionId: targetSessionId, message: deny }).catch(() => {});
+        invoke("send_agent_message", { sessionId: targetSessionId, message: deny }).catch(() => { });
       }
     }
 
@@ -1999,7 +1999,7 @@ const AgentChat = memo(function AgentChat({
                 onMarkTitleGeneratedRef.current?.();
               }
             })
-            .catch(() => {});
+            .catch(() => { });
         }
       } catch (err) {
         const errStr = String(err);
@@ -2028,7 +2028,7 @@ const AgentChat = memo(function AgentChat({
   const handleAbort = useCallback(() => {
     queuedMessageRef.current = null;
     setQueuedMessage(null);
-    invoke("abort_agent", { sessionId: targetSessionId }).catch(() => {});
+    invoke("abort_agent", { sessionId: targetSessionId }).catch(() => { });
     abortedRef.current = true;
     isGeneratingTimeoutRef.current = null;
     isGeneratingRef.current = false;
@@ -2070,7 +2070,7 @@ const AgentChat = memo(function AgentChat({
       onUsageUpdateRef.current?.({ ...accumulatedUsageRef.current, isBusy: false });
     }
     const msg = JSON.stringify({ type: "permission_response", allowed });
-    invoke("send_agent_message", { sessionId: targetSessionId, message: msg }).catch(() => {});
+    invoke("send_agent_message", { sessionId: targetSessionId, message: msg }).catch(() => { });
   }, [targetSessionId]);
 
   // Send feedback on a plan — deny the current permission, then send a follow-up message
@@ -2117,7 +2117,7 @@ const AgentChat = memo(function AgentChat({
     onQuestionChangeRef.current?.(false);
     respondPermission(false);
     onBusyChangeRef.current?.(false);
-    invoke("abort_agent", { sessionId }).catch(() => {});
+    invoke("abort_agent", { sessionId }).catch(() => { });
     abortedRef.current = true;
     // Create new session with bypass permissions, including plan content for display
     const execName = `Execute: ${session?.name || "plan"}`;
@@ -2173,9 +2173,9 @@ const AgentChat = memo(function AgentChat({
     const lines = transcript.map((m) => {
       const text = Array.isArray(m.content)
         ? m.content
-            .filter((b) => b.type === "text")
-            .map((b) => b.text)
-            .join("\n")
+          .filter((b) => b.type === "text")
+          .map((b) => b.text)
+          .join("\n")
         : "";
       if (m.type === "user") return `Human: ${text}`;
       if (m.type === "assistant") return `Assistant: ${text}`;
@@ -2505,240 +2505,206 @@ const AgentChat = memo(function AgentChat({
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto py-6 flex flex-col"
       >
-      {isActive && messages.length === 0 && !isGenerating && !session?.planContent && (
-        <div className="flex-1 flex items-center justify-center">
-          <p className="text-xs text-[var(--text-tertiary)] opacity-50">
-            Send a message to start the conversation
-          </p>
-        </div>
-      )}
-      <div className="w-full px-6 flex justify-center">
-      <div className="w-full max-w-[840px] flex flex-col gap-5">
-        {/* Skip rendering message DOM for inactive tabs to avoid layout thrash */}
-        {isActive ? (
-          <>
-            {hasMore && <div ref={sentinelRef} className="h-1" />}
+        {isActive && messages.length === 0 && !isGenerating && !session?.planContent && (
+          <div className="flex-1 flex items-center justify-center">
+            <p className="text-xs text-[var(--text-tertiary)] opacity-50">
+              Send a message to start the conversation
+            </p>
+          </div>
+        )}
+        <div className="w-full px-6 flex justify-center">
+          <div className="w-full max-w-[840px] flex flex-col gap-5">
+            {/* Skip rendering message DOM for inactive tabs to avoid layout thrash */}
+            {isActive ? (
+              <>
+                {hasMore && <div ref={sentinelRef} className="h-1" />}
 
-            {useVirtualRendering ? (
-              <div
-                style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}
-              >
-                {rowVirtualizer.getVirtualItems().map((virtualItem) => {
-                  const msg = allMessages[virtualItem.index];
-                  const isLast = isGenerating && virtualItem.index === allMessages.length - 1;
-                  return (
-                    <div
-                      key={msg.id}
-                      data-index={virtualItem.index}
-                      ref={rowVirtualizer.measureElement}
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
-                        transform: `translateY(${virtualItem.start}px)`,
-                        paddingBottom: "20px",
-                      }}
+                {useVirtualRendering ? (
+                  <div
+                    style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}
+                  >
+                    {rowVirtualizer.getVirtualItems().map((virtualItem) => {
+                      const msg = allMessages[virtualItem.index];
+                      const isLast = isGenerating && virtualItem.index === allMessages.length - 1;
+                      return (
+                        <div
+                          key={msg.id}
+                          data-index={virtualItem.index}
+                          ref={rowVirtualizer.measureElement}
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: 0,
+                            width: "100%",
+                            transform: `translateY(${virtualItem.start}px)`,
+                            paddingBottom: "20px",
+                          }}
+                        >
+                          <MessageBubble
+                            message={msg}
+                            toolStates={toolStates}
+                            onToggleTool={toggleTool}
+                            isLastMessage={isLast}
+                            planContent={session?.planContent}
+                            onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
+                            onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
+                            onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
+                            onCopy={copyMessage}
+                            onNavigateToSession={onNavigateToSession}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="flex flex-col">
+                    {allMessages.map((msg, index) => {
+                      const isLast = isGenerating && index === allMessages.length - 1;
+                      return (
+                        <div key={msg.id} style={{ paddingBottom: "20px" }}>
+                          <MessageBubble
+                            message={msg}
+                            toolStates={toolStates}
+                            onToggleTool={toggleTool}
+                            isLastMessage={isLast}
+                            planContent={session?.planContent}
+                            onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
+                            onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
+                            onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
+                            onCopy={copyMessage}
+                            onNavigateToSession={onNavigateToSession}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {isGenerating && !pendingPermission && !pendingQuestion && (
+                  <div className="flex items-center gap-2 px-1 py-2">
+                    <div className="flex gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-thinking-pulse" />
+                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-thinking-pulse [animation-delay:200ms]" />
+                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-thinking-pulse [animation-delay:400ms]" />
+                    </div>
+                    <span className="text-xs text-[var(--text-tertiary)]">
+                      {currentTodo || "Thinking…"}
+                    </span>
+                  </div>
+                )}
+                {queuedMessage && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 mx-1 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] text-xs">
+                    <svg className="w-3 h-3 text-[var(--accent)] shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span className="text-[var(--text-secondary)] truncate flex-1">
+                      Queued: {queuedMessage.text || "(attachment)"}
+                    </span>
+                    <button
+                      onClick={() => { queuedMessageRef.current = null; setQueuedMessage(null); }}
+                      className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors shrink-0"
+                      title="Cancel queued message"
                     >
-                      <MessageBubble
-                        message={msg}
-                        toolStates={toolStates}
-                        onToggleTool={toggleTool}
-                        isLastMessage={isLast}
-                        planContent={session?.planContent}
-                        onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
-                        onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
-                        onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
-                        onCopy={copyMessage}
-                        onNavigateToSession={onNavigateToSession}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="flex flex-col">
-                {allMessages.map((msg, index) => {
-                  const isLast = isGenerating && index === allMessages.length - 1;
-                  return (
-                    <div key={msg.id} style={{ paddingBottom: "20px" }}>
-                      <MessageBubble
-                        message={msg}
-                        toolStates={toolStates}
-                        onToggleTool={toggleTool}
-                        isLastMessage={isLast}
-                        planContent={session?.planContent}
-                        onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
-                        onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
-                        onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
-                        onCopy={copyMessage}
-                        onNavigateToSession={onNavigateToSession}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {isGenerating && !pendingPermission && !pendingQuestion && (
-              <div className="flex items-center gap-2 px-1 py-2">
-                <div className="flex gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-thinking-pulse" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-thinking-pulse [animation-delay:200ms]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-thinking-pulse [animation-delay:400ms]" />
-                </div>
-                <span className="text-xs text-[var(--text-tertiary)]">
-                  {currentTodo || "Thinking…"}
-                </span>
-              </div>
-            )}
-            {queuedMessage && (
-              <div className="flex items-center gap-2 px-3 py-1.5 mx-1 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] text-xs">
-                <svg className="w-3 h-3 text-[var(--accent)] shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <span className="text-[var(--text-secondary)] truncate flex-1">
-                  Queued: {queuedMessage.text || "(attachment)"}
-                </span>
-                <button
-                  onClick={() => { queuedMessageRef.current = null; setQueuedMessage(null); }}
-                  className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors shrink-0"
-                  title="Cancel queued message"
-                >
-                  ✕
-                </button>
-              </div>
-            )}
-          </>
-        ) : null}
-      </div>
-      </div>
+                      ✕
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : null}
+          </div>
+        </div>
       </div>
 
       {/* Input area — hero card, centered */}
       <div className="px-6 pb-5 pt-2 relative flex justify-center" ref={inputAreaRef}>
-      <div className="w-full max-w-[720px] flex flex-col gap-2">
-        {/* Slash command autocomplete */}
-        {showSlashMenu && filteredSlashCommands.length > 0 && (
-          <div
-            ref={slashMenuRef}
-            className="absolute bottom-full left-0 right-0 mx-auto max-w-2xl mb-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"
-          >
-            {filteredSlashCommands.map((cmd, i) => (
-              <button
-                key={cmd.name}
-                className={`w-full text-left px-3 py-2 flex items-baseline gap-4 text-sm transition-colors ${
-                  i === slashMenuIndex
-                    ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
-                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
-                }`}
-                onMouseEnter={() => setSlashMenuIndex(i)}
-                onMouseDown={(e) => {
-                  e.preventDefault(); // keep focus on textarea
-                  selectSlashCommand(cmd);
-                }}
-              >
-                <span className="font-mono text-[var(--accent)] shrink-0">/{cmd.name}</span>
-                <span className="text-[var(--text-tertiary)] truncate text-xs">{cmd.description}</span>
-                {cmd.source === "user" && (
-                  <span className="text-[10px] text-[var(--text-tertiary)] opacity-60 ml-auto shrink-0">(user)</span>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-        {/* @ file autocomplete */}
-        {showFileMenu && (
-          <div
-            ref={fileMenuRef}
-            className="absolute bottom-full left-0 right-0 mx-auto max-w-2xl mb-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"
-          >
-            {fileSuggestions.map((filePath, i) => {
-              const parts = filePath.split("/");
-              const fileName = parts.pop()!;
-              const dirPath = parts.join("/");
-              return (
-                <button
-                  key={filePath}
-                  className={`w-full text-left px-3 py-1.5 flex items-center gap-2 text-sm transition-colors ${
-                    i === fileMenuIndex
-                      ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
-                      : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
-                  }`}
-                  onMouseEnter={() => setFileMenuIndex(i)}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    selectFile(filePath);
-                  }}
-                >
-                  <span className="font-mono text-[var(--text-primary)] truncate">{fileName}</span>
-                  {dirPath && (
-                    <span className="text-[var(--text-tertiary)] text-xs truncate ml-auto">{dirPath}/</span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        )}
-        {/* Editing indicator */}
-        {editingMessageId && (
-          <div className="flex items-center gap-2 mb-2 px-1 py-1.5 text-xs text-[var(--accent)] bg-[var(--accent)]/10 rounded-lg">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-            </svg>
-            <span className="flex-1">Editing message — send to replace</span>
-            <button
-              onClick={() => { setEditingMessageId(null); setInputText(""); }}
-              className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
-            >
-              Cancel
-            </button>
-          </div>
-        )}
+        <div className="w-full max-w-[720px] flex flex-col gap-2">
+          {/* Slash command autocomplete */}
 
-        {/* Inline question / permission composer OR normal input */}
-        {pendingQuestion && !editingMessageId ? (
-          <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-3">
-            <div className="text-[10px] font-semibold text-[var(--accent)] uppercase tracking-wide mb-1.5">Agent is asking</div>
-            <InlineQuestionComposer
-              questions={pendingQuestion.questions}
-              onAnswer={answerQuestion}
-            />
-          </div>
-        ) : pendingPermission && !editingMessageId ? (
-          <div className="rounded-lg border border-[var(--warning-border,var(--border-color))] bg-[var(--bg-secondary)] p-3">
-            <InlinePermissionComposer
-              permission={pendingPermission}
-              onAllow={() => respondPermission(true)}
-              onDeny={() => respondPermission(false)}
-              onAllowInNew={allowInNewConversation}
-              onFeedback={sendPlanFeedback}
-            />
-          </div>
-        ) : (
-          <>
-            {/* Attachments: file refs + pasted files + images on one line */}
-            {(fileReferences.length > 0 || images.length > 0 || pastedFiles.length > 0) && (
-              <div className="flex gap-2 flex-wrap items-center">
-                {fileReferences.map((ref) => {
-                  const fileName = ref.filePath.split("/").pop()!;
-                  const previewLines = ref.content.split("\n").slice(0, 8);
-                  return (
+          {/* @ file autocomplete */}
+
+          {/* Editing indicator */}
+          {editingMessageId && (
+            <div className="flex items-center gap-2 mb-2 px-1 py-1.5 text-xs text-[var(--accent)] bg-[var(--accent)]/10 rounded-lg">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+              </svg>
+              <span className="flex-1">Editing message — send to replace</span>
+              <button
+                onClick={() => { setEditingMessageId(null); setInputText(""); }}
+                className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {/* Inline question / permission composer OR normal input */}
+          {pendingQuestion && !editingMessageId ? (
+            <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-3">
+              <div className="text-[10px] font-semibold text-[var(--accent)] uppercase tracking-wide mb-1.5">Agent is asking</div>
+              <InlineQuestionComposer
+                questions={pendingQuestion.questions}
+                onAnswer={answerQuestion}
+              />
+            </div>
+          ) : pendingPermission && !editingMessageId ? (
+            <div className="rounded-lg border border-[var(--warning-border,var(--border-color))] bg-[var(--bg-secondary)] p-3">
+              <InlinePermissionComposer
+                permission={pendingPermission}
+                onAllow={() => respondPermission(true)}
+                onDeny={() => respondPermission(false)}
+                onAllowInNew={allowInNewConversation}
+                onFeedback={sendPlanFeedback}
+              />
+            </div>
+          ) : (
+            <>
+              {/* Attachments: file refs + pasted files + images on one line */}
+              {(fileReferences.length > 0 || images.length > 0 || pastedFiles.length > 0) && (
+                <div className="flex gap-2 flex-wrap items-center">
+                  {fileReferences.map((ref) => {
+                    const fileName = ref.filePath.split("/").pop()!;
+                    const previewLines = ref.content.split("\n").slice(0, 8);
+                    return (
+                      <div
+                        key={ref.filePath}
+                        className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)] cursor-pointer hover:border-[var(--accent)] transition-colors"
+                        onClick={() => setViewingFileRef(ref)}
+                      >
+                        <div className="w-full h-full bg-[var(--bg-tertiary)] p-1 overflow-hidden">
+                          <pre className="text-[3.5px] leading-[4.5px] text-[var(--text-tertiary)] font-mono whitespace-pre overflow-hidden pointer-events-none select-none">{previewLines.join("\n")}</pre>
+                        </div>
+                        <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent pt-3 pb-0.5 px-1">
+                          <span className="text-[8px] text-white/90 font-medium truncate block leading-tight">{fileName}</span>
+                          <span className="text-[7px] text-white/60 block leading-tight">L{ref.startLine}-{ref.endLine}</span>
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); removeFileReference(ref.filePath); }}
+                          className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    );
+                  })}
+                  {pastedFiles.map((f) => (
                     <div
-                      key={ref.filePath}
-                      className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)] cursor-pointer hover:border-[var(--accent)] transition-colors"
-                      onClick={() => setViewingFileRef(ref)}
+                      key={f.id}
+                      className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)] bg-[var(--bg-tertiary)]"
                     >
-                      <div className="w-full h-full bg-[var(--bg-tertiary)] p-1 overflow-hidden">
-                        <pre className="text-[3.5px] leading-[4.5px] text-[var(--text-tertiary)] font-mono whitespace-pre overflow-hidden pointer-events-none select-none">{previewLines.join("\n")}</pre>
+                      <div className="w-full h-full flex flex-col items-center justify-center p-1">
+                        <svg className="w-6 h-6 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
                       </div>
                       <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent pt-3 pb-0.5 px-1">
-                        <span className="text-[8px] text-white/90 font-medium truncate block leading-tight">{fileName}</span>
-                        <span className="text-[7px] text-white/60 block leading-tight">L{ref.startLine}-{ref.endLine}</span>
+                        <span className="text-[8px] text-white/90 font-medium truncate block leading-tight">{f.name}</span>
                       </div>
                       <button
-                        onClick={(e) => { e.stopPropagation(); removeFileReference(ref.filePath); }}
+                        onClick={() => removePastedFile(f.id)}
                         className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl text-white opacity-0 group-hover:opacity-100 transition-opacity"
                       >
                         <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -2746,223 +2712,259 @@ const AgentChat = memo(function AgentChat({
                         </svg>
                       </button>
                     </div>
-                  );
-                })}
-                {pastedFiles.map((f) => (
-                  <div
-                    key={f.id}
-                    className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)] bg-[var(--bg-tertiary)]"
-                  >
-                    <div className="w-full h-full flex flex-col items-center justify-center p-1">
-                      <svg className="w-6 h-6 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                      </svg>
-                    </div>
-                    <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent pt-3 pb-0.5 px-1">
-                      <span className="text-[8px] text-white/90 font-medium truncate block leading-tight">{f.name}</span>
-                    </div>
-                    <button
-                      onClick={() => removePastedFile(f.id)}
-                      className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                  ))}
+                  {images.map((img) => (
+                    <div
+                      key={img.id}
+                      className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)]"
                     >
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                ))}
-                {images.map((img) => (
-                  <div
-                    key={img.id}
-                    className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--border-color)]"
-                  >
-                    <ImageWithLightbox src={`data:${img.mediaType};base64,${img.data}`} thumbnail />
-                    <button
-                      onClick={() => removeImage(img.id)}
-                      className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Hero input card */}
-            <div className="rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] focus-within:border-[var(--accent)]/50 focus-within:shadow-[0_0_0_3px_rgba(108,126,230,0.08)] transition-all duration-200 shadow-[0_2px_16px_rgba(0,0,0,0.25)]">
-              {/* Textarea row */}
-              <div className="flex items-end">
-              {sessionDir && (
-                <button
-                  onClick={() => setShowFilePicker(true)}
-                  className="p-3 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors shrink-0 self-center"
-                  title="Attach file (⌘O)"
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
-                  </svg>
-                </button>
+                      <ImageWithLightbox src={`data:${img.mediaType};base64,${img.data}`} thumbnail />
+                      <button
+                        onClick={() => removeImage(img.id)}
+                        className="absolute top-0 right-0 p-0.5 bg-black/60 rounded-bl text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
               )}
-              <textarea
-                ref={inputRef}
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
-                placeholder="Message…"
-                rows={1}
-                className="flex-1 resize-none bg-transparent border-none px-3 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none max-h-40 overflow-y-auto"
-                style={{ minHeight: "44px" }}
-                onInput={(e) => {
-                  const target = e.target as HTMLTextAreaElement;
-                  target.style.height = "auto";
-                  target.style.height = `${Math.min(target.scrollHeight, 160)}px`;
-                }}
-              />
-              </div>
-              {/* Bottom bar: pills + send button */}
-              <div className="flex items-center gap-1.5 px-3 pb-3 border-t border-[var(--border-subtle)] pt-2.5">
-            {/* Pill row: Model, Mode, Effort */}
-            <div ref={pillRowRef} className="flex items-center gap-1.5 flex-1 min-w-0">
-              {/* Model pill */}
-              <div className="relative">
-                <button
-                  onClick={() => setOpenPill(openPill === "model" ? null : "model")}
-                  className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-                >
-                  {activeModels.find((m) => m.id === currentModel)?.name ?? currentModel?.split("/").pop() ?? "Model"}
-                  <svg className="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
-                </button>
-                {openPill === "model" && (
-                  <div className="absolute bottom-full mb-1 left-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 min-w-[200px] max-h-[300px] overflow-hidden flex flex-col">
-                    <div className="p-2 border-b border-[var(--border-color)]">
-                      <div className="relative">
-                        <input
-                          ref={modelSearchRef}
-                          type="text"
-                          value={modelSearchTerm}
-                          onChange={(e) => setModelSearchTerm(e.target.value)}
-                          placeholder="Search models..."
-                          className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded px-2 py-1 text-[11px] outline-none focus:border-[var(--accent)]"
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && filteredModels.length > 0) {
-                              onModelChange?.(filteredModels[0].id);
-                              setOpenPill(null);
-                            }
-                            if (e.key === "Escape") setOpenPill(null);
-                          }}
-                        />
-                      </div>
-                    </div>
-                    <div className="overflow-y-auto flex-1">
-                      {filteredModels.length === 0 ? (
-                        <div className="px-3 py-2 text-[10px] text-[var(--text-tertiary)] italic">No models found</div>
-                      ) : (
-                        filteredModels.map((model) => (
+
+              {/* Hero input card */}
+              <div className="relative rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] focus-within:border-[var(--accent)]/50 focus-within:shadow-[0_0_0_3px_rgba(108,126,230,0.08)] transition-all duration-200 shadow-[0_2px_16px_rgba(0,0,0,0.25)]">
+                {showFileMenu && (
+                  <div className="absolute bottom-full left-0 right-0 pb-2">
+                    <div
+                      ref={fileMenuRef}
+                      className="mx-auto max-w-2xl mb-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"
+                    >
+                      {fileSuggestions.map((filePath, i) => {
+                        const parts = filePath.split("/");
+                        const fileName = parts.pop()!;
+                        const dirPath = parts.join("/");
+                        return (
                           <button
-                            key={model.id}
-                            className={`w-full text-left px-3 py-1.5 text-[11px] transition-colors ${
-                              currentModel === model.id
-                                ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
-                                : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
-                            }`}
+                            key={filePath}
+                            className={`w-full text-left px-3 py-1.5 flex items-center gap-2 text-sm transition-colors ${i === fileMenuIndex
+                              ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
+                              : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                              }`}
+                            onMouseEnter={() => setFileMenuIndex(i)}
                             onMouseDown={(e) => {
                               e.preventDefault();
-                              onModelChange?.(model.id);
-                              setOpenPill(null);
+                              selectFile(filePath);
                             }}
                           >
-                            <div className="font-medium">{model.name}</div>
-                            {model.desc && <div className="text-[10px] text-[var(--text-tertiary)]">{model.desc}</div>}
+                            <span className="font-mono text-[var(--text-primary)] truncate">{fileName}</span>
+                            {dirPath && (
+                              <span className="text-[var(--text-tertiary)] text-xs truncate ml-auto">{dirPath}/</span>
+                            )}
                           </button>
-                        ))
-                      )}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
-              </div>
-              {/* Mode toggle */}
-              <button
-                onClick={async () => {
-                  const newMode = session?.permissionMode === "bypassPermissions" ? "plan" : "bypassPermissions";
-                  onPermissionModeChange?.(newMode);
-                  try {
-                    const msg = JSON.stringify({ type: "set_permission_mode", permissionMode: newMode });
-                    await invoke("send_agent_message", { sessionId: targetSessionId, message: msg });
-                  } catch {}
-                }}
-                className="px-2 py-0.5 text-[11px] rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-              >
-                {session?.permissionMode === "bypassPermissions" ? "Chat" : "Plan"}
-              </button>
-              {/* Effort pill */}
-              <div className="relative">
-                <button
-                  onClick={() => setOpenPill(openPill === "effort" ? null : "effort")}
-                  className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-                >
-                  {reasoningEffort === "low" ? "Low" : reasoningEffort === "medium" ? "Medium" : "High"}
-                  <svg className="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
-                </button>
-                {openPill === "effort" && (
-                  <div className="absolute bottom-full mb-1 left-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 min-w-[100px]">
-                    {(["low", "medium", "high"] as const).map((level) => (
-                      <button
-                        key={level}
-                        className={`w-full text-left px-3 py-1.5 text-[11px] transition-colors ${
-                          reasoningEffort === level
+                {showSlashMenu && filteredSlashCommands.length > 0 && (
+                  <div className="absolute bottom-full left-0 right-0 pb-2">
+                    <div
+                      ref={slashMenuRef}
+                      className="bottom-fullmx-auto max-w-2xl mb-1 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto"
+                    >
+                      {filteredSlashCommands.map((cmd, i) => (
+                        <button
+                          key={cmd.name}
+                          className={`w-full text-left px-3 py-2 flex items-baseline gap-4 text-sm transition-colors ${i === slashMenuIndex
                             ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
                             : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
-                        }`}
-                        onMouseDown={async (e) => {
-                          e.preventDefault();
-                          setReasoningEffort(level);
-                          try {
-                            const msg = JSON.stringify({ type: "set_reasoning_effort", effort: level });
-                            await invoke("send_agent_message", { sessionId: targetSessionId, message: msg });
-                          } catch {}
-                          setOpenPill(null);
-                        }}
-                      >
-                        {level === "low" ? "Low" : level === "medium" ? "Medium" : "High"}
-                      </button>
-                    ))}
+                            }`}
+                          onMouseEnter={() => setSlashMenuIndex(i)}
+                          onMouseDown={(e) => {
+                            e.preventDefault(); // keep focus on textarea
+                            selectSlashCommand(cmd);
+                          }}
+                        >
+                          <span className="font-mono text-[var(--accent)] shrink-0">/{cmd.name}</span>
+                          <span className="text-[var(--text-tertiary)] truncate text-xs">{cmd.description}</span>
+                          {cmd.source === "user" && (
+                            <span className="text-[10px] text-[var(--text-tertiary)] opacity-60 ml-auto shrink-0">(user)</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
-              </div>
-              {/* Branch info */}
-              {currentBranch && (
-                <span className="flex items-center gap-1 text-[10px] text-[var(--text-tertiary)]">
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
-                  </svg>
-                  {currentBranch}
-                </span>
-              )}
-            </div>
-                {/* Send / Stop button — inside bottom bar */}
-                {isGenerating && (
+                {/* Textarea row */}
+                <div className="flex items-end">
+                  {sessionDir && (
+                    <button
+                      onClick={() => setShowFilePicker(true)}
+                      className="p-3 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors shrink-0 self-center"
+                      title="Attach file (⌘O)"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                      </svg>
+                    </button>
+                  )}
+                  <textarea
+                    ref={inputRef}
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    onPaste={handlePaste}
+                    placeholder="Message…"
+                    rows={1}
+                    className="flex-1 resize-none bg-transparent border-none px-3 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none max-h-40 overflow-y-auto"
+                    style={{ minHeight: "44px" }}
+                    onInput={(e) => {
+                      const target = e.target as HTMLTextAreaElement;
+                      target.style.height = "auto";
+                      target.style.height = `${Math.min(target.scrollHeight, 160)}px`;
+                    }}
+                  />
+                </div>
+                {/* Bottom bar: pills + send button */}
+                <div className="flex items-center gap-1.5 px-3 pb-3 border-t border-[var(--border-subtle)] pt-2.5">
+                  {/* Pill row: Model, Mode, Effort */}
+                  <div ref={pillRowRef} className="flex items-center gap-1.5 flex-1 min-w-0">
+                    {/* Model pill */}
+                    <div className="relative">
+                      <button
+                        onClick={() => setOpenPill(openPill === "model" ? null : "model")}
+                        className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                      >
+                        {activeModels.find((m) => m.id === currentModel)?.name ?? currentModel?.split("/").pop() ?? "Model"}
+                        <svg className="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
+                      </button>
+                      {openPill === "model" && (
+                        <div className="absolute bottom-full mb-1 left-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 min-w-[200px] max-h-[300px] overflow-hidden flex flex-col">
+                          <div className="p-2 border-b border-[var(--border-color)]">
+                            <div className="relative">
+                              <input
+                                ref={modelSearchRef}
+                                type="text"
+                                value={modelSearchTerm}
+                                onChange={(e) => setModelSearchTerm(e.target.value)}
+                                placeholder="Search models..."
+                                className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded px-2 py-1 text-[11px] outline-none focus:border-[var(--accent)]"
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" && filteredModels.length > 0) {
+                                    onModelChange?.(filteredModels[0].id);
+                                    setOpenPill(null);
+                                  }
+                                  if (e.key === "Escape") setOpenPill(null);
+                                }}
+                              />
+                            </div>
+                          </div>
+                          <div className="overflow-y-auto flex-1">
+                            {filteredModels.length === 0 ? (
+                              <div className="px-3 py-2 text-[10px] text-[var(--text-tertiary)] italic">No models found</div>
+                            ) : (
+                              filteredModels.map((model) => (
+                                <button
+                                  key={model.id}
+                                  className={`w-full text-left px-3 py-1.5 text-[11px] transition-colors ${currentModel === model.id
+                                    ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
+                                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                                    }`}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    onModelChange?.(model.id);
+                                    setOpenPill(null);
+                                  }}
+                                >
+                                  <div className="font-medium">{model.name}</div>
+                                  {model.desc && <div className="text-[10px] text-[var(--text-tertiary)]">{model.desc}</div>}
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    {/* Mode toggle */}
+                    <button
+                      onClick={async () => {
+                        const newMode = session?.permissionMode === "bypassPermissions" ? "plan" : "bypassPermissions";
+                        onPermissionModeChange?.(newMode);
+                        try {
+                          const msg = JSON.stringify({ type: "set_permission_mode", permissionMode: newMode });
+                          await invoke("send_agent_message", { sessionId: targetSessionId, message: msg });
+                        } catch { }
+                      }}
+                      className="px-2 py-0.5 text-[11px] rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                    >
+                      {session?.permissionMode === "bypassPermissions" ? "Chat" : "Plan"}
+                    </button>
+                    {/* Effort pill */}
+                    <div className="relative">
+                      <button
+                        onClick={() => setOpenPill(openPill === "effort" ? null : "effort")}
+                        className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                      >
+                        {reasoningEffort === "low" ? "Low" : reasoningEffort === "medium" ? "Medium" : "High"}
+                        <svg className="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
+                      </button>
+                      {openPill === "effort" && (
+                        <div className="absolute bottom-full mb-1 left-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 min-w-[100px]">
+                          {(["low", "medium", "high"] as const).map((level) => (
+                            <button
+                              key={level}
+                              className={`w-full text-left px-3 py-1.5 text-[11px] transition-colors ${reasoningEffort === level
+                                ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
+                                : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                                }`}
+                              onMouseDown={async (e) => {
+                                e.preventDefault();
+                                setReasoningEffort(level);
+                                try {
+                                  const msg = JSON.stringify({ type: "set_reasoning_effort", effort: level });
+                                  await invoke("send_agent_message", { sessionId: targetSessionId, message: msg });
+                                } catch { }
+                                setOpenPill(null);
+                              }}
+                            >
+                              {level === "low" ? "Low" : level === "medium" ? "Medium" : "High"}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {/* Branch info */}
+                    {currentBranch && (
+                      <span className="flex items-center gap-1 text-[10px] text-[var(--text-tertiary)]">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
+                        </svg>
+                        {currentBranch}
+                      </span>
+                    )}
+                  </div>
+                  {/* Send / Stop button — inside bottom bar */}
+                  {isGenerating && (
+                    <button
+                      onClick={handleAbort}
+                      className="ml-auto px-3 py-1.5 bg-red-500/15 hover:bg-red-500/25 text-red-400 rounded-lg text-sm font-medium transition-colors shrink-0 border border-red-500/20"
+                    >
+                      Stop
+                    </button>
+                  )}
                   <button
-                    onClick={handleAbort}
-                    className="ml-auto px-3 py-1.5 bg-red-500/15 hover:bg-red-500/25 text-red-400 rounded-lg text-sm font-medium transition-colors shrink-0 border border-red-500/20"
+                    onClick={() => sendMessage()}
+                    disabled={!inputText.trim() && images.length === 0 && fileReferences.length === 0 && pastedFiles.length === 0}
+                    className={`${isGenerating ? "" : "ml-auto"} px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-35 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-all duration-150 shrink-0 shadow-[0_0_12px_rgba(108,126,230,0.2)]`}
                   >
-                    Stop
+                    {isGenerating ? "Queue" : "Send"}
                   </button>
-                )}
-                <button
-                  onClick={() => sendMessage()}
-                  disabled={!inputText.trim() && images.length === 0 && fileReferences.length === 0 && pastedFiles.length === 0}
-                  className={`${isGenerating ? "" : "ml-auto"} px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-35 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-all duration-150 shrink-0 shadow-[0_0_12px_rgba(108,126,230,0.2)]`}
-                >
-                  {isGenerating ? "Queue" : "Send"}
-                </button>
+                </div>
               </div>
-            </div>
-          </>
-        )}
-      </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* File picker modal */}
@@ -3027,8 +3029,8 @@ const MessageBubble = memo(function MessageBubble({
   const content = Array.isArray(message.content)
     ? message.content
     : typeof message.content === "string"
-    ? [{ type: "text", text: message.content } as ContentBlock]
-    : (() => {
+      ? [{ type: "text", text: message.content } as ContentBlock]
+      : (() => {
         console.error("[MessageBubble] message.content is not array or string:", typeof message.content, message);
         return [];
       })();
@@ -3727,8 +3729,8 @@ function TodoListView({ todos }: { todos: TodoItem[] }) {
         const textColor = todo.status === "completed"
           ? "text-[var(--text-tertiary)] line-through"
           : todo.status === "in_progress"
-          ? "text-[var(--text-primary)] font-medium"
-          : "text-[var(--text-secondary)]";
+            ? "text-[var(--text-primary)] font-medium"
+            : "text-[var(--text-secondary)]";
 
         const rowBg = todo.status === "in_progress"
           ? "bg-[var(--bg-tertiary)] rounded"
@@ -3930,11 +3932,10 @@ function InlineQuestionComposer({
                     key={oi}
                     onClick={() => handleSelect(qi, opt.label)}
                     title={opt.description}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                      isSelected
-                        ? "bg-[var(--accent)] text-white"
-                        : "bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:bg-[var(--accent)]/15 hover:text-[var(--accent)]"
-                    }`}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${isSelected
+                      ? "bg-[var(--accent)] text-white"
+                      : "bg-[var(--bg-tertiary)] text-[var(--text-primary)] hover:bg-[var(--accent)]/15 hover:text-[var(--accent)]"
+                      }`}
                   >
                     {opt.label}
                   </button>
@@ -3956,11 +3957,10 @@ function InlineQuestionComposer({
         <button
           disabled={!customText.trim()}
           onClick={handleCustomSubmit}
-          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-            customText.trim()
-              ? "bg-[var(--accent)] text-white hover:bg-[var(--accent)]/90"
-              : "bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] cursor-not-allowed"
-          }`}
+          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${customText.trim()
+            ? "bg-[var(--accent)] text-white hover:bg-[var(--accent)]/90"
+            : "bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] cursor-not-allowed"
+            }`}
         >
           Send
         </button>
@@ -3969,11 +3969,10 @@ function InlineQuestionComposer({
         <button
           disabled={!allAnswered}
           onClick={handleSubmit}
-          className={`self-end px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-            allAnswered
-              ? "bg-[var(--accent)] text-white hover:bg-[var(--accent)]/90"
-              : "bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] cursor-not-allowed"
-          }`}
+          className={`self-end px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${allAnswered
+            ? "bg-[var(--accent)] text-white hover:bg-[var(--accent)]/90"
+            : "bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] cursor-not-allowed"
+            }`}
         >
           Submit
         </button>
@@ -4379,11 +4378,10 @@ function ConsolidatedToolGroup({
             <>
               <ToolInputView toolName={toolName} input={input} />
               <div
-                className={`mx-3 mb-2 px-3 py-2 rounded text-xs font-mono whitespace-pre-wrap break-words max-h-40 overflow-y-auto ${
-                  isError
-                    ? "bg-red-500/10 text-red-400 border border-red-500/20"
-                    : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
-                }`}
+                className={`mx-3 mb-2 px-3 py-2 rounded text-xs font-mono whitespace-pre-wrap break-words max-h-40 overflow-y-auto ${isError
+                  ? "bg-red-500/10 text-red-400 border border-red-500/20"
+                  : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
+                  }`}
                 onClick={handleLinkClick}
               >
                 <LinkifiedText text={resultContent} />

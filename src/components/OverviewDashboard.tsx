@@ -66,7 +66,7 @@ export default memo(function OverviewDashboard({
   return (
     <div className="flex-1 overflow-y-auto p-6 animate-fade-in-up">
       {/* Stats bar */}
-      <div className="flex items-center gap-6 mb-6">
+      <div className="flex items-center gap-6 mb-6 pb-2">
         <div className="flex items-center gap-2">
           {runningCount > 0 ? (
             <span className="w-2 h-2 rounded-full bg-[var(--status-running)] animate-pulse" />

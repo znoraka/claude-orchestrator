@@ -313,7 +313,7 @@ export default function Sidebar({
 
 
   return (
-    <div className="w-64 h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-2 pt-3 pb-3">
+    <div className="h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-2 pt-3 pb-3">
       {/* Search input — minimal styling */}
       <div className="pb-2">
         <div className="relative">
