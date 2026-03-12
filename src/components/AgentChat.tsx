@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo, useDeferredValue, memo } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useDeferredValue, memo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -852,7 +852,7 @@ const AgentChat = memo(function AgentChat({
   // ── Windowed rendering: only render tail of messages ───────────
   const INITIAL_WINDOW = 40;
   const LOAD_MORE_CHUNK = 40;
-  const VIRTUAL_THRESHOLD = 0;
+  const VIRTUAL_THRESHOLD = 20;
   const [renderCount, setRenderCount] = useState(INITIAL_WINDOW);
 
   // Reset window when messages are bulk-loaded (history replay)
@@ -861,9 +861,12 @@ const AgentChat = memo(function AgentChat({
     // If messages jumped by more than LOAD_MORE_CHUNK, it's a bulk load — reset window
     if (messages.length - prevMsgLenRef.current > LOAD_MORE_CHUNK) {
       setRenderCount(INITIAL_WINDOW);
+      if (isActive && messages.length > 0) {
+        setIsLayoutReady(false);
+      }
     }
     prevMsgLenRef.current = messages.length;
-  }, [messages.length]);
+  }, [messages.length, isActive]);
 
   const visibleMessages = useMemo(() => {
     const sliced = messages.length <= renderCount ? messages : messages.slice(messages.length - renderCount);
@@ -894,19 +897,249 @@ const AgentChat = memo(function AgentChat({
   );
 
   const useVirtualRendering = allMessages.length >= VIRTUAL_THRESHOLD;
-
-  const rowVirtualizer = useVirtualizer({
-    count: useVirtualRendering ? allMessages.length : 0,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 100,
-    overscan: 8,
-    measureElement: (el) => {
-      if (!el) return 0;
-      return el.getBoundingClientRect().height || el.scrollHeight || 0;
-    },
+  const [isLayoutReady, setIsLayoutReady] = useState(true);
+  const layoutCheckRafRef = useRef<number | null>(null);
+  const layoutSettleRef = useRef<{ lastSig: string; stable: number; frames: number }>({
+    lastSig: "",
+    stable: 0,
+    frames: 0,
   });
+  const prevSessionIdRef = useRef(sessionId);
+  const prevUseVirtualRef = useRef(useVirtualRendering);
+
+// Dynamic item size estimation based on message type and content
+const estimateItemSize = useMemo(() => {
+  // Create a map to cache estimated sizes for better performance
+  const sizeCache = new Map<string, number>();
+  
+  return (index: number): number => {
+    // Return cached size if available
+    const cachedSize = sizeCache.get(`index-${index}`);
+    if (cachedSize !== undefined) {
+      return cachedSize;
+    }
+    
+    const message = allMessages[index];
+    if (!message) return 80; // Default fallback
+    
+    let estimatedSize = 80; // Base estimate
+    
+    // Adjust based on message type
+    switch (message.type) {
+      case "user":
+        // User messages tend to be shorter
+        estimatedSize = 60;
+        break;
+      case "assistant":
+        // Assistant messages can vary greatly
+        if (message.isStreaming) {
+          // Streaming messages start small and grow
+          estimatedSize = 40;
+        } else {
+          // Final assistant messages depend on content
+          estimatedSize = 100;
+        }
+        break;
+      case "system":
+        // System messages are usually compact
+        estimatedSize = 30;
+        break;
+      case "result":
+        // Result messages often contain metadata
+        estimatedSize = 50;
+        break;
+      case "error":
+        // Error messages are typically concise
+        estimatedSize = 40;
+        break;
+      default:
+        estimatedSize = 80;
+    }
+    
+    // Adjust based on content length for text-heavy messages
+    if (message.content && Array.isArray(message.content)) {
+      const textContent = message.content
+        .filter(block => block.type === "text" && block.text)
+        .reduce((total, block) => total + (block.text?.length || 0), 0);
+      
+      // Add approximately 12px per 100 characters of text
+      estimatedSize += Math.floor(textContent / 100) * 12;
+      
+      // Cap the estimate to prevent extremely large values
+      estimatedSize = Math.min(estimatedSize, 300);
+    }
+    
+    // Cache the estimated size
+    sizeCache.set(`index-${index}`, estimatedSize);
+    return estimatedSize;
+  };
+}, [allMessages]);
+
+// Adaptive overscan based on viewport and estimated item size
+const adaptiveOverscan = useMemo(() => {
+  if (!scrollRef.current) return 8; // Default fallback
+  
+  const viewportHeight = scrollRef.current.clientHeight;
+  if (viewportHeight === 0) return 8;
+  
+  // Calculate average estimated item size
+  let totalEstimatedSize = 0;
+  let count = 0;
+  for (let i = 0; i < Math.min(allMessages.length, 20); i++) { // Sample first 20 items
+    const estimatedSize = estimateItemSize(i);
+    if (estimatedSize > 0) {
+      totalEstimatedSize += estimatedSize;
+      count++;
+    }
+  }
+  
+  const averageItemSize = count > 0 ? totalEstimatedSize / count : 80;
+  
+  // Aim for about 3-4 viewport heights of overscan
+  const targetOverscanHeight = viewportHeight * 3.5;
+  const calculatedOverscan = Math.max(3, Math.floor(targetOverscanHeight / averageItemSize));
+  
+  // Clamp between reasonable bounds
+  return Math.min(Math.max(calculatedOverscan, 3), 15);
+}, [scrollRef.current, allMessages, estimateItemSize]);
+
+// Measure element with caching to prevent layout thrashing
+const measurementCache = useRef(new Map<string, number>());
+const measureElementCache = useCallback((el: Element | null): number => {
+  if (!el) return 0;
+
+  // Use element's ID or index as cache key
+  let cacheKey = el.id;
+  const datasetIndex = (el as HTMLElement).dataset?.index;
+  if (!cacheKey && datasetIndex) {
+    cacheKey = datasetIndex;
+  }
+  if (!cacheKey) {
+    cacheKey = Math.random().toString(36).substr(2, 9);
+  }
+
+  // Return cached measurement if available
+  const cached = measurementCache.current.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  // Measure and cache the result
+  const height = el.getBoundingClientRect().height || el.scrollHeight || 0;
+  // Avoid caching zero-height measurements (first-frame layout can be 0)
+  if (height > 0) {
+    measurementCache.current.set(cacheKey, height);
+  }
+
+  // Limit cache size to prevent memory leaks
+  if (measurementCache.current.size > 1000) {
+    // Clear oldest entries when cache gets too large
+    const keys = Array.from(measurementCache.current.keys());
+    measurementCache.current.clear();
+    for (let i = Math.max(0, keys.length - 500); i < keys.length; i++) {
+      measurementCache.current.set(keys[i], measurementCache.current.get(keys[i]) || 0);
+    }
+  }
+
+  if (height === 0) {
+    const index = datasetIndex ? Number(datasetIndex) : -1;
+    return index >= 0 ? estimateItemSize(index) : 80;
+  }
+
+  return height;
+}, [estimateItemSize]);
+
+const rowVirtualizer = useVirtualizer({
+  count: useVirtualRendering ? allMessages.length : 0,
+  getScrollElement: () => scrollRef.current,
+  getItemKey: (index: number) => allMessages[index]?.id ?? index.toString(),
+  estimateSize: estimateItemSize,
+  overscan: adaptiveOverscan,
+  useFlushSync: false, // Set to false for better performance with our improved measurement
+  measureElement: measureElementCache,
+});
 
   const virtualizerTotalSize = rowVirtualizer.getTotalSize();
+  const virtualItems = useVirtualRendering ? rowVirtualizer.getVirtualItems() : [];
+
+  // Reset measurement cache when switching sessions to avoid stale sizes
+  useEffect(() => {
+    measurementCache.current.clear();
+    rowVirtualizer.measure();
+  }, [sessionId, rowVirtualizer]);
+
+  // Force an early measurement pass before paint to avoid 0-height flashes
+  useLayoutEffect(() => {
+    if (!useVirtualRendering || !isActive) return;
+    rowVirtualizer.measure();
+  }, [useVirtualRendering, allMessages.length, isActive, sessionId, rowVirtualizer]);
+
+  // Hide message list during session switch or when virtualization first turns on
+  useLayoutEffect(() => {
+    const sessionChanged = prevSessionIdRef.current !== sessionId;
+    const virtualEnabled = useVirtualRendering && !prevUseVirtualRef.current;
+    if ((sessionChanged || virtualEnabled) && isActive && messages.length > 0) {
+      setIsLayoutReady(false);
+    }
+    prevSessionIdRef.current = sessionId;
+    prevUseVirtualRef.current = useVirtualRendering;
+  }, [sessionId, useVirtualRendering, isActive, messages.length]);
+
+  // Ensure we don't hide when there's nothing to render or when inactive
+  useEffect(() => {
+    if (!isActive || messages.length === 0) {
+      setIsLayoutReady(true);
+    }
+  }, [isActive, messages.length]);
+
+  // Wait for layout to stabilize before showing the list
+  useLayoutEffect(() => {
+    if (isLayoutReady || !isActive || messages.length === 0) return;
+    layoutSettleRef.current = { lastSig: "", stable: 0, frames: 0 };
+
+    const check = () => {
+      let sig = "";
+      if (useVirtualRendering) {
+        const items = rowVirtualizer.getVirtualItems();
+        if (items.length === 0) {
+          sig = "empty";
+        } else {
+          sig =
+            items
+              .map((i) => `${i.index}:${Math.round(i.start)}:${Math.round(i.size)}`)
+              .join("|") + `|total:${Math.round(rowVirtualizer.getTotalSize())}`;
+        }
+      } else {
+        const scrollEl = scrollRef.current;
+        const h = scrollEl?.scrollHeight ?? 0;
+        const c = scrollEl?.clientHeight ?? 0;
+        sig = `h:${Math.round(h)}|c:${Math.round(c)}`;
+      }
+
+      const settle = layoutSettleRef.current;
+      if (sig && sig === settle.lastSig) {
+        settle.stable += 1;
+      } else {
+        settle.lastSig = sig;
+        settle.stable = 0;
+      }
+      settle.frames += 1;
+
+      if (settle.stable >= 2 || settle.frames >= 12) {
+        setIsLayoutReady(true);
+        return;
+      }
+      layoutCheckRafRef.current = requestAnimationFrame(check);
+    };
+
+    layoutCheckRafRef.current = requestAnimationFrame(check);
+    return () => {
+      if (layoutCheckRafRef.current) {
+        cancelAnimationFrame(layoutCheckRafRef.current);
+        layoutCheckRafRef.current = null;
+      }
+    };
+  }, [isLayoutReady, isActive, messages.length, useVirtualRendering, rowVirtualizer]);
 
   const loadMore = useCallback(() => {
     setRenderCount((prev) => Math.min(prev + LOAD_MORE_CHUNK, messages.length));
@@ -2474,7 +2707,7 @@ const AgentChat = memo(function AgentChat({
 
   return (
     <div
-      className="flex flex-col h-full relative"
+      className="chat-shell flex flex-col h-full relative"
     >
       {isDragging && (
         <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
@@ -2503,7 +2736,7 @@ const AgentChat = memo(function AgentChat({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto py-6 flex flex-col"
+        className="chat-scroll flex-1 overflow-y-auto py-8 flex flex-col"
       >
         {isActive && messages.length === 0 && !isGenerating && !session?.planContent && (
           <div className="flex-1 flex items-center justify-center">
@@ -2513,72 +2746,82 @@ const AgentChat = memo(function AgentChat({
           </div>
         )}
         <div className="w-full px-6 flex justify-center">
-          <div className="w-full max-w-[840px] flex flex-col gap-5">
+          <div className="chat-column w-full max-w-[900px] flex flex-col gap-6">
             {/* Skip rendering message DOM for inactive tabs to avoid layout thrash */}
             {isActive ? (
               <>
-                {hasMore && <div ref={sentinelRef} className="h-1" />}
+                <div
+                  style={{
+                    visibility: !isLayoutReady && messages.length > 0 ? "hidden" : "visible",
+                    pointerEvents: !isLayoutReady && messages.length > 0 ? "none" : "auto",
+                  }}
+                >
+                  {hasMore && <div ref={sentinelRef} className="h-1" />}
 
-                {useVirtualRendering ? (
-                  <div
-                    style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}
-                  >
-                    {rowVirtualizer.getVirtualItems().map((virtualItem) => {
-                      const msg = allMessages[virtualItem.index];
-                      const isLast = isGenerating && virtualItem.index === allMessages.length - 1;
-                      return (
-                        <div
-                          key={msg.id}
-                          data-index={virtualItem.index}
-                          ref={rowVirtualizer.measureElement}
-                          style={{
-                            position: "absolute",
-                            top: 0,
-                            left: 0,
-                            width: "100%",
-                            transform: `translateY(${virtualItem.start}px)`,
-                            paddingBottom: "20px",
-                          }}
-                        >
-                          <MessageBubble
-                            message={msg}
-                            toolStates={toolStates}
-                            onToggleTool={toggleTool}
-                            isLastMessage={isLast}
-                            planContent={session?.planContent}
-                            onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
-                            onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
-                            onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
-                            onCopy={copyMessage}
-                            onNavigateToSession={onNavigateToSession}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="flex flex-col">
-                    {allMessages.map((msg, index) => {
-                      const isLast = isGenerating && index === allMessages.length - 1;
-                      return (
-                        <div key={msg.id} style={{ paddingBottom: "20px" }}>
-                          <MessageBubble
-                            message={msg}
-                            toolStates={toolStates}
-                            onToggleTool={toggleTool}
-                            isLastMessage={isLast}
-                            planContent={session?.planContent}
-                            onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
-                            onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
-                            onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
-                            onCopy={copyMessage}
-                            onNavigateToSession={onNavigateToSession}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                  {useVirtualRendering ? (
+                    <div
+                      style={{
+                        height: `${virtualizerTotalSize}px`,
+                        position: "relative",
+                      }}
+                    >
+                      {virtualItems.map((virtualItem) => {
+                        const msg = allMessages[virtualItem.index];
+                        const isLast = isGenerating && virtualItem.index === allMessages.length - 1;
+                        return (
+                          <div
+                            key={msg.id}
+                            data-index={virtualItem.index}
+                            ref={rowVirtualizer.measureElement}
+                            style={{
+                              position: "absolute",
+                              top: 0,
+                              left: 0,
+                              width: "100%",
+                              transform: `translateY(${virtualItem.start}px)`,
+                              paddingBottom: "20px",
+                            }}
+                          >
+                            <MessageBubble
+                              message={msg}
+                              toolStates={toolStates}
+                              onToggleTool={toggleTool}
+                              isLastMessage={isLast}
+                              planContent={session?.planContent}
+                              onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
+                              onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
+                              onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
+                              onCopy={copyMessage}
+                              onNavigateToSession={onNavigateToSession}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col">
+                      {allMessages.map((msg, index) => {
+                        const isLast = isGenerating && index === allMessages.length - 1;
+                        return (
+                          <div key={msg.id} style={{ paddingBottom: "20px" }}>
+                            <MessageBubble
+                              message={msg}
+                              toolStates={toolStates}
+                              onToggleTool={toggleTool}
+                              isLastMessage={isLast}
+                              planContent={session?.planContent}
+                              onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
+                              onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
+                              onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
+                              onCopy={copyMessage}
+                              onNavigateToSession={onNavigateToSession}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
 
                 {isGenerating && !pendingPermission && !pendingQuestion && (
                   <div className="flex items-center gap-2 px-1 py-2">
@@ -2616,7 +2859,7 @@ const AgentChat = memo(function AgentChat({
       </div>
 
       {/* Input area — hero card, centered */}
-      <div className="px-6 pb-5 pt-2 relative flex justify-center" ref={inputAreaRef}>
+      <div className="chat-input-area px-6 pb-5 pt-2 relative flex justify-center" ref={inputAreaRef}>
         <div className="w-full max-w-[720px] flex flex-col gap-2">
           {/* Slash command autocomplete */}
 
@@ -2733,7 +2976,7 @@ const AgentChat = memo(function AgentChat({
               )}
 
               {/* Hero input card */}
-              <div className="relative rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] focus-within:border-[var(--accent)]/50 focus-within:shadow-[0_0_0_3px_rgba(108,126,230,0.08)] transition-all duration-200 shadow-[0_2px_16px_rgba(0,0,0,0.25)]">
+              <div className="chat-input-card relative rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] focus-within:border-[var(--accent)]/50 focus-within:shadow-[0_0_0_3px_rgba(108,126,230,0.08)] transition-all duration-200 shadow-[0_2px_16px_rgba(0,0,0,0.25)]">
                 {showFileMenu && (
                   <div className="absolute bottom-full left-0 right-0 pb-2">
                     <div
@@ -3148,7 +3391,7 @@ const MessageBubble = memo(function MessageBubble({
               </button>
             )}
           </div>
-          <div className="max-w-[85%] max-h-96 overflow-y-auto bg-[var(--accent-muted)] text-[var(--text-primary)] rounded-2xl px-5 py-3">
+          <div className="max-w-[85%] max-h-96 overflow-y-auto chat-bubble-user text-[var(--text-primary)] rounded-2xl px-5 py-3">
             {visible.map((block, i) => {
               // If this is a plan execution message loaded from JSONL, show short label instead of full plan text
               if (hasPlan && block.type === "text" && block.text && block.text.length > 200) {
@@ -3368,7 +3611,7 @@ function MarkdownContent({ text }: { text: string }) {
 
   return (
     <div
-      className="text-sm text-[var(--text-primary)] prose-agent"
+      className="text-sm text-[var(--text-primary)] prose-agent max-w-[680px]"
       onClick={handleLinkClick}
       dangerouslySetInnerHTML={{ __html: html }}
     />
@@ -3959,7 +4202,7 @@ function InlineQuestionComposer({
           onClick={handleCustomSubmit}
           className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${customText.trim()
             ? "bg-[var(--accent)] text-white hover:bg-[var(--accent)]/90"
-            : "bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] cursor-not-allowed"
+            : "bg-[var(--bg-tertiary)] te pb-2xt-[var(--text-tertiary)] cursor-not-allowed"
             }`}
         >
           Send
