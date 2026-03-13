@@ -818,6 +818,7 @@ const AgentChat = memo(function AgentChat({
   const accumulatedBlocksRef = useRef<Map<string, ContentBlock[]>>(new Map());
   const rafIdRef = useRef<number | null>(null);
   const lastFlushRef = useRef<number>(0);
+  const currentStreamIdRef = useRef<string | null>(null);
   const STREAM_THROTTLE_MS = 50;
 
   const flushPendingStream = useCallback(() => {
@@ -933,8 +934,8 @@ const AgentChat = memo(function AgentChat({
           const chunk = content.split("\n").map((l) => `+${l}`).join("\n");
           fileMap.set(relPath, { added: prev.added + lines, removed: prev.removed, chunks: [...prev.chunks, `@@ -0,0 +1,${lines} @@\n${chunk}`] });
         } else if (name === "Edit") {
-          const oldStr = (b.input?.old_str as string) ?? "";
-          const newStr = (b.input?.new_str as string) ?? "";
+          const oldStr = (b.input?.old_string as string) ?? (b.input?.old_str as string) ?? "";
+          const newStr = (b.input?.new_string as string) ?? (b.input?.new_str as string) ?? "";
           const removed = oldStr ? oldStr.split("\n").length : 0;
           const added = newStr ? newStr.split("\n").length : 0;
           // Use cumulative counts as sequential start positions so hunks don't overlap,
@@ -1481,8 +1482,8 @@ const rowVirtualizer = useVirtualizer({
     }
 
     if (msgType === "system" && msg.subtype === "bridge_ready") {
-      // Set the selected model on the new agent
-      if (currentModelRef.current !== "claude-opus-4-6") {
+      // Set the selected model on the new agent (only for claude-code — other providers manage their own model)
+      if (session?.provider === "claude-code" && currentModelRef.current !== "claude-opus-4-6") {
         const setModelMsg = JSON.stringify({ type: "set_model", model: currentModelRef.current });
         invoke("send_agent_message", { sessionId, message: setModelMsg }).catch(() => { });
       }
@@ -1511,8 +1512,8 @@ const rowVirtualizer = useVirtualizer({
         });
         const trySendAuto = (attempt: number) => {
           invoke("send_agent_message", { sessionId, message: jsonLine }).then(() => {
-            // Generate smart title for OpenCode sessions (no JSONL to watch)
-            if (session?.provider === "opencode" && !titleGeneratedRef.current) {
+            // Generate smart title for non-Claude sessions (no JSONL to watch)
+            if (session?.provider !== "claude-code" && !titleGeneratedRef.current) {
               titleGeneratedRef.current = true;
               invoke<string | null>("generate_title_from_text", { message: prompt.substring(0, 500) })
                 .then((title) => {
@@ -1565,6 +1566,7 @@ const rowVirtualizer = useVirtualizer({
       if (content) {
         // Use a stable ID for this streaming message
         const streamId = apiMsgId || "stream-current";
+        currentStreamIdRef.current = streamId;
 
         // Accumulate blocks for this message ID.
         // Each SDK event typically contains a single block; merge them all.
@@ -1898,7 +1900,7 @@ const rowVirtualizer = useVirtualizer({
 
   // ── Poll OpenCode usage ─────────────────────────────────────────
   useEffect(() => {
-    if (session?.provider !== "opencode") return;
+    if (session?.provider === "claude-code" || session?.provider === "codex") return;
     if (session?.status !== "running" && session?.status !== "starting") return;
 
     const fetchUsage = () => {
@@ -1973,7 +1975,31 @@ const rowVirtualizer = useVirtualizer({
       // 1. Duplicates of messages already added via sendMessage()
       // 2. Synthetic messages like Task tool prompts
       // Only process user messages during history replay (loading persisted conversations)
-      if (!isHistoryReplay) return null;
+      if (!isHistoryReplay) {
+        // However, intercept tool_result blocks and merge them into the
+        // current streaming assistant message so that per-tool loading
+        // states update as each tool completes (not all at once).
+        const message = msg.message as Record<string, unknown> | undefined;
+        const rawContent = normalizeContent(message?.content);
+        if (rawContent && currentStreamIdRef.current) {
+          const toolResults = rawContent.filter((b) => b.type === "tool_result");
+          if (toolResults.length > 0) {
+            const streamId = currentStreamIdRef.current;
+            const existing = accumulatedBlocksRef.current.get(streamId) || [];
+            const existingIds = new Set(
+              existing.filter((b) => b.type === "tool_result").map((b) => (b as { tool_use_id?: string }).tool_use_id)
+            );
+            const newResults = toolResults.filter((b) => !existingIds.has((b as { tool_use_id?: string }).tool_use_id));
+            if (newResults.length > 0) {
+              const updated = [...existing, ...newResults];
+              accumulatedBlocksRef.current.set(streamId, updated);
+              pendingStreamRef.current = { id: streamId, content: updated };
+              flushPendingStream();
+            }
+          }
+        }
+        return null;
+      }
 
       const message = msg.message as Record<string, unknown> | undefined;
       const rawContent = message?.content;
@@ -2259,8 +2285,8 @@ const rowVirtualizer = useVirtualizer({
       try {
         await invoke("send_agent_message", { sessionId: targetSessionId, message: jsonLine });
 
-        // Generate smart title for OpenCode sessions (no JSONL to watch)
-        if (session?.provider === "opencode" && !titleGeneratedRef.current && text) {
+        // Generate smart title for non-Claude sessions (no JSONL to watch)
+        if (session?.provider !== "claude-code" && !titleGeneratedRef.current && text) {
           titleGeneratedRef.current = true;
           invoke<string | null>("generate_title_from_text", { message: text })
             .then((title) => {
@@ -2278,6 +2304,28 @@ const rowVirtualizer = useVirtualizer({
         if (attempt < MAX_RETRIES && errStr.includes("query is already in progress")) {
           setTimeout(() => trySend(attempt + 1), 500);
           return;
+        }
+        // Session was removed (bridge exited) before React state caught up.
+        // Transparently restart and retry once.
+        if (attempt === 0 && errStr.includes("session not found") && onResumeRef.current) {
+          try {
+            await onResumeRef.current();
+            await new Promise((r) => setTimeout(r, 300));
+            trySend(1);
+            return;
+          } catch (resumeErr) {
+            stopGenerating();
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `error-${Date.now()}`,
+                type: "error",
+                content: [{ type: "text", text: `Failed to resume session: ${resumeErr}` }],
+                timestamp: Date.now(),
+              },
+            ]);
+            return;
+          }
         }
         stopGenerating();
         setMessages((prev) => [
@@ -3535,6 +3583,8 @@ if (message.type === "user") {
             const { bundle } = item;
             const isExpanded = toolStates[bundle.id] === "expanded";
             const isLastGroup = bundle.lastGroup.blockId === lastToolGroupId;
+            const isLastBundleItem = i === bundledItems.length - 1;
+            const showLastGroupOutside = isLastMessage && isLastBundleItem;
             return (
               <div key={bundle.id} className="flex flex-col gap-3">
                 <ToolBundleSummaryBar
@@ -3544,17 +3594,20 @@ if (message.type === "user") {
                   toolStates={toolStates}
                   onToggleTool={onToggleTool}
                   isLastMessage={isLastMessage}
+                  includeLastGroup={!showLastGroupOutside}
                 />
-                <ConsolidatedToolGroup
-                  group={bundle.lastGroup}
-                  isLast={isLastGroup}
-                  isLastMessage={isLastMessage}
-                  expanded={toolStates[bundle.lastGroup.blockId] === "expanded"}
-                  collapsed={toolStates[bundle.lastGroup.blockId] === "collapsed"}
-                  onToggle={(isCurrentlyExpanded) =>
-                    onToggleTool(bundle.lastGroup.blockId, isCurrentlyExpanded)
-                  }
-                />
+                {showLastGroupOutside && (
+                  <ConsolidatedToolGroup
+                    group={bundle.lastGroup}
+                    isLast={isLastGroup}
+                    isLastMessage={isLastMessage}
+                    expanded={toolStates[bundle.lastGroup.blockId] === "expanded"}
+                    collapsed={toolStates[bundle.lastGroup.blockId] === "collapsed"}
+                    onToggle={(isCurrentlyExpanded) =>
+                      onToggleTool(bundle.lastGroup.blockId, isCurrentlyExpanded)
+                    }
+                  />
+                )}
               </div>
             );
           }
@@ -4484,6 +4537,7 @@ function ToolBundleSummaryBar({
   toolStates,
   onToggleTool,
   isLastMessage,
+  includeLastGroup = false,
 }: {
   bundle: ToolBundle;
   expanded: boolean;
@@ -4491,6 +4545,7 @@ function ToolBundleSummaryBar({
   toolStates: Record<string, "expanded" | "collapsed">;
   onToggleTool: (id: string, isCurrentlyExpanded: boolean) => void;
   isLastMessage: boolean;
+  includeLastGroup?: boolean;
 }) {
   // Sort pills by count descending
   const pills = useMemo(() =>
@@ -4549,6 +4604,18 @@ function ToolBundleSummaryBar({
               }
             />
           ))}
+          {includeLastGroup && (
+            <ConsolidatedToolGroup
+              group={bundle.lastGroup}
+              isLast={false}
+              isLastMessage={isLastMessage}
+              expanded={toolStates[bundle.lastGroup.blockId] === "expanded"}
+              collapsed={toolStates[bundle.lastGroup.blockId] === "collapsed"}
+              onToggle={(isCurrentlyExpanded) =>
+                onToggleTool(bundle.lastGroup.blockId, isCurrentlyExpanded)
+              }
+            />
+          )}
         </div>
       )}
     </div>

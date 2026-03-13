@@ -524,7 +524,7 @@ export default function CommandPalette({
                             className="ml-1 text-[9px] px-1 py-px rounded uppercase tracking-wider font-semibold shrink-0"
                             style={{ background: "var(--bg-tertiary)", color: "var(--text-tertiary)" }}
                           >
-                            {session.provider === "opencode" ? "OC" : session.provider === "claude-code" ? "CC" : session.provider}
+                            {session.provider === "opencode" ? "OC" : session.provider === "claude-code" ? "CC" : session.provider === "codex" ? "CX" : session.provider}
                           </span>
                         )}
                       </div>

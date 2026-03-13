@@ -334,6 +334,9 @@ export default function App() {
   // ── Dynamic OpenCode models (fetched at startup) ─────────────
   const [opencodeModels, setOpencodeModels] = useState<OpenCodeModel[]>([]);
 
+  // ── Dynamic Codex models (fetched at startup) ─────────────────
+  const [codexModels, setCodexModels] = useState<ModelOption[]>([]);
+
   // Fetch opencode models once at startup (only if opencode is available)
   useEffect(() => {
     invoke<string>("fetch_opencode_models").then((json) => {
@@ -352,6 +355,23 @@ export default function App() {
         }
       } catch {}
     }).catch((err) => console.warn("Failed to fetch opencode models:", err));
+  }, []);
+
+  useEffect(() => {
+    invoke<string>("fetch_codex_models").then((json) => {
+      try {
+        const models: ModelOption[] = JSON.parse(json);
+        if (models.length > 0) {
+          setCodexModels(models);
+          setModelByProvider((prev) => {
+            if (prev["codex"]) return prev;
+            const next = { ...prev, codex: models[0].id };
+            localStorage.setItem("claude-orchestrator-models", JSON.stringify(next));
+            return next;
+          });
+        }
+      } catch {}
+    }).catch(() => {});
   }, []);
 
   const handleAvailableModels = useCallback((models: OpenCodeModel[]) => {
@@ -386,8 +406,11 @@ export default function App() {
         ...paid.map((m) => ({ id: `${m.providerID}/${m.id}`, name: m.name, desc: `$${m.costIn}/${m.costOut} per MTok`, free: false as const })),
       ];
     }
+    if (activeProvider === "codex" && codexModels.length > 0) {
+      return codexModels;
+    }
     return modelsForProvider(activeProvider);
-  }, [activeProvider, opencodeModels]);
+  }, [activeProvider, opencodeModels, codexModels]);
   const selectedModel = modelByProvider[activeProvider] || (
     activeProvider === "opencode" && activeModels.length > 0
       ? activeModels[0].id // first free model
@@ -1366,6 +1389,8 @@ export default function App() {
                 <div className="text-[10px] text-[var(--text-tertiary)] px-0.5">
                   {selectedProvider === "claude-code"
                     ? "Install Claude Code: npm install -g @anthropic-ai/claude-code"
+                    : selectedProvider === "codex"
+                    ? "Install Codex: npm install -g @openai/codex"
                     : "Install OpenCode: curl -fsSL https://opencode.ai/install | bash"}
                 </div>
               )}

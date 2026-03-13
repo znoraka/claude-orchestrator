@@ -223,7 +223,7 @@ export default function Sidebar({
 
   // Auto-select first item when filter changes
   useEffect(() => {
-    setKeyboardSelectedId(flatSessions[0]?.id ?? null);
+    setKeyboardSelectedId(filterQ ? (flatSessions[0]?.id ?? null) : null);
   }, [filterQ, flatSessions]);
 
   // Scroll keyboard-selected item into view

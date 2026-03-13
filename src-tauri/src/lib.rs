@@ -485,6 +485,52 @@ async fn fetch_opencode_models(state: State<'_, AppState>) -> Result<String, Str
     result
 }
 
+/// Spawn the codex bridge in list-models mode and return the JSON array of models.
+#[tauri::command]
+async fn fetch_codex_models(state: State<'_, AppState>) -> Result<String, String> {
+    let bridge_path = state
+        .agent_script_paths
+        .get("codex")
+        .ok_or_else(|| "Codex bridge script not found".to_string())?
+        .clone();
+
+    let result: Result<String, String> = tauri::async_runtime::spawn_blocking(move || {
+        let node_bin = resolve_bin("node")
+            .ok_or_else(|| "Could not find `node` binary".to_string())?;
+        let path_env = shell_path();
+        let home = std::env::var("HOME")
+            .unwrap_or_else(|_| format!("/Users/{}", std::env::var("USER").unwrap_or_default()));
+        let openai_api_key = shell_env_var("OPENAI_API_KEY");
+        let config_json = r#"{"mode":"list-models"}"#;
+
+        let mut cmd = std::process::Command::new(&node_bin);
+        cmd.arg(&bridge_path)
+            .arg(config_json)
+            .env("PATH", path_env)
+            .env("HOME", &home)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Some(key) = openai_api_key {
+            cmd.env("OPENAI_API_KEY", key);
+        }
+
+        let output = cmd.output()
+            .map_err(|e| format!("Failed to spawn codex bridge: {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if stdout.is_empty() {
+            return Ok("[]".to_string());
+        }
+        let first_line = stdout.lines().next().unwrap_or("[]");
+        Ok(first_line.to_string())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?;
+
+    result
+}
+
 /// Check which agent providers have their CLI available on the system.
 /// Returns a JSON object like {"claude-code": true, "opencode": false}.
 #[tauri::command]
@@ -492,6 +538,7 @@ fn check_providers() -> std::collections::HashMap<String, bool> {
     let mut result = std::collections::HashMap::new();
     result.insert("claude-code".to_string(), resolve_bin("claude").is_some());
     result.insert("opencode".to_string(), resolve_bin("opencode").is_some());
+    result.insert("codex".to_string(), resolve_bin("codex").is_some());
     result
 }
 
@@ -2134,6 +2181,32 @@ fn shell_path() -> &'static str {
     })
 }
 
+/// Read an environment variable from the user's login+interactive shell.
+/// Useful for GUI-launched processes that don't inherit the terminal env.
+fn shell_env_var(name: &str) -> Option<String> {
+    // Fast path: already in the process environment (e.g. app started from terminal).
+    if let Ok(val) = std::env::var(name) {
+        if !val.is_empty() {
+            return Some(val);
+        }
+    }
+    // Slow path: source both login and interactive rc files via the user's shell.
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let script = format!("echo ${}", name);
+    let val = std::process::Command::new(&shell)
+        .args(["-ilc", &script])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    if val == name || val.starts_with('$') {
+        // Shell echoed the literal variable name — not set
+        None
+    } else {
+        Some(val)
+    }
+}
+
 /// Resolve the absolute path of a binary using the shell PATH,
 /// falling back to well-known install locations.
 /// Results are cached so we only spawn a shell once per binary name.
@@ -3642,6 +3715,7 @@ pub fn run() {
                 let bridges = [
                     ("claude-code", "agent-bridge.bundle.mjs"),
                     ("opencode", "agent-bridge-opencode.bundle.mjs"),
+                    ("codex", "agent-bridge-codex.bundle.mjs"),
                 ];
                 let mut map = std::collections::HashMap::new();
                 for (provider, filename) in bridges {
@@ -3787,6 +3861,7 @@ pub fn run() {
             destroy_agent_session,
             get_agent_history,
             fetch_opencode_models,
+            fetch_codex_models,
             check_providers,
             save_clipboard_image,
             get_clipboard_file_paths,

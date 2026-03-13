@@ -1,4 +1,4 @@
-export type AgentProvider = "claude-code" | "opencode";
+export type AgentProvider = "claude-code" | "opencode" | "codex";
 
 export interface ModelOption {
   id: string;
@@ -23,6 +23,12 @@ export const AGENT_PROVIDERS: { id: AgentProvider; label: string; models: ModelO
     label: "Open Code",
     defaultModel: "",
     models: [], // populated dynamically via fetch_opencode_models
+  },
+  {
+    id: "codex",
+    label: "Codex",
+    defaultModel: "o4-mini",
+    models: [], // populated dynamically via fetch_codex_models
   },
 ];
 
