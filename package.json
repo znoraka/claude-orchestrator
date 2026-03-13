@@ -34,6 +34,8 @@
     "@codemirror/search": "^6.6.0",
     "@codemirror/state": "^6.5.4",
     "@codemirror/view": "^6.39.16",
+    "@fontsource-variable/dm-sans": "^5.2.8",
+    "@pierre/diffs": "^1.0.11",
     "@replit/codemirror-vim": "^6.3.0",
     "@tanstack/react-virtual": "^3.13.21",
     "@tauri-apps/api": "^2",

@@ -274,6 +274,11 @@ export default function App() {
   const [railTab, setRailTab] = useState<"git" | "cost">(() => {
     return (localStorage.getItem("ui:railTab") as "git" | "cost") ?? "git";
   });
+  const [railWidth, setRailWidth] = useState<number>(() => {
+    const saved = parseInt(localStorage.getItem("ui:railWidth") ?? "320", 10);
+    return isNaN(saved) ? 320 : saved;
+  });
+  const isResizingRail = useRef(false);
 
   // ── Model picker (per-provider, persisted) ──────────────────
   const [modelByProvider, setModelByProvider] = useState<Record<string, string>>(() => {
@@ -299,6 +304,7 @@ export default function App() {
   useEffect(() => { localStorage.setItem("ui:drawerOpen", JSON.stringify(drawerOpen)); }, [drawerOpen]);
   useEffect(() => { localStorage.setItem("ui:railOpen", JSON.stringify(railOpen)); }, [railOpen]);
   useEffect(() => { localStorage.setItem("ui:railTab", railTab); }, [railTab]);
+  useEffect(() => { localStorage.setItem("ui:railWidth", String(railWidth)); }, [railWidth]);
 
   // ── Pre-warm context menu IPC + icon cache ─────────────────────
   useEffect(() => {
@@ -1069,15 +1075,38 @@ export default function App() {
 
         {/* Context rail */}
         <div
-          className="overflow-hidden shrink-0"
-          style={{ width: railOpen && activeSessionId ? 320 : 0 }}
+          className="overflow-hidden shrink-0 relative"
+          style={{ width: railOpen && activeSessionId ? railWidth : 0, transition: isResizingRail.current ? "none" : "width 200ms ease" }}
         >
+          {/* Drag handle */}
+          {railOpen && activeSessionId && (
+            <div
+              className="absolute left-0 top-0 bottom-0 w-1 z-10 cursor-col-resize hover:bg-[var(--accent)]/40 active:bg-[var(--accent)]/60 transition-colors"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                isResizingRail.current = true;
+                const startX = e.clientX;
+                const startWidth = railWidth;
+                const onMove = (ev: MouseEvent) => {
+                  const delta = startX - ev.clientX;
+                  setRailWidth(Math.max(200, Math.min(700, startWidth + delta)));
+                };
+                const onUp = () => {
+                  isResizingRail.current = false;
+                  window.removeEventListener("mousemove", onMove);
+                  window.removeEventListener("mouseup", onUp);
+                };
+                window.addEventListener("mousemove", onMove);
+                window.addEventListener("mouseup", onUp);
+              }}
+            />
+          )}
           <div
             className="h-full"
             style={{
-              width: 320,
-              transform: railOpen && activeSessionId ? "translateX(0)" : "translateX(320px)",
-              transition: "transform 150ms ease",
+              width: railWidth,
+              transform: railOpen && activeSessionId ? "translateX(0)" : `translateX(${railWidth}px)`,
+              transition: isResizingRail.current ? "none" : "transform 150ms ease",
               willChange: "transform",
             }}
           >

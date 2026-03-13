@@ -1003,49 +1003,15 @@ const adaptiveOverscan = useMemo(() => {
   return Math.min(Math.max(calculatedOverscan, 3), 15);
 }, [scrollRef.current, allMessages, estimateItemSize]);
 
-// Measure element with caching to prevent layout thrashing
-const measurementCache = useRef(new Map<string, number>());
+// Always measure the current DOM height — never cache, so stale heights can't cause overlap
 const measureElementCache = useCallback((el: Element | null): number => {
   if (!el) return 0;
-
-  // Use element's ID or index as cache key
-  let cacheKey = el.id;
-  const datasetIndex = (el as HTMLElement).dataset?.index;
-  if (!cacheKey && datasetIndex) {
-    cacheKey = datasetIndex;
-  }
-  if (!cacheKey) {
-    cacheKey = Math.random().toString(36).substr(2, 9);
-  }
-
-  // Return cached measurement if available
-  const cached = measurementCache.current.get(cacheKey);
-  if (cached !== undefined) {
-    return cached;
-  }
-
-  // Measure and cache the result
-  const height = el.getBoundingClientRect().height || el.scrollHeight || 0;
-  // Avoid caching zero-height measurements (first-frame layout can be 0)
-  if (height > 0) {
-    measurementCache.current.set(cacheKey, height);
-  }
-
-  // Limit cache size to prevent memory leaks
-  if (measurementCache.current.size > 1000) {
-    // Clear oldest entries when cache gets too large
-    const keys = Array.from(measurementCache.current.keys());
-    measurementCache.current.clear();
-    for (let i = Math.max(0, keys.length - 500); i < keys.length; i++) {
-      measurementCache.current.set(keys[i], measurementCache.current.get(keys[i]) || 0);
-    }
-  }
-
+  const height = el.getBoundingClientRect().height;
   if (height === 0) {
+    const datasetIndex = (el as HTMLElement).dataset?.index;
     const index = datasetIndex ? Number(datasetIndex) : -1;
     return index >= 0 ? estimateItemSize(index) : 80;
   }
-
   return height;
 }, [estimateItemSize]);
 
@@ -1062,17 +1028,18 @@ const rowVirtualizer = useVirtualizer({
   const virtualizerTotalSize = rowVirtualizer.getTotalSize();
   const virtualItems = useVirtualRendering ? rowVirtualizer.getVirtualItems() : [];
 
-  // Reset measurement cache when switching sessions to avoid stale sizes
   useEffect(() => {
-    measurementCache.current.clear();
     rowVirtualizer.measure();
   }, [sessionId, rowVirtualizer]);
 
-  // Force an early measurement pass before paint to avoid 0-height flashes
+  // Force measurement when virtualization first activates or session changes
+  // NOTE: Do NOT include allMessages.length — measure() resets ALL items to estimates,
+  // and existing items won't re-trigger ResizeObserver since their DOM size didn't change,
+  // causing persistent overlap with stale estimated heights.
   useLayoutEffect(() => {
     if (!useVirtualRendering || !isActive) return;
     rowVirtualizer.measure();
-  }, [useVirtualRendering, allMessages.length, isActive, sessionId, rowVirtualizer]);
+  }, [useVirtualRendering, isActive, sessionId, rowVirtualizer]);
 
   // Hide message list during session switch or when virtualization first turns on
   useLayoutEffect(() => {
@@ -2976,7 +2943,7 @@ const rowVirtualizer = useVirtualizer({
               )}
 
               {/* Hero input card */}
-              <div className="chat-input-card relative rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] focus-within:border-[var(--accent)]/50 focus-within:shadow-[0_0_0_3px_rgba(108,126,230,0.08)] transition-all duration-200 shadow-[0_2px_16px_rgba(0,0,0,0.25)]">
+              <div className="chat-input-card relative rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] focus-within:border-[var(--accent)]/50 focus-within:shadow-[0_0_0_3px_rgba(124,91,240,0.08)] transition-all duration-200 shadow-[0_2px_16px_rgba(0,0,0,0.25)]">
                 {showFileMenu && (
                   <div className="absolute bottom-full left-0 right-0 pb-2">
                     <div
@@ -3199,7 +3166,7 @@ const rowVirtualizer = useVirtualizer({
                   <button
                     onClick={() => sendMessage()}
                     disabled={!inputText.trim() && images.length === 0 && fileReferences.length === 0 && pastedFiles.length === 0}
-                    className={`${isGenerating ? "" : "ml-auto"} px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-35 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-all duration-150 shrink-0 shadow-[0_0_12px_rgba(108,126,230,0.2)]`}
+                    className={`${isGenerating ? "" : "ml-auto"} px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-35 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-all duration-150 shrink-0 shadow-[0_0_12px_rgba(124,91,240,0.2)]`}
                   >
                     {isGenerating ? "Queue" : "Send"}
                   </button>
@@ -3391,7 +3358,7 @@ const MessageBubble = memo(function MessageBubble({
               </button>
             )}
           </div>
-          <div className="max-w-[85%] max-h-96 overflow-y-auto chat-bubble-user text-[var(--text-primary)] rounded-2xl px-5 py-3">
+          <div className="max-w-[85%] max-h-96 overflow-y-auto chat-bubble-user text-[var(--text-primary)] rounded-2xl rounded-br-sm px-4 py-3">
             {visible.map((block, i) => {
               // If this is a plan execution message loaded from JSONL, show short label instead of full plan text
               if (hasPlan && block.type === "text" && block.text && block.text.length > 200) {

@@ -45,13 +45,13 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
 
     const term = new XTerm({
       cursorBlink: true,
-      fontFamily: '"SF Mono", "Fira Code", "Cascadia Code", monospace',
+      fontFamily: '"SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
       fontSize: 14,
       lineHeight: 1.3,
       theme: {
-        background: "#0d1117",
-        foreground: "#e6edf3",
-        cursor: "#7c5cbf",
+        background: "#0c0c0c",
+        foreground: "#f5f5f5",
+        cursor: "#7c5bf0",
         selectionBackground: "#264f78",
         black: "#484f58",
         red: "#ff7b72",

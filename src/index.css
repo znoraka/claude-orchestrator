@@ -1,39 +1,41 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
+@import "@fontsource-variable/dm-sans";
 
 :root {
-  --bg-primary:     #0b0d11;
-  --bg-secondary:   #10131a;
-  --bg-tertiary:    #171b26;
-  --bg-hover:       #1e2333;
-  --bg-elevated:    #1a1f2e;
-  --bg-surface:     #13161f;
-  --border-color:   #1e2333;
-  --border-subtle:  #161a25;
-  --text-primary:   #e8ecf4;
-  --text-secondary: #8b95a8;
-  --text-tertiary:  #555e72;
-  --accent:         #6c7ee6;
-  --accent-hover:   #8190f0;
-  --accent-muted:   rgba(108, 126, 230, 0.10);
-  --accent-glow:    rgba(108, 126, 230, 0.20);
+  --bg-primary:     #0c0c0c;
+  --bg-secondary:   #0e0e0e;
+  --bg-tertiary:    #141414;
+  --bg-hover:       rgba(255,255,255,0.04);
+  --bg-elevated:    #101010;
+  --bg-surface:     #0e0e0e;
+  --border-color:   rgba(255,255,255,0.06);
+  --border-subtle:  rgba(255,255,255,0.04);
+  --text-primary:   #f5f5f5;
+  --text-secondary: #a1a1aa;
+  --text-tertiary:  #52525b;
+  --accent:         #7c5bf0;
+  --accent-hover:   #9178f5;
+  --accent-muted:   rgba(124, 91, 240, 0.10);
+  --accent-glow:    rgba(124, 91, 240, 0.20);
   --danger:         #f06060;
-  --success:        #3ecf8e;
-  --section-label:  #6c7ee6;
+  --success:        #36e399;
+  --section-label:  #7c5bf0;
   --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
   --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
   --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
-  --activity-bar-bg: #080a0f;
-  --drawer-bg:       #0e1118;
-  --rail-bg:         #0e1118;
-  --card-bg:         #13161f;
-  --card-border:     #1e2333;
-  --status-running:  #3ecf8e;
-  --status-waiting:  #f59e0b;
-  --status-stopped:  #3a3f52;
+  --font-mono: "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --activity-bar-bg: #090909;
+  --drawer-bg:       #0b0b0b;
+  --rail-bg:         #0b0b0b;
+  --card-bg:         #0e0e0e;
+  --card-border:     rgba(255,255,255,0.06);
+  --status-running:  #36e399;
+  --status-waiting:  #f0684e;
+  --status-stopped:  #3ca052;
 }
 
 * {
@@ -44,14 +46,24 @@
 body {
   background: var(--bg-primary);
   color: var(--text-primary);
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
-  font-feature-settings: "cv11", "ss01";
+  font-family: "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", system-ui, sans-serif;
   overflow: hidden;
   height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  letter-spacing: -0.011em;
+  letter-spacing: 0;
+  color-scheme: dark;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23noise)' opacity='0.035'/%3E%3C/svg%3E");
+  background-repeat: repeat;
 }
 
 #root {
@@ -62,8 +74,8 @@ body {
 
 .chat-shell {
   background:
-    radial-gradient(1200px 600px at 50% -280px, rgba(255,255,255,0.08), transparent 60%),
-    linear-gradient(180deg, #0d1117 0%, #0a0d12 100%);
+    radial-gradient(1200px 600px at 50% -280px, rgba(255,255,255,0.02), transparent 60%),
+    linear-gradient(180deg, #0c0c0c 0%, #0a0a0a 100%);
   position: relative;
   overflow: hidden;
   z-index: 0;
@@ -74,8 +86,8 @@ body {
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(900px 500px at 50% 120%, rgba(0,0,0,0.45), transparent 65%);
-  opacity: 0.7;
+    radial-gradient(900px 500px at 50% 120%, rgba(0,0,0,0.3), transparent 65%);
+  opacity: 0.5;
   z-index: 0;
 }
 
@@ -90,10 +102,9 @@ body {
 }
 
 .chat-bubble-user {
-  background: linear-gradient(180deg, rgba(108,126,230,0.18) 0%, rgba(108,126,230,0.08) 100%);
-  border: 1px solid rgba(129,144,240,0.25);
-  box-shadow: 0 8px 22px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.04);
-  backdrop-filter: blur(6px);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  box-shadow: none;
 }
 
 .chat-input-area {
@@ -102,11 +113,9 @@ body {
 }
 
 .chat-input-card {
-  background: linear-gradient(180deg, #11151d 0%, #0c1016 100%);
-  border: 1px solid rgba(255,255,255,0.06);
-  box-shadow:
-    0 18px 40px rgba(0,0,0,0.5),
-    inset 0 1px 0 rgba(255,255,255,0.05);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 2px 16px rgba(0,0,0,0.25);
 }
 
 /* Terminal container */
@@ -119,29 +128,25 @@ body {
   overflow-y: auto !important;
 }
 
-/* Scrollbar — thin, only on hover */
+/* Scrollbar — thin, always visible */
 ::-webkit-scrollbar {
-  width: 4px;
+  width: 6px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 4px;
-  transition: background 200ms ease;
-}
-*:hover::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.12);
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.25) !important;
+  background: rgba(255, 255, 255, 0.18);
 }
 
 /* Focus-visible states */
 *:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 4px rgba(108, 126, 230, 0.4);
+  box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 4px rgba(124, 91, 240, 0.4);
 }
 
 input:focus-visible, textarea:focus-visible {
@@ -334,6 +339,27 @@ input:focus-visible, textarea:focus-visible {
   opacity: 1;
 }
 
+/* ── Diff panel (pierre/diffs) ────────────────────────────────────── */
+
+.diff-panel-viewport {
+  background: color-mix(in srgb, var(--bg-primary) 94%, var(--bg-secondary));
+}
+
+.diff-render-file {
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  overflow: clip;
+  background: color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-primary));
+}
+
+/* Legacy diff table (if still used) */
+.diff-table td {
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 20px;
+  vertical-align: middle;
+}
+
 /* ── PR comment HTML body styles ─────────────────────────────────── */
 
 .pr-comment-body {
@@ -407,26 +433,23 @@ input:focus-visible, textarea:focus-visible {
   border-radius: 0.5rem;
 }
 .prose-agent pre {
-  background: linear-gradient(180deg, #11151d 0%, #0b0f15 100%);
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 0.9rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 0.75rem;
   padding: 1rem 1.1rem;
   margin: 0.9rem 0;
   overflow-x: auto;
   font-size: 0.8rem;
   line-height: 1.65;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-  box-shadow:
-    0 12px 28px rgba(0,0,0,0.5),
-    inset 0 1px 0 rgba(255,255,255,0.04);
 }
 .prose-agent pre code { background: none; padding: 0; border-radius: 0; color: var(--text-primary); }
 .prose-agent code {
-  background: rgba(255,255,255,0.06);
-  color: #c8d2f7;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
   padding: 0.12rem 0.35rem;
   border-radius: 0.35rem;
-  border: 1px solid rgba(255,255,255,0.08);
+  border: 1px solid var(--border-color);
   font-size: 0.86em;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
@@ -543,8 +566,8 @@ input:focus-visible, textarea:focus-visible {
 
 /* Amber pulse for waiting sessions */
 @keyframes amber-pulse {
-  0%, 100% { opacity: 0.7; box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
-  50% { opacity: 1; box-shadow: 0 0 0 4px rgba(245, 158, 11, 0); }
+  0%, 100% { opacity: 0.7; box-shadow: 0 0 0 0 rgba(240, 104, 78, 0.4); }
+  50% { opacity: 1; box-shadow: 0 0 0 4px rgba(240, 104, 78, 0); }
 }
 .animate-amber-pulse {
   animation: amber-pulse 2s ease-in-out infinite;
@@ -552,8 +575,8 @@ input:focus-visible, textarea:focus-visible {
 
 /* Green ring for running sessions */
 @keyframes green-ring {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(62, 207, 142, 0.5); }
-  50% { box-shadow: 0 0 0 3px rgba(62, 207, 142, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(54, 227, 153, 0.5); }
+  50% { box-shadow: 0 0 0 3px rgba(54, 227, 153, 0); }
 }
 .animate-green-ring {
   animation: green-ring 1.5s ease-in-out infinite;
