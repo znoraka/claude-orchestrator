@@ -25,6 +25,7 @@ export function getToolColor(toolName: string, isPlanFile = false): string {
     case "WebSearch": case "WebFetch": return "text-cyan-400";
     case "Task": return "text-indigo-400";
     case "TodoWrite": return "text-emerald-400";
+    case "Agent": return "text-sky-400";
     default: return "text-[var(--text-secondary)]";
   }
 }
@@ -87,6 +88,12 @@ export function getToolSummary(toolName: string, input: Record<string, unknown>,
       return input.query as string || "";
     case "WebFetch":
       return input.url as string || "";
+    case "Agent": {
+      const desc = input.description as string || "";
+      const type = input.subagent_type as string || "";
+      if (desc && type) return `${desc}  ·  ${type}`;
+      return desc || type;
+    }
     case "Task":
       return input.description as string || "";
     case "TodoWrite": {
@@ -128,7 +135,7 @@ export function groupToolBlocks(blocks: ContentBlock[], messageId: string): Grou
 
   const hiddenToolIds = new Set<string>();
   for (const block of blocks) {
-    if (block.type === "tool_use" && (block.name === "ToolSearch" || block.name === "AskUserQuestion" || block.name === "question") && block.id) {
+    if (block.type === "tool_use" && (block.name === "ToolSearch" || block.name === "AskUserQuestion" || block.name === "question" || block.name === "ExitPlanMode") && block.id) {
       hiddenToolIds.add(block.id);
     }
   }

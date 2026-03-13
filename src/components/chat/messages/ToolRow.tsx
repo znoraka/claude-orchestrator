@@ -11,9 +11,10 @@ interface ToolRowProps {
   onToggle: (blockId: string, isCurrentlyExpanded: boolean) => void;
   sessionId?: string;
   onFileOpen?: (path: string) => void;
+  flat?: boolean;
 }
 
-export function ToolRow({ group, isLastMessage, isLastTool, toolState, onToggle }: ToolRowProps) {
+export function ToolRow({ group, isLastMessage, isLastTool, toolState, onToggle, flat }: ToolRowProps) {
   const rawToolName = group.toolUse.name || "Unknown tool";
   const toolName = useMemo(() => canonicalToolName(rawToolName), [rawToolName]);
   const input = group.toolUse.input || {};
@@ -26,7 +27,7 @@ export function ToolRow({ group, isLastMessage, isLastTool, toolState, onToggle 
 
   // Expand logic: expanded if manually expanded, in-progress, or last tool in last message
   const isExpanded = !!(isPlanFile
-    ? toolState === "expanded"
+    ? toolState === "expanded" || (isLastTool && isLastMessage && toolState !== "collapsed")
     : toolState === "expanded"
       || (!hasResult && toolState !== "collapsed")
       || (isLastTool && isLastMessage && toolState !== "collapsed"));
@@ -43,12 +44,12 @@ export function ToolRow({ group, isLastMessage, isLastTool, toolState, onToggle 
     <span className="w-3 h-3 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin shrink-0" />
   );
 
-  return (
-    <div className="rounded-md overflow-hidden border border-[var(--border-subtle)]">
+  const rowContent = (
+    <>
       {/* Compact row */}
       <button
         onClick={() => onToggle(group.blockId, isExpanded)}
-        className="w-full flex items-center gap-2 py-1 px-2 hover:bg-white/5 cursor-pointer text-sm transition-colors"
+        className={`w-full flex items-center gap-2 py-1 px-2 hover:bg-white/5 cursor-pointer text-sm transition-colors${flat ? " border-b border-[var(--border-subtle)]" : ""}`}
       >
         {/* Chevron */}
         <svg
@@ -77,6 +78,16 @@ export function ToolRow({ group, isLastMessage, isLastTool, toolState, onToggle 
           <ToolExpandedDetail group={group} toolName={toolName} isError={!!isError} />
         </div>
       )}
+    </>
+  );
+
+  if (flat) {
+    return <div>{rowContent}</div>;
+  }
+
+  return (
+    <div className="rounded-md overflow-hidden border border-[var(--border-subtle)]">
+      {rowContent}
     </div>
   );
 }

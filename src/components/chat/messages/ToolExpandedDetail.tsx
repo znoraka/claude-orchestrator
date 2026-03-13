@@ -179,6 +179,21 @@ function ToolInputView({ toolName, input }: { toolName: string; input: Record<st
       const changes = (input.changes as Array<{ kind: string; path: string }>) ?? [];
       return <div className="py-1.5 px-3 font-mono text-xs space-y-0.5">{changes.map((c, i) => { const sym = c.kind === "add" ? "+" : c.kind === "delete" ? "-" : "~"; const col = c.kind === "add" ? "text-green-400" : c.kind === "delete" ? "text-red-400" : "text-yellow-400"; return <div key={i} className="flex gap-2 items-center"><span className={`${col} font-bold w-3 shrink-0`}>{sym}</span><span className="text-[var(--text-secondary)] truncate">{c.path.split("/").slice(-2).join("/")}</span></div>; })}</div>;
     }
+    case "Agent": {
+      const type = input.subagent_type as string;
+      const prompt = input.prompt as string;
+      return (
+        <div className="py-1.5">
+          {type && (
+            <div className="flex gap-2 px-3 py-0.5 items-center">
+              <span className="text-[10px] uppercase tracking-wider text-[var(--text-tertiary)] shrink-0">type</span>
+              <span className="text-xs font-medium text-sky-400 font-mono">{type}</span>
+            </div>
+          )}
+          {prompt && renderValue("prompt", prompt)}
+        </div>
+      );
+    }
     case "Task":
       return <div className="py-1.5">{renderValue("description", input.description)}{input.prompt != null ? renderValue("prompt", input.prompt) : null}</div>;
     default: {
@@ -223,7 +238,14 @@ export function ToolExpandedDetail({ group, toolName, isError }: ToolExpandedDet
     return <div className="py-1"><EditDiffView filePath={input.file_path as string} oldStr={input.old_string as string} newStr={input.new_string as string} /></div>;
   }
   if (toolName === "Write" && input.file_path && input.content) {
-    return <div className="py-1"><WriteContentView filePath={input.file_path as string} content={input.content as string} /></div>;
+    const filePath = input.file_path as string;
+    const content = input.content as string;
+    if (filePath.includes(".claude/plans/")) {
+      const lines = content.split("\n").map((l) => `+${l}`).join("\n");
+      const patch = `diff --git a/${filePath} b/${filePath}\nnew file mode 100644\n--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${content.split("\n").length} @@\n${lines}`;
+      return <div className="py-1"><PierreDiff diff={patch} mode="unified" filePath={filePath} /></div>;
+    }
+    return <div className="py-1"><WriteContentView filePath={filePath} content={content} /></div>;
   }
   if (toolName === "Read" && readContent && input.file_path) {
     return <div className="py-1"><WriteContentView filePath={input.file_path as string} content={readContent.content} startLine={readContent.startLine} /></div>;
