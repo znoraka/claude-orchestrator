@@ -88,6 +88,14 @@ interface SessionContextValue {
     planContent?: string,
     parentSessionId?: string
   ) => Promise<string>;
+  createPendingSession: (
+    name: string | undefined,
+    directory: string,
+    dangerouslySkipPermissions?: boolean,
+    permissionMode?: "bypassPermissions" | "plan"
+  ) => Promise<string>;
+  startPendingSession: (id: string, provider: AgentProvider, model?: string) => Promise<void>;
+  updateSessionProvider: (id: string, provider: AgentProvider) => void;
   createWorktree: (repoDir: string, branchName: string, worktreeName?: string) => Promise<string>;
   removeWorktree: (path: string) => Promise<void>;
   archiveSession: (id: string) => void;
@@ -440,6 +448,67 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     },
     [enforceMaxSessions, showError, saveSessionsImmediately]
   );
+
+  const createPendingSession = useCallback(
+    async (
+      name: string | undefined,
+      directory: string,
+      dangerouslySkipPermissions = false,
+      permissionMode?: "bypassPermissions" | "plan"
+    ) => {
+      const dir = normalizeDir(directory);
+      const id = uuidv4();
+      const now = Date.now();
+      const sessionCount = sessionsRef.current.length;
+      const session: Session = {
+        id,
+        name: name || `Session ${sessionCount + 1}`,
+        hasTitleBeenGenerated: !!name,
+        status: "pending",
+        createdAt: now,
+        lastActiveAt: now,
+        lastMessageAt: now,
+        directory: dir,
+        provider: "claude-code",
+        dangerouslySkipPermissions,
+        permissionMode,
+      };
+      dispatch({ type: "ADD", session });
+      setActiveSessionId(id);
+      setTimeout(() => saveSessionsImmediately(), 0);
+      return id;
+    },
+    [saveSessionsImmediately]
+  );
+
+  const startPendingSession = useCallback(
+    async (id: string, provider: AgentProvider, model?: string) => {
+      const session = sessionsRef.current.find((s) => s.id === id);
+      if (!session) throw new Error(`Session ${id} not found`);
+      try {
+        await invoke("create_agent_session", {
+          sessionId: id,
+          directory: session.directory,
+          claudeSessionId: null,
+          resume: false,
+          systemPrompt: null,
+          provider,
+          model: model || null,
+          permissionMode: session.permissionMode || null,
+        });
+        dispatch({ type: "UPDATE", id, patch: { status: "running", provider, model: model || undefined } });
+        await enforceMaxSessions(id);
+      } catch (err) {
+        dispatch({ type: "UPDATE", id, patch: { status: "stopped" } });
+        throw err;
+      }
+    },
+    [enforceMaxSessions]
+  );
+
+  const updateSessionProvider = useCallback((id: string, provider: AgentProvider) => {
+    dispatch({ type: "UPDATE", id, patch: { provider } });
+  }, []);
 
   const deleteSession = useCallback(
     async (id: string) => {
@@ -1030,6 +1099,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       selectWorkspace,
       selectWorktree,
       createSession,
+      createPendingSession,
+      startPendingSession,
+      updateSessionProvider,
       createWorktree,
       removeWorktree,
       archiveSession,
@@ -1062,6 +1134,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       selectWorkspace,
       selectWorktree,
       createSession,
+      createPendingSession,
+      startPendingSession,
+      updateSessionProvider,
       createWorktree,
       removeWorktree,
       archiveSession,

@@ -43,7 +43,7 @@ export function defaultModelForProvider(provider: AgentProvider): string {
 export interface Session {
   id: string;
   name: string;
-  status: "running" | "stopped" | "starting";
+  status: "running" | "stopped" | "starting" | "pending";
   createdAt: number;
   lastActiveAt: number;
   lastMessageAt: number; // updated only when user sends a message (for sidebar sort)

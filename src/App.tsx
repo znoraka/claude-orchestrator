@@ -14,7 +14,7 @@ import { prewarmContextMenu } from "./components/ContextMenu";
 import { repoRootDir, worktreeName } from "./utils/workspaces";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
-import { AGENT_PROVIDERS, defaultModelForProvider, jsonlDirectory, modelsForProvider, type AgentProvider, type ModelOption, type Session } from "./types";
+import { defaultModelForProvider, jsonlDirectory, modelsForProvider, type AgentProvider, type ModelOption, type Session } from "./types";
 import CommandPalette from "./components/CommandPalette";
 import { useUpdater } from "./hooks/useUpdater";
 import { useToast } from "./components/Toast";
@@ -60,6 +60,9 @@ const SessionPanel = memo(function SessionPanel({
   parentSession,
   childSessions,
   onOpenFile,
+  providerAvailability,
+  onProviderChange,
+  onStartPendingSession,
 }: {
   session: Session;
   isActive: boolean;
@@ -86,6 +89,9 @@ const SessionPanel = memo(function SessionPanel({
   parentSession?: { id: string; name: string; claudeSessionId?: string; directory?: string } | null;
   childSessions?: Array<{ id: string; name: string; claudeSessionId?: string; directory?: string; status: string }>;
   onOpenFile?: (filePath: string, diff: string) => void;
+  providerAvailability: Record<string, boolean>;
+  onProviderChange: (provider: AgentProvider) => void;
+  onStartPendingSession: (provider: AgentProvider, model: string) => Promise<void>;
 }) {
   const isVisible = isActive && activePanel === null;
 
@@ -147,6 +153,9 @@ const SessionPanel = memo(function SessionPanel({
           onPermissionModeChange={handlePermissionModeChange}
           parentSession={parentSession}
           childSessions={childSessions}
+          providerAvailability={providerAvailability}
+          onProviderChange={onProviderChange}
+          onStartPendingSession={onStartPendingSession}
         />
       </ErrorBoundary>
     </div>
@@ -163,6 +172,9 @@ export default function App() {
     youngestDescendantMap,
     selectSession,
     createSession,
+    createPendingSession,
+    startPendingSession,
+    updateSessionProvider,
     createWorktree,
     archiveSession,
     unarchiveSession,
@@ -259,7 +271,6 @@ export default function App() {
   const [dirInputDirty, setDirInputDirty] = useState(false);
   const [searchFilter, setSearchFilter] = useState("");
   const [addDirMode, setAddDirMode] = useState(false);
-  const [selectedProvider, setSelectedProvider] = useState<AgentProvider>("claude-code");
   // Track exact last-used session directory (including worktree paths)
   const [preselectedDir, setPreselectedDir] = useState<string | null>(null);
 
@@ -314,6 +325,14 @@ export default function App() {
       invoke("send_agent_message", { sessionId: activeSessionId, message: msg }).catch(() => {});
     }
   }, [activeSessionId, sessions]);
+
+  const handleProviderChange = useCallback((sessionId: string, provider: AgentProvider) => {
+    updateSessionProvider(sessionId, provider);
+  }, [updateSessionProvider]);
+
+  const handleStartPendingSession = useCallback(async (sessionId: string, provider: AgentProvider, model: string) => {
+    await startPendingSession(sessionId, provider, model || undefined);
+  }, [startPendingSession]);
 
   useEffect(() => { localStorage.setItem("ui:drawerOpen", JSON.stringify(drawerOpen)); }, [drawerOpen]);
   useEffect(() => { localStorage.setItem("ui:railOpen", JSON.stringify(railOpen)); }, [railOpen]);
@@ -610,6 +629,27 @@ export default function App() {
   // Branch info for all worktrees across all workspaces (shared hook, polls every 10s)
   const { branches: dialogBranches, byRepo: gitWorktreesByRepo } = useWorktreeBranches(workspaces);
 
+  const sidebarWorkspaces = useMemo(() => {
+    return workspaces.map((ws) => {
+      const existingPaths = new Set(ws.worktrees.map((wt) => wt.path));
+      const gitWts = gitWorktreesByRepo.get(ws.directory) || [];
+      const sessionlessWts = gitWts
+        .filter((gwt) => !existingPaths.has(gwt.path))
+        .map((gwt) => ({
+          path: gwt.path,
+          branch: gwt.branch,
+          isMain: gwt.isMain,
+          sessions: [] as Session[],
+          lastActiveAt: 0,
+        }));
+      const merged = [...ws.worktrees, ...sessionlessWts].sort((a, b) => {
+        if (a.isMain !== b.isMain) return a.isMain ? -1 : 1;
+        return b.lastActiveAt - a.lastActiveAt;
+      });
+      return { ...ws, worktrees: merged };
+    });
+  }, [workspaces, gitWorktreesByRepo]);
+
   const handleNewSession = () => {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
     setDirInputDirty(false);
@@ -680,15 +720,6 @@ export default function App() {
     return paths;
   }, [filteredWorkspaces, gitWorktreesByRepo, filteredExtraRecentDirs]);
 
-  // Auto-select first available provider when dialog opens
-  useEffect(() => {
-    if (!showDirDialog || Object.keys(providerAvailability).length === 0) return;
-    if (providerAvailability[selectedProvider] === false) {
-      const available = AGENT_PROVIDERS.find((p) => providerAvailability[p.id] !== false);
-      if (available) setSelectedProvider(available.id);
-    }
-  }, [showDirDialog, providerAvailability]);
-
   // Scroll selected item into view when navigating with Cmd+N/P
   useEffect(() => {
     if (!preselectedDir || !dirListRef.current) return;
@@ -698,7 +729,7 @@ export default function App() {
 
   const handleDirConfirm = async () => {
     const dir = dirInput.trim();
-    if (!dir || creating || providerAvailability[selectedProvider] === false) return;
+    if (!dir || creating) return;
     setCreating(true);
     const rootDir = repoRootDir(dir);
     localStorage.setItem("claude-orchestrator-last-dir", rootDir);
@@ -706,7 +737,7 @@ export default function App() {
     saveRecentDir(rootDir);
     setShowDirDialog(false);
     try {
-      await createSession(undefined, dir, skipPermissions, undefined, undefined, selectedProvider, selectedModel, permissionMode);
+      await createPendingSession(undefined, dir, skipPermissions, permissionMode);
       setActivePanel(null);
     } finally {
       setCreating(false);
@@ -750,7 +781,7 @@ export default function App() {
   };
 
   const quickCreate = async (dir: string) => {
-    if (creating || providerAvailability[selectedProvider] === false) return;
+    if (creating) return;
     setCreating(true);
     // Save the repo root as last-dir so worktrees are always listed from the main repo
     const rootDir = repoRootDir(dir);
@@ -759,12 +790,17 @@ export default function App() {
     saveRecentDir(rootDir);
     setShowDirDialog(false);
     try {
-      await createSession(undefined, dir, skipPermissions, undefined, undefined, selectedProvider, selectedModel, permissionMode);
+      await createPendingSession(undefined, dir, skipPermissions, permissionMode);
       setActivePanel(null);
     } finally {
       setCreating(false);
     }
   };
+
+  const handleCreateSessionInWorktree = useCallback((dir: string) => {
+    if (creating) return;
+    void quickCreate(dir);
+  }, [creating, quickCreate]);
 
   const handleSelectSession = (id: string) => {
     startTransition(() => {
@@ -861,11 +897,14 @@ export default function App() {
         >
           <div style={{ width: 280, height: "100%" }}>
             <Sidebar
-              workspaces={workspaces}
+              workspaces={sidebarWorkspaces}
               activeSessionId={activeSessionId}
               activeWorktreePath={activeWorktreePath}
               onSelectSession={handleSelectSession}
               onCreateSession={handleNewSession}
+              onCreateSessionInWorktree={handleCreateSessionInWorktree}
+              canCreateSessionInWorktree={!creating}
+              createSessionDisabledReason={undefined}
               onCreateWorktree={handleCreateWorktree}
               onRenameSession={renameSession}
               onDeleteSession={handleDeleteSession}
@@ -943,6 +982,9 @@ export default function App() {
                   parentSession={parentSessionMap.get(session.id)}
                   childSessions={childSessionsMap.get(session.id)}
                   onOpenFile={handleOpenFile}
+                  providerAvailability={providerAvailability}
+                  onProviderChange={(provider) => handleProviderChange(session.id, provider)}
+                  onStartPendingSession={(provider, model) => handleStartPendingSession(session.id, provider, model)}
                 />
               ))}
 
@@ -1360,41 +1402,6 @@ export default function App() {
                 </div>
               </div>
             )}
-
-            {/* Provider picker */}
-            <div className="px-4 pb-2 flex flex-col gap-1">
-              <div className="flex items-center gap-1.5">
-                {AGENT_PROVIDERS.map((p) => {
-                  const available = providerAvailability[p.id] !== false;
-                  return (
-                    <button
-                      key={p.id}
-                      onClick={() => available && setSelectedProvider(p.id)}
-                      disabled={!available}
-                      className={`px-2.5 py-1 text-[10px] font-medium rounded-md transition-colors ${
-                        !available
-                          ? "bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] opacity-50 cursor-not-allowed"
-                          : selectedProvider === p.id
-                            ? "bg-[var(--accent)] text-white"
-                            : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                      }`}
-                      title={!available ? `${p.label} CLI not found` : undefined}
-                    >
-                      {p.label}{!available && " (not installed)"}
-                    </button>
-                  );
-                })}
-              </div>
-              {providerAvailability[selectedProvider] === false && (
-                <div className="text-[10px] text-[var(--text-tertiary)] px-0.5">
-                  {selectedProvider === "claude-code"
-                    ? "Install Claude Code: npm install -g @anthropic-ai/claude-code"
-                    : selectedProvider === "codex"
-                    ? "Install Codex: npm install -g @openai/codex"
-                    : "Install OpenCode: curl -fsSL https://opencode.ai/install | bash"}
-                </div>
-              )}
-            </div>
 
             {/* Workspace tree + recent dirs */}
             {(filteredWorkspaces.length > 0 || filteredExtraRecentDirs.length > 0) && (

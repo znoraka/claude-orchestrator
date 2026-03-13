@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { jsonlDirectory, modelsForProvider, type Session } from "../types";
+import { AGENT_PROVIDERS, jsonlDirectory, modelsForProvider, type AgentProvider, type Session } from "../types";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import { createPatch } from "diff";
@@ -44,6 +44,9 @@ interface AgentChatProps {
   onPermissionModeChange?: (mode: "bypassPermissions" | "plan") => void;
   parentSession?: { id: string; name: string; claudeSessionId?: string; directory?: string } | null;
   childSessions?: Array<{ id: string; name: string; claudeSessionId?: string; directory?: string; status: string }>;
+  providerAvailability?: Record<string, boolean>;
+  onProviderChange?: (provider: AgentProvider) => void;
+  onStartPendingSession?: (provider: AgentProvider, model: string) => Promise<void>;
 }
 
 /** @deprecated Use modelsForProvider(provider) from types.ts instead */
@@ -419,6 +422,9 @@ const AgentChat = memo(function AgentChat({
   parentSession,
   childSessions,
   onOpenFile,
+  providerAvailability,
+  onProviderChange,
+  onStartPendingSession,
 }: AgentChatProps) {
   const isReadOnly = session?.status === "stopped";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -480,7 +486,7 @@ const AgentChat = memo(function AgentChat({
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [viewingFileRef, setViewingFileRef] = useState<FileReference | null>(null);
   const [reasoningEffort, setReasoningEffort] = useState<"low" | "medium" | "high">("high");
-  const [openPill, setOpenPill] = useState<"model" | "mode" | "effort" | null>(null);
+  const [openPill, setOpenPill] = useState<"provider" | "model" | "mode" | "effort" | null>(null);
   const pillRowRef = useRef<HTMLDivElement>(null);
   const [modelSearchTerm, setModelSearchTerm] = useState("");
   const modelSearchRef = useRef<HTMLInputElement>(null);
@@ -697,6 +703,8 @@ const AgentChat = memo(function AgentChat({
   onClaudeSessionIdRef.current = onClaudeSessionId;
   const onResumeRef = useRef(onResume);
   onResumeRef.current = onResume;
+  const onStartPendingSessionRef = useRef(onStartPendingSession);
+  onStartPendingSessionRef.current = onStartPendingSession;
   const onForkRef = useRef(onFork);
   onForkRef.current = onFork;
   const onForkWithPromptRef = useRef(onForkWithPrompt);
@@ -948,6 +956,22 @@ const AgentChat = memo(function AgentChat({
             ...newStr.split("\n").map((l) => `+${l}`),
           ].join("\n");
           fileMap.set(relPath, { added: prev.added + added, removed: prev.removed + removed, chunks: [...prev.chunks, chunk] });
+        }
+      }
+    }
+    // FileChange blocks (Codex) — no diff content available, just register paths
+    for (const m of allMessages) {
+      if (m.type !== "assistant") continue;
+      const blocks = Array.isArray(m.content) ? m.content : [];
+      for (const b of blocks) {
+        if (b.type !== "tool_use") continue;
+        if (canonicalToolName(b.name ?? "") !== "FileChange") continue;
+        const changes = (b.input?.changes as Array<{ kind: string; path: string }>) ?? [];
+        for (const c of changes) {
+          const relPath = prefix && c.path.startsWith(prefix) ? c.path.slice(prefix.length) : c.path;
+          if (!fileMap.has(relPath)) {
+            fileMap.set(relPath, { added: 0, removed: 0, chunks: [] });
+          }
         }
       }
     }
@@ -2243,6 +2267,25 @@ const rowVirtualizer = useVirtualizer({
     setIsGenerating(true);
     onActivityRef.current(); // Update session timestamp when user sends a message
 
+    // If the session is pending, start the backend bridge now
+    if (session?.status === "pending" && onStartPendingSessionRef.current) {
+      try {
+        await onStartPendingSessionRef.current(session.provider, currentModel);
+      } catch (err) {
+        stopGenerating();
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `error-${Date.now()}`,
+            type: "error",
+            content: [{ type: "text", text: `Failed to start session: ${err}` }],
+            timestamp: Date.now(),
+          },
+        ]);
+        return;
+      }
+    }
+
     // If the session is stopped, transparently restart the bridge first
     if (isReadOnly && onResumeRef.current) {
       try {
@@ -2826,7 +2869,9 @@ const rowVirtualizer = useVirtualizer({
         {isActive && messages.length === 0 && !isGenerating && !session?.planContent && (
           <div className="flex-1 flex items-center justify-center">
             <p className="text-xs text-[var(--text-tertiary)] opacity-50">
-              Send a message to start the conversation
+              {session?.status === "pending"
+                ? "Choose a provider below, then send your first message."
+                : "Send a message to start the conversation."}
             </p>
           </div>
         )}
@@ -3160,8 +3205,50 @@ const rowVirtualizer = useVirtualizer({
                 </div>
                 {/* Bottom bar: pills + send button */}
                 <div className="flex items-center gap-1.5 px-3 pb-3 border-t border-[var(--border-subtle)] pt-2.5">
-                  {/* Pill row: Model, Mode, Effort */}
+                  {/* Pill row: Provider (pending only), Model, Mode, Effort */}
                   <div ref={pillRowRef} className="flex items-center gap-1.5 flex-1 min-w-0">
+                    {/* Provider pill — only shown for pending sessions */}
+                    {session?.status === "pending" && (
+                      <div className="relative">
+                        <button
+                          onClick={() => setOpenPill(openPill === "provider" ? null : "provider")}
+                          className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-md bg-[var(--accent)]/15 text-[var(--accent)] hover:bg-[var(--accent)]/25 transition-colors"
+                        >
+                          {AGENT_PROVIDERS.find((p) => p.id === session.provider)?.label ?? "Provider"}
+                          <svg className="w-2.5 h-2.5 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
+                        </button>
+                        {openPill === "provider" && (
+                          <div className="absolute bottom-full mb-1 left-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 min-w-[160px]">
+                            {AGENT_PROVIDERS.map((p) => {
+                              const available = providerAvailability?.[p.id] !== false;
+                              return (
+                                <button
+                                  key={p.id}
+                                  disabled={!available}
+                                  className={`w-full text-left px-3 py-1.5 text-[11px] transition-colors rounded-md ${
+                                    session.provider === p.id
+                                      ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
+                                      : available
+                                        ? "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+                                        : "text-[var(--text-tertiary)] opacity-40 cursor-not-allowed"
+                                  }`}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    if (available) {
+                                      onProviderChange?.(p.id);
+                                      setOpenPill(null);
+                                    }
+                                  }}
+                                >
+                                  {p.label}
+                                  {!available && <span className="ml-1 text-[10px]">not installed</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {/* Model pill */}
                     <div className="relative">
                       <button
@@ -4088,6 +4175,24 @@ function TokenLine({ tokens }: { tokens: HighlightedToken[] }) {
   );
 }
 
+function FileChangeView({ changes }: { changes: Array<{ kind: string; path: string }> }) {
+  return (
+    <div className="py-1.5 px-3 font-mono text-xs space-y-0.5">
+      {changes.map((c, i) => {
+        const symbol = c.kind === "add" ? "+" : c.kind === "delete" ? "-" : "~";
+        const color = c.kind === "add" ? "text-green-400" : c.kind === "delete" ? "text-red-400" : "text-yellow-400";
+        const short = c.path.split("/").slice(-2).join("/");
+        return (
+          <div key={i} className="flex gap-2 items-center">
+            <span className={`${color} font-bold w-3 shrink-0`}>{symbol}</span>
+            <span className="text-[var(--text-secondary)] truncate" title={c.path}>{short}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function EditDiffView({ filePath, oldStr, newStr }: {
   filePath: string;
   oldStr: string;
@@ -4284,6 +4389,24 @@ function ToolInputView({ toolName, input }: { toolName: string; input: Record<st
           {input.query != null ? renderValue("query", input.query) : null}
         </div>
       );
+    case "FileChange": {
+      const changes = (input.changes as Array<{ kind: string; path: string }>) ?? [];
+      return (
+        <div className="py-1.5 px-3 font-mono text-xs space-y-0.5">
+          {changes.map((c, i) => {
+            const symbol = c.kind === "add" ? "+" : c.kind === "delete" ? "-" : "~";
+            const color = c.kind === "add" ? "text-green-400" : c.kind === "delete" ? "text-red-400" : "text-yellow-400";
+            const short = c.path.split("/").slice(-2).join("/");
+            return (
+              <div key={i} className="flex gap-2 items-center">
+                <span className={`${color} font-bold w-3 shrink-0`}>{symbol}</span>
+                <span className="text-[var(--text-secondary)] truncate" title={c.path}>{short}</span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
     case "Task":
       return (
         <div className="py-1.5">
@@ -4520,6 +4643,7 @@ function getToolColor(toolName: string, isPlanFile = false): string {
     case "Read": return "text-blue-400";
     case "Write": return "text-green-400";
     case "Edit": return "text-yellow-400";
+    case "FileChange": return "text-yellow-400";
     case "Bash": return "text-orange-400";
     case "Glob": return "text-purple-400";
     case "Grep": return "text-pink-400";
@@ -4695,6 +4819,12 @@ function ConsolidatedToolGroup({
         }
         return shortPath(fp);
       }
+      case "FileChange": {
+        const changes = (input.changes as Array<{ kind: string; path: string }>) ?? [];
+        if (changes.length === 1) return changes[0].path.split("/").slice(-2).join("/");
+        if (changes.length > 1) return `${changes.length} files`;
+        return "";
+      }
       case "Bash":
         return (input.command as string)?.slice(0, 120) || "";
       case "Glob": {
@@ -4799,7 +4929,9 @@ function ConsolidatedToolGroup({
       </button>
       {shouldExpand && (
         <div className="border-t border-[var(--border-color)] bg-[var(--bg-secondary)] max-h-48 overflow-y-auto">
-          {toolName === "Edit" && input.file_path && input.old_string != null && input.new_string != null ? (
+          {toolName === "FileChange" && Array.isArray(input.changes) ? (
+            <FileChangeView changes={input.changes as Array<{ kind: string; path: string }>} />
+          ) : toolName === "Edit" && input.file_path && input.old_string != null && input.new_string != null ? (
             <div className="py-1">
               <EditDiffView
                 filePath={input.file_path as string}

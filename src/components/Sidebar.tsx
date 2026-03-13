@@ -15,6 +15,9 @@ interface SidebarProps {
   youngestDescendantMap?: Map<string, Session>;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
+  onCreateSessionInWorktree?: (path: string) => void;
+  canCreateSessionInWorktree?: boolean;
+  createSessionDisabledReason?: string;
   onCreateWorktree: (repoDir: string) => void;
   onRenameSession: (id: string, name: string) => void;
   onDeleteSession: (id: string) => void;
@@ -31,6 +34,9 @@ export default function Sidebar({
   activeWorktreePath: _activeWorktreePath,
   onSelectSession,
   onCreateSession,
+  onCreateSessionInWorktree,
+  canCreateSessionInWorktree = true,
+  createSessionDisabledReason,
   onCreateWorktree,
   onRenameSession,
   onDeleteSession,
@@ -351,7 +357,7 @@ export default function Sidebar({
             const repoName = workspace.directory.split("/").filter(Boolean).pop() || workspace.directory;
             const isRepoCollapsed = collapsedRepos.has(workspace.id);
             const filteredWorktrees = workspace.worktrees.filter(
-              (wt) => wt.isMain || wt.sessions.some((s) => !s.archived)
+              (wt) => wt.isMain || wt.sessions.length === 0 || wt.sessions.some((s) => !s.archived)
             );
 
             const color = repoColor(workspace.directory);
@@ -399,6 +405,9 @@ export default function Sidebar({
                     const isWtCollapsed = collapsedWorktrees.has(wt.path);
                     const hasShellProcess = !!(shellProcessDirs?.get(wt.path));
                     const hasMultipleWorktrees = filteredWorktrees.length > 1;
+                    const isEmptyWorktree = wt.sessions.length === 0;
+                    const showWorktreeRow = hasMultipleWorktrees || isEmptyWorktree;
+                    const createDisabled = isEmptyWorktree && !canCreateSessionInWorktree;
 
                     // Deduplicate: if worktree name equals branch, show once
                     const displayLabel = branch && branch !== wtName
@@ -408,13 +417,19 @@ export default function Sidebar({
                     return (
                       <div key={wt.path}>
                         {/* Worktree row — lightweight divider */}
-                        {hasMultipleWorktrees && (
+                        {showWorktreeRow && (
                           <>
-                            {wtIdx > 0 && (
+                            {hasMultipleWorktrees && wtIdx > 0 && (
                               <div className="mx-2 border-t border-[var(--border-color)]/30 my-1" />
                             )}
                             <button
-                              onClick={() => toggleWorktree(wt.path)}
+                              onClick={() => {
+                                if (isEmptyWorktree) {
+                                  onCreateSessionInWorktree?.(wt.path);
+                                } else if (hasMultipleWorktrees) {
+                                  toggleWorktree(wt.path);
+                                }
+                              }}
                               onContextMenu={(e) => {
                                 if (wt.isMain || !onArchiveWorktree) return;
                                 e.preventDefault();
@@ -426,11 +441,16 @@ export default function Sidebar({
                                   },
                                 ]);
                               }}
-                              className="w-full flex items-center gap-1.5 pl-4 pr-2 py-1 text-left transition-colors hover:text-[var(--text-primary)]"
+                              title={createDisabled ? createSessionDisabledReason : undefined}
+                              className={`w-full flex items-center gap-1.5 pl-4 pr-2 py-1 text-left transition-colors hover:text-[var(--text-primary)] ${
+                                createDisabled ? "opacity-60 cursor-not-allowed" : ""
+                              }`}
                             >
                               <svg
                                 className={`w-2 h-2 shrink-0 text-[var(--text-tertiary)] transition-transform ${
-                                  isWtCollapsed ? "" : "rotate-90"
+                                  hasMultipleWorktrees
+                                    ? (isWtCollapsed ? "" : "rotate-90")
+                                    : "opacity-0"
                                 }`}
                                 fill="none"
                                 viewBox="0 0 24 24"
