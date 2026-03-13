@@ -1,4 +1,4 @@
-import { memo, useState, useEffect } from "react";
+import { memo, useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { SessionUsage } from "../types";
 import { UnifiedDiff, classifyLine } from "./DiffViewer";
@@ -21,6 +21,7 @@ interface Props {
   activeSessionId: string | null;
   defaultTab?: "git" | "cost";
   onTabChange?: (tab: "git" | "cost") => void;
+  selectedFile?: { path: string; seq: number; diff?: string };
 }
 
 function StatusIcon({ status }: { status: string }) {
@@ -47,6 +48,7 @@ const ContextRail = memo(function ContextRail({
   activeSessionId,
   defaultTab = "git",
   onTabChange,
+  selectedFile,
 }: Props) {
   const [activeTab, setActiveTab] = useState<"git" | "cost">(defaultTab);
   const [gitFiles, setGitFiles] = useState<GitFile[]>([]);
@@ -57,6 +59,12 @@ const ContextRail = memo(function ContextRail({
   const [diffCache, setDiffCache] = useState<Map<string, string>>(new Map());
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  // For files not tracked by git — show raw content
+  const [untrackedFile, setUntrackedFile] = useState<{ path: string; content: string } | null>(null);
+  // For pre-computed diffs passed in from the chat recap
+  const [providedDiffView, setProvidedDiffView] = useState<{ path: string; diff: string } | null>(null);
+  // Track the last seq we've processed so we only act on each file-open request once
+  const lastHandledSeqRef = useRef(-1);
 
   useEffect(() => {
     if (activeTab !== "git" || !directory) return;
@@ -136,6 +144,53 @@ const ContextRail = memo(function ContextRail({
     onTabChange?.(tab);
   };
 
+  // Switch to git tab as soon as a file is requested
+  useEffect(() => {
+    if (!selectedFile) return;
+    setActiveTab("git");
+    onTabChange?.("git");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFile]);
+
+  // Once gitFiles are loaded, expand the selected file — but only process each request once
+  useEffect(() => {
+    if (!selectedFile) return;
+    if (selectedFile.seq <= lastHandledSeqRef.current) return;
+    const filePath = selectedFile.path;
+    const providedDiff = selectedFile.diff;
+
+    // If a pre-computed diff was provided (from the chat recap), use it directly.
+    if (providedDiff !== undefined) {
+      lastHandledSeqRef.current = selectedFile.seq;
+      setProvidedDiffView({ path: filePath, diff: providedDiff });
+      return;
+    }
+
+    if (gitLoading) return;
+    lastHandledSeqRef.current = selectedFile.seq;
+    const match = gitFiles.find((f) => f.path === filePath || filePath.endsWith(f.path));
+    if (match) {
+      const key = fileKey(match);
+      setExpandedKey(key);
+      if (!diffCache.has(key)) {
+        setLoadingKey(key);
+        invoke<string>("get_git_diff", { directory, filePath: match.path, staged: match.staged })
+          .then((diff) => setDiffCache((prev) => new Map(prev).set(key, diff)))
+          .catch(() => setDiffCache((prev) => new Map(prev).set(key, "")))
+          .finally(() => setLoadingKey(null));
+      }
+    } else {
+      // File is not git-tracked — read its content directly
+      const absPath = directory
+        ? (directory.endsWith("/") ? directory : directory + "/") + filePath
+        : filePath;
+      invoke<string>("read_file", { filePath: absPath })
+        .then((content) => setUntrackedFile({ path: filePath, content }))
+        .catch(() => setUntrackedFile({ path: filePath, content: "" }));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFile, gitFiles, gitLoading]);
+
   const totalCost = [...sessionUsage.values()].reduce((sum, u) => sum + (u.costUsd ?? 0), 0);
   const activeUsage = activeSessionId ? sessionUsage.get(activeSessionId) : undefined;
 
@@ -169,11 +224,11 @@ const ContextRail = memo(function ContextRail({
       </div>
 
       {/* Content */}
-      <div className={`flex-1 min-h-0 ${expandedKey !== null && activeTab === "git" ? "flex flex-col" : "overflow-y-auto"}`}>
+      <div className={`flex-1 min-h-0 ${(expandedKey !== null || untrackedFile !== null || providedDiffView !== null) && activeTab === "git" ? "flex flex-col" : "overflow-y-auto"}`}>
         {activeTab === "git" && (
-          <div className={`flex flex-col ${expandedKey !== null ? "flex-1 min-h-0" : ""}`}>
+          <div className={`flex flex-col ${expandedKey !== null || untrackedFile !== null || providedDiffView !== null ? "flex-1 min-h-0" : ""}`}>
             {/* Branch */}
-            {gitBranch && expandedKey === null && (
+            {gitBranch && expandedKey === null && untrackedFile === null && providedDiffView === null && (
               <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)] px-3 py-2 border-b border-[var(--border-subtle)]">
                 <svg className="w-3.5 h-3.5 shrink-0 text-[var(--text-tertiary)]" viewBox="0 0 16 16" fill="currentColor">
                   <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
@@ -182,15 +237,69 @@ const ContextRail = memo(function ContextRail({
               </div>
             )}
 
-            {gitLoading && gitFiles.length === 0 && expandedKey === null && (
+            {gitLoading && gitFiles.length === 0 && expandedKey === null && untrackedFile === null && providedDiffView === null && (
               <div className="text-xs text-[var(--text-tertiary)] py-4 text-center">Loading…</div>
             )}
 
-            {!gitLoading && gitFiles.length === 0 && expandedKey === null && (
+            {!gitLoading && gitFiles.length === 0 && expandedKey === null && untrackedFile === null && providedDiffView === null && (
               <div className="text-xs text-[var(--text-tertiary)] py-4 text-center">No changes</div>
             )}
 
-            {gitFiles.length > 0 && expandedKey !== null && (() => {
+            {/* Pre-computed diff from chat recap */}
+            {providedDiffView !== null && (
+              <div className="flex flex-col h-full">
+                <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--border-subtle)] shrink-0">
+                  <button
+                    onClick={() => setProvidedDiffView(null)}
+                    className="flex items-center gap-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
+                  >
+                    <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M10 4l-4 4 4 4" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    Back
+                  </button>
+                  <span className="text-xs font-mono text-[var(--text-primary)] truncate flex-1 min-w-0 ml-1">{providedDiffView.path}</span>
+                </div>
+                <div className="flex-1 min-h-0 overflow-y-auto bg-[var(--bg-primary)]">
+                  {providedDiffView.diff ? (
+                    <UnifiedDiff diff={providedDiffView.diff} filePath={providedDiffView.path} searchQuery="" currentMatch={-1} />
+                  ) : (
+                    <div className="text-xs text-[var(--text-tertiary)] py-4 text-center">No changes</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Untracked file content view */}
+            {untrackedFile !== null && (() => {
+              return (
+                <div className="flex flex-col h-full">
+                  <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--border-subtle)] shrink-0">
+                    <button
+                      onClick={() => setUntrackedFile(null)}
+                      className="flex items-center gap-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
+                    >
+                      <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M10 4l-4 4 4 4" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                      Back
+                    </button>
+                    <span className="text-xs font-mono text-[var(--text-primary)] truncate flex-1 min-w-0 ml-1">{untrackedFile.path}</span>
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-y-auto bg-[var(--bg-primary)]">
+                    {untrackedFile.content ? (
+                      <pre className="text-xs font-mono text-[var(--text-secondary)] px-3 py-2 whitespace-pre-wrap break-all leading-relaxed">
+                        {untrackedFile.content}
+                      </pre>
+                    ) : (
+                      <div className="text-xs text-[var(--text-tertiary)] py-4 text-center">Empty file</div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {gitFiles.length > 0 && expandedKey !== null && untrackedFile === null && providedDiffView === null && (() => {
               const expandedFile = gitFiles.find((f) => fileKey(f) === expandedKey);
               if (!expandedFile) return null;
               const diff = diffCache.get(expandedKey) ?? "";
@@ -240,7 +349,7 @@ const ContextRail = memo(function ContextRail({
               );
             })()}
 
-            {gitFiles.length > 0 && expandedKey === null && (
+            {gitFiles.length > 0 && expandedKey === null && untrackedFile === null && providedDiffView === null && (
               <>
                 <div className="text-[10px] font-medium text-[var(--text-tertiary)] uppercase tracking-wider px-3 pt-2.5 pb-1">
                   {gitFiles.length} file{gitFiles.length !== 1 ? "s" : ""} changed

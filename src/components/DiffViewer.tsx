@@ -98,7 +98,7 @@ export interface InlineCommentProps {
 
 // --- CSS for the diff panel (adapted from t3code) ---
 
-const DIFF_UNSAFE_CSS = `
+export const DIFF_UNSAFE_CSS = `
   diffs-container {
     --diffs-dark-bg: #0c0e14;
     --diffs-font-family: "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
@@ -109,7 +109,7 @@ const DIFF_UNSAFE_CSS = `
 
 // --- PatchDiff wrapper ---
 
-function PierreDiff({ diff, mode, filePath }: {
+export function PierreDiff({ diff, mode, filePath }: {
   diff: string;
   mode: DiffMode;
   filePath: string;

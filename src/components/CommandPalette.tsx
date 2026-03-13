@@ -157,7 +157,6 @@ export default function CommandPalette({
   useEffect(() => {
     if (isOpen) {
       setQuery("");
-      setSelectedIndex(1); // default to 2nd item for quick toggle between last two sessions
       requestAnimationFrame(() => inputRef.current?.focus());
     }
   }, [isOpen]);

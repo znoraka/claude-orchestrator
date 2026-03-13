@@ -59,6 +59,7 @@ const SessionPanel = memo(function SessionPanel({
   updatePermissionMode,
   parentSession,
   childSessions,
+  onOpenFile,
 }: {
   session: Session;
   isActive: boolean;
@@ -84,6 +85,7 @@ const SessionPanel = memo(function SessionPanel({
   onNavigateToSession?: (sessionId: string) => void;
   parentSession?: { id: string; name: string; claudeSessionId?: string; directory?: string } | null;
   childSessions?: Array<{ id: string; name: string; claudeSessionId?: string; directory?: string; status: string }>;
+  onOpenFile?: (filePath: string, diff: string) => void;
 }) {
   const isVisible = isActive && activePanel === null;
 
@@ -136,6 +138,7 @@ const SessionPanel = memo(function SessionPanel({
           activeModels={activeModels}
           onInputHeightChange={isVisible ? setChatInputHeight : undefined}
           onEditFile={handleEditFile}
+          onOpenFile={onOpenFile}
           onAvailableModels={onAvailableModels}
           onRename={handleRename}
           onMarkTitleGenerated={handleMarkTitleGenerated}
@@ -287,6 +290,14 @@ export default function App() {
     } catch { return {}; }
   });
 
+  const [selectedGitFile, setSelectedGitFile] = useState<{ path: string; seq: number; diff?: string } | undefined>();
+  const fileSelectionSeqRef = useRef(0);
+  const handleOpenFile = useCallback((filePath: string, diff?: string) => {
+    setSelectedGitFile({ path: filePath, seq: ++fileSelectionSeqRef.current, diff });
+    setRailOpen(true);
+    setRailTab("git");
+  }, []);
+
   const handleModelChange = useCallback((modelId: string) => {
     const provider: AgentProvider = sessions.find((s) => s.id === activeSessionId)?.provider || "claude-code";
     setModelByProvider((prev) => {
@@ -397,6 +408,7 @@ export default function App() {
   const [shellTabs, setShellTabs] = useState<ShellTab[]>([]);
   const [activeShellId, setActiveShellId] = useState<string | null>(null);
   const [showShellPicker, setShowShellPicker] = useState(false);
+  const [shellPickerIndex, setShellPickerIndex] = useState(0);
 
   const shellCounter = useRef(0);
   const shellProcessDirs = useShellProcessStatus(shellTabs);
@@ -438,6 +450,37 @@ export default function App() {
     return () => document.removeEventListener("click", close);
   }, [showShellPicker]);
 
+  // Ctrl+N/P navigation for shell worktree pickers
+  const allWorktrees = workspaces.flatMap((ws) => ws.worktrees);
+  const shellPickerVisible = activePanel === "shell" && (shellTabs.length === 0 || showShellPicker);
+
+  useEffect(() => {
+    if (!shellPickerVisible) return;
+    setShellPickerIndex(0);
+  }, [shellPickerVisible]);
+
+  useEffect(() => {
+    if (!shellPickerVisible) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === "n") {
+        e.preventDefault();
+        setShellPickerIndex((i) => Math.min(i + 1, allWorktrees.length - 1));
+      } else if (e.ctrlKey && e.key === "p") {
+        e.preventDefault();
+        setShellPickerIndex((i) => Math.max(i - 1, 0));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const wt = allWorktrees[shellPickerIndex];
+        if (wt) {
+          addShellTab(wt.path);
+          setShowShellPicker(false);
+        }
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [shellPickerVisible, allWorktrees, shellPickerIndex]);
+
   // Cmd+N to open new session dialog, Cmd+G/P/T to toggle panels
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -467,7 +510,13 @@ export default function App() {
       }
       if (e.metaKey && e.key === "t") {
         e.preventDefault();
-        togglePanel("shell");
+        if (activePanel === "shell" && shellTabs.length > 0) {
+          const activeTab = shellTabs.find((t) => t.id === activeShellId);
+          const dir = activeTab?.directory ?? panelDirectory;
+          addShellTab(dir);
+        } else {
+          togglePanel("shell");
+        }
       }
       if (e.metaKey && e.key === "j") {
         e.preventDefault();
@@ -496,7 +545,7 @@ export default function App() {
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [activePanel, panelDirectory, showDirDialog, showCommandPalette]);
+  }, [activePanel, panelDirectory, showDirDialog, showCommandPalette, shellTabs, activeShellId]);
 
   // Wrap deleteSession to handle shell PTY lifecycle
   const handleDeleteSession = async (id: string) => {
@@ -867,6 +916,7 @@ export default function App() {
                   updatePermissionMode={updatePermissionMode}
                   parentSession={parentSessionMap.get(session.id)}
                   childSessions={childSessionsMap.get(session.id)}
+                  onOpenFile={handleOpenFile}
                 />
               ))}
 
@@ -910,26 +960,36 @@ export default function App() {
                   <div className="flex-1 flex flex-col items-center justify-center gap-3">
                     <div className="text-sm font-medium text-[var(--text-primary)]">Open a terminal</div>
                     <div className="w-full max-w-xs overflow-auto rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)]">
-                      {workspaces.map((ws) => {
-                        const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
-                        return (
-                          <div key={ws.id}>
-                            <div className="px-3 py-1.5 text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider border-b border-[var(--border-subtle)]">{repoName}</div>
-                            {ws.worktrees.map((wt) => {
-                              const wtName = worktreeName(wt.path);
-                              return (
-                                <button
-                                  key={wt.path}
-                                  onClick={() => addShellTab(wt.path)}
-                                  className="w-full text-left px-4 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
-                                >
-                                  {wtName}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        );
-                      })}
+                      {(() => {
+                        let flatIdx = -1;
+                        return workspaces.map((ws) => {
+                          const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
+                          return (
+                            <div key={ws.id}>
+                              <div className="px-3 py-1.5 text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider border-b border-[var(--border-subtle)]">{repoName}</div>
+                              {ws.worktrees.map((wt) => {
+                                flatIdx++;
+                                const idx = flatIdx;
+                                const wtName = worktreeName(wt.path);
+                                return (
+                                  <button
+                                    key={wt.path}
+                                    onClick={() => addShellTab(wt.path)}
+                                    onMouseEnter={() => setShellPickerIndex(idx)}
+                                    className={`w-full text-left px-4 py-2 text-sm transition-colors ${
+                                      idx === shellPickerIndex
+                                        ? "bg-[var(--bg-hover)] text-[var(--text-primary)]"
+                                        : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                                    }`}
+                                  >
+                                    {wtName}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          );
+                        });
+                      })()}
                     </div>
                   </div>
                 ) : (
@@ -1000,29 +1060,39 @@ export default function App() {
                         </button>
                         {showShellPicker && (
                           <div className="absolute top-full left-0 mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg min-w-[180px] max-h-64 overflow-auto py-1">
-                            {workspaces.map((ws) => {
-                              const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
-                              return (
-                                <div key={ws.id}>
-                                  <div className="px-3 py-1 text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">{repoName}</div>
-                                  {ws.worktrees.map((wt) => {
-                                    const wtName = worktreeName(wt.path);
-                                    return (
-                                      <button
-                                        key={wt.path}
-                                        onClick={() => {
-                                          setShowShellPicker(false);
-                                          addShellTab(wt.path);
-                                        }}
-                                        className="w-full text-left px-4 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
-                                      >
-                                        {wtName}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              );
-                            })}
+                            {(() => {
+                              let flatIdx = -1;
+                              return workspaces.map((ws) => {
+                                const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
+                                return (
+                                  <div key={ws.id}>
+                                    <div className="px-3 py-1 text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">{repoName}</div>
+                                    {ws.worktrees.map((wt) => {
+                                      flatIdx++;
+                                      const idx = flatIdx;
+                                      const wtName = worktreeName(wt.path);
+                                      return (
+                                        <button
+                                          key={wt.path}
+                                          onClick={() => {
+                                            setShowShellPicker(false);
+                                            addShellTab(wt.path);
+                                          }}
+                                          onMouseEnter={() => setShellPickerIndex(idx)}
+                                          className={`w-full text-left px-4 py-1.5 text-sm transition-colors ${
+                                            idx === shellPickerIndex
+                                              ? "bg-[var(--bg-hover)] text-[var(--text-primary)]"
+                                              : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                                          }`}
+                                        >
+                                          {wtName}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              });
+                            })()}
                           </div>
                         )}
                       </div>
@@ -1117,6 +1187,7 @@ export default function App() {
                 activeSessionId={activeSessionId}
                 defaultTab={railTab}
                 onTabChange={setRailTab}
+                selectedFile={selectedGitFile}
               />
             )}
           </div>

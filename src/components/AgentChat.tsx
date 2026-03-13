@@ -8,8 +8,10 @@ import DOMPurify from "dompurify";
 import { jsonlDirectory, modelsForProvider, type Session } from "../types";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { sendNotification } from "@tauri-apps/plugin-notification";
-import { getHighlighter, ensureLang, langFromPath } from "./DiffViewer";
+import { createPatch } from "diff";
+import { getHighlighter, ensureLang, langFromPath, PierreDiff } from "./DiffViewer";
 import FilePickerModal, { type FileReference } from "./FilePickerModal";
+import FileIcon from "./FileIcon";
 
 // Configure marked once
 marked.setOptions({ breaks: true, gfm: true });
@@ -33,6 +35,7 @@ interface AgentChatProps {
   activeModels?: import("../types").ModelOption[];
   onInputHeightChange?: (height: number) => void;
   onEditFile?: (filePath: string, line?: number) => void;
+  onOpenFile?: (filePath: string, diff: string) => void;
   onAvailableModels?: (models: Array<{ id: string; providerID: string; name: string; free: boolean; costIn: number; costOut: number }>) => void;
   onRename?: (name: string) => void;
   onMarkTitleGenerated?: () => void;
@@ -186,13 +189,15 @@ function bundleConsecutiveToolGroups(grouped: GroupedBlocks, isLastMessage: bool
   for (const item of grouped.items) {
     if (item.type === "toolGroup") {
       currentRun.push(item.group);
+    } else if (currentRun.length > 0 && item.type === "content") {
+      // Inside a tool run: absorb interleaved content (thinking, text) into the bundle
     } else if (
       item.type === "content" &&
       (item.block.type === "thinking" ||
         item.block.type === "redacted_thinking" ||
         (item.block.type === "text" && (!item.block.text || !item.block.text.trim())))
     ) {
-      // Thinking blocks, redacted_thinking blocks, and empty text blocks don't end a tool run
+      // Before a tool run: thinking/empty-text rendered normally
       result.push(item);
     } else {
       flushRun();
@@ -203,21 +208,15 @@ function bundleConsecutiveToolGroups(grouped: GroupedBlocks, isLastMessage: bool
   return result;
 }
 
-// ── Merge consecutive tool-only assistant messages ────────────────────
+// ── Merge consecutive tool-bearing assistant messages ─────────────────
 // Serial tool calls produce: assistant(tool_use) → user(tool_result) → assistant(tool_use) → ...
 // This merges those into a single virtual assistant message so bundling works across turns.
+// Messages with text + tool_use are also merged (the text gets absorbed into the bundle).
 
-const NON_VISUAL_BLOCK_TYPES = new Set(["redacted_thinking", "tool_result"]);
-
-function isToolOnlyAssistant(msg: ChatMessage): boolean {
+function hasToolUse(msg: ChatMessage): boolean {
   if (msg.type !== "assistant") return false;
   const blocks = Array.isArray(msg.content) ? msg.content : [];
-  return blocks.every(
-    (b) =>
-      b.type === "tool_use" ||
-      NON_VISUAL_BLOCK_TYPES.has(b.type) ||
-      (b.type === "text" && (!b.text || !b.text.trim()))
-  );
+  return blocks.some((b) => b.type === "tool_use");
 }
 
 function isToolResultOnlyUser(msg: ChatMessage): boolean {
@@ -232,27 +231,33 @@ function mergeToolOnlyMessages(messages: ChatMessage[]): ChatMessage[] {
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
 
-    // Start a merge run if this is a tool-only assistant message
-    if (isToolOnlyAssistant(msg)) {
+    // Start a merge run if this assistant message contains any tool_use
+    if (hasToolUse(msg)) {
       const mergedContent: ContentBlock[] = [...(Array.isArray(msg.content) ? msg.content : [])];
       let lastAssistant = msg;
       let j = i + 1;
 
-      // Keep merging: user(tool_result) → assistant pairs
-      // Tool-only assistants continue the run; an assistant with text ends the run but is included
-      while (j + 1 < messages.length) {
-        const userMsg = messages[j];
-        const nextAssistant = messages[j + 1];
-        if (
-          isToolResultOnlyUser(userMsg) &&
-          nextAssistant.type === "assistant"
+      // Keep merging consecutive tool-use assistant messages.
+      // tool_result user messages are filtered out by sdkMessageToChatMessage,
+      // so adjacent assistant messages with tool_use are merged directly.
+      while (j < messages.length) {
+        const next = messages[j];
+        if (next.type === "assistant" && hasToolUse(next)) {
+          // Adjacent assistant with tool_use (tool_result user messages were filtered)
+          mergedContent.push(...(Array.isArray(next.content) ? next.content : []));
+          lastAssistant = next;
+          j++;
+        } else if (
+          j + 1 < messages.length &&
+          isToolResultOnlyUser(next) &&
+          messages[j + 1].type === "assistant" &&
+          hasToolUse(messages[j + 1])
         ) {
-          mergedContent.push(...(Array.isArray(userMsg.content) ? userMsg.content : []));
-          mergedContent.push(...(Array.isArray(nextAssistant.content) ? nextAssistant.content : []));
-          lastAssistant = nextAssistant;
+          // tool_result user message present (backward compat)
+          mergedContent.push(...(Array.isArray(next.content) ? next.content : []));
+          mergedContent.push(...(Array.isArray(messages[j + 1].content) ? messages[j + 1].content : []));
+          lastAssistant = messages[j + 1] as ChatMessage;
           j += 2;
-          // If the assistant message had visible text, stop merging here
-          if (!isToolOnlyAssistant(nextAssistant)) break;
         } else {
           break;
         }
@@ -403,6 +408,7 @@ const AgentChat = memo(function AgentChat({
   onPermissionModeChange,
   parentSession,
   childSessions,
+  onOpenFile,
 }: AgentChatProps) {
   const isReadOnly = session?.status === "stopped";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -895,6 +901,48 @@ const AgentChat = memo(function AgentChat({
     () => [...deferredMessages, ...trailingMessages],
     [deferredMessages, trailingMessages],
   );
+
+  const modifiedFiles = useMemo(() => {
+    if (!onOpenFile) return [];
+    const dir = session?.directory;
+    const prefix = dir ? (dir.endsWith("/") ? dir : dir + "/") : "";
+    const fileMap = new Map<string, { added: number; removed: number; chunks: string[] }>();
+    for (const m of allMessages) {
+      if (m.type !== "assistant") continue;
+      const blocks = Array.isArray(m.content) ? m.content : [];
+      for (const b of blocks) {
+        if (b.type !== "tool_use") continue;
+        const name = canonicalToolName(b.name ?? "");
+        const fp = b.input?.file_path as string;
+        if (!fp) continue;
+        const relPath = prefix && fp.startsWith(prefix) ? fp.slice(prefix.length) : fp;
+        const prev = fileMap.get(relPath) ?? { added: 0, removed: 0, chunks: [] };
+        if (name === "Write") {
+          const content = (b.input?.content as string) ?? "";
+          const lines = content.split("\n").length;
+          const chunk = content.split("\n").map((l) => `+${l}`).join("\n");
+          fileMap.set(relPath, { added: prev.added + lines, removed: prev.removed, chunks: [...prev.chunks, `@@ -0,0 +1,${lines} @@\n${chunk}`] });
+        } else if (name === "Edit") {
+          const oldStr = (b.input?.old_str as string) ?? "";
+          const newStr = (b.input?.new_str as string) ?? "";
+          const removed = oldStr ? oldStr.split("\n").length : 0;
+          const added = newStr ? newStr.split("\n").length : 0;
+          const chunk = [
+            `@@ -1,${removed} +1,${added} @@`,
+            ...oldStr.split("\n").map((l) => `-${l}`),
+            ...newStr.split("\n").map((l) => `+${l}`),
+          ].join("\n");
+          fileMap.set(relPath, { added: prev.added + added, removed: prev.removed + removed, chunks: [...prev.chunks, chunk] });
+        }
+      }
+    }
+    return Array.from(fileMap.entries()).map(([path, { added, removed, chunks }]) => ({
+      path,
+      added,
+      removed,
+      diff: `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n${chunks.join("\n")}`,
+    }));
+  }, [allMessages, onOpenFile, session?.directory]);
 
   const useVirtualRendering = allMessages.length >= VIRTUAL_THRESHOLD;
   const [isLayoutReady, setIsLayoutReady] = useState(true);
@@ -2760,6 +2808,8 @@ const rowVirtualizer = useVirtualizer({
                               onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
                               onCopy={copyMessage}
                               onNavigateToSession={onNavigateToSession}
+                              modifiedFiles={modifiedFiles}
+                              onOpenFile={onOpenFile}
                             />
                           </div>
                         );
@@ -2782,6 +2832,8 @@ const rowVirtualizer = useVirtualizer({
                               onRetry={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : retryMessage}
                               onCopy={copyMessage}
                               onNavigateToSession={onNavigateToSession}
+                              modifiedFiles={modifiedFiles}
+                              onOpenFile={onOpenFile}
                             />
                           </div>
                         );
@@ -3221,6 +3273,8 @@ const MessageBubble = memo(function MessageBubble({
   onCopy,
   planContent,
   onNavigateToSession,
+  modifiedFiles,
+  onOpenFile,
 }: {
   message: ChatMessage;
   toolStates: Record<string, "expanded" | "collapsed">;
@@ -3232,6 +3286,8 @@ const MessageBubble = memo(function MessageBubble({
   onCopy?: (messageId: string) => void;
   planContent?: string;
   onNavigateToSession?: (sessionId: string) => void;
+  modifiedFiles?: Array<{ path: string; added: number; removed: number; diff: string }>;
+  onOpenFile?: (filePath: string, diff: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -3421,7 +3477,9 @@ const MessageBubble = memo(function MessageBubble({
     const usage = message.usage;
     const cost = message.costUsd;
     const durationMs = message.durationMs;
-    if (!usage && !cost && !durationMs) return null;
+    const hasStats = usage || cost || durationMs;
+    const hasFiles = modifiedFiles && modifiedFiles.length > 0 && onOpenFile;
+    if (!hasStats && !hasFiles) return null;
     const formatDuration = (ms: number) => {
       if (ms < 1000) return `${ms}ms`;
       const seconds = ms / 1000;
@@ -3431,17 +3489,24 @@ const MessageBubble = memo(function MessageBubble({
       return `${minutes}m ${remainingSeconds}s`;
     };
     return (
-      <div className="flex items-center gap-3 px-3 py-1 text-[10px] text-[var(--text-tertiary)]">
-        {usage && (
-          <span>
-            {((usage.input_tokens || 0) + (usage.output_tokens || 0)).toLocaleString()} tokens
-          </span>
+      <div className="flex flex-col">
+        {hasStats && (
+          <div className="flex items-center gap-3 px-3 py-1 text-[10px] text-[var(--text-tertiary)]">
+            {usage && (
+              <span>
+                {((usage.input_tokens || 0) + (usage.output_tokens || 0)).toLocaleString()} tokens
+              </span>
+            )}
+            {durationMs !== undefined && durationMs > 0 && (
+              <span>{formatDuration(durationMs)}</span>
+            )}
+            {cost !== undefined && cost > 0 && (
+              <span>${cost.toFixed(2)}</span>
+            )}
+          </div>
         )}
-        {durationMs !== undefined && durationMs > 0 && (
-          <span>{formatDuration(durationMs)}</span>
-        )}
-        {cost !== undefined && cost > 0 && (
-          <span>${cost.toFixed(2)}</span>
+        {hasFiles && (
+          <ChangedFilesPanel files={modifiedFiles!} onOpenFile={onOpenFile!} />
         )}
       </div>
     );
@@ -3511,6 +3576,130 @@ const MessageBubble = memo(function MessageBubble({
     </div>
   );
 });
+
+// ── ChangedFilesPanel ──────────────────────────────────────────────
+
+interface ChangedFile { path: string; added: number; removed: number; diff: string }
+
+function ChangedFilesPanel({ files, onOpenFile }: { files: ChangedFile[]; onOpenFile: (path: string, diff: string) => void }) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  // Group files by top-level directory
+  const groups = (() => {
+    const map = new Map<string, ChangedFile[]>();
+    for (const f of files) {
+      const slash = f.path.indexOf("/");
+      const dir = slash === -1 ? "" : f.path.slice(0, slash);
+      const key = dir || "";
+      const arr = map.get(key) ?? [];
+      arr.push(f);
+      map.set(key, arr);
+    }
+    return map;
+  })();
+
+  const totalAdded = files.reduce((s, f) => s + f.added, 0);
+  const totalRemoved = files.reduce((s, f) => s + f.removed, 0);
+  const allCollapsed = collapsed.size === groups.size && groups.size > 0;
+
+  const toggleAll = () => {
+    if (allCollapsed) setCollapsed(new Set());
+    else setCollapsed(new Set(groups.keys()));
+  };
+
+  return (
+    <div className="mx-3 mb-2 mt-1 rounded-md overflow-hidden text-[11px]" style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-subtle)" }}>
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border-subtle)]" style={{ background: "var(--bg-tertiary)" }}>
+        <span className="font-medium text-[var(--text-secondary)] uppercase tracking-wider text-[10px]">
+          Changed files ({files.length})
+          {(totalAdded > 0 || totalRemoved > 0) && (
+            <span className="ml-2 font-mono normal-case tracking-normal">
+              <span className="text-green-400">+{totalAdded}</span>
+              <span className="text-[var(--text-tertiary)]"> / </span>
+              <span className="text-red-400">-{totalRemoved}</span>
+            </span>
+          )}
+        </span>
+        <div className="flex items-center gap-3">
+          {groups.size > 1 && (
+            <button onClick={toggleAll} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">
+              {allCollapsed ? "Expand all" : "Collapse all"}
+            </button>
+          )}
+          <button
+            onClick={() => onOpenFile(files[0].path, files[0].diff)}
+            className="text-[var(--accent)] hover:opacity-80 transition-opacity font-medium"
+          >
+            View diff
+          </button>
+        </div>
+      </div>
+      {/* File tree */}
+      {Array.from(groups.entries()).map(([dir, groupFiles]) => {
+        const isCollapsed = collapsed.has(dir);
+        const groupAdded = groupFiles.reduce((s, f) => s + f.added, 0);
+        const groupRemoved = groupFiles.reduce((s, f) => s + f.removed, 0);
+        const hasDir = dir !== "";
+        return (
+          <div key={dir || "__root__"}>
+            {hasDir && (
+              <button
+                onClick={() => setCollapsed((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(dir)) next.delete(dir); else next.add(dir);
+                  return next;
+                })}
+                className="w-full flex items-center gap-1.5 px-3 py-1.5 text-left hover:bg-[var(--bg-hover)] transition-colors border-b border-[var(--border-subtle)]"
+              >
+                <svg
+                  className="w-2.5 h-2.5 text-[var(--text-tertiary)] shrink-0 transition-transform"
+                  style={{ transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)" }}
+                  viewBox="0 0 16 16" fill="currentColor"
+                >
+                  <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <svg className="w-3 h-3 text-[var(--text-tertiary)] shrink-0" viewBox="0 0 16 16" fill="currentColor" fillOpacity="0.5">
+                  <path d="M1.75 2.5A.25.25 0 0 1 2 2.25h3.586a.25.25 0 0 1 .177.073l.707.707a.25.25 0 0 0 .177.073H14a.25.25 0 0 1 .25.25v9.5a.25.25 0 0 1-.25.25H2a.25.25 0 0 1-.25-.25v-10Z" />
+                </svg>
+                <span className="font-mono text-[var(--text-secondary)] flex-1 min-w-0 truncate">{dir}</span>
+                {(groupAdded > 0 || groupRemoved > 0) && (
+                  <span className="font-mono ml-2 shrink-0">
+                    <span className="text-green-400">+{groupAdded}</span>
+                    <span className="text-[var(--text-tertiary)]"> / </span>
+                    <span className="text-red-400">-{groupRemoved}</span>
+                  </span>
+                )}
+              </button>
+            )}
+            {!isCollapsed && groupFiles.map((f) => {
+              const parts = f.path.split("/");
+              const filename = parts[parts.length - 1];
+              return (
+                <button
+                  key={f.path}
+                  onClick={() => onOpenFile(f.path, f.diff)}
+                  className="w-full flex items-center gap-1.5 text-left hover:bg-[var(--bg-hover)] transition-colors group border-b border-[var(--border-subtle)] last:border-b-0"
+                  style={{ paddingLeft: hasDir ? "2rem" : "0.75rem", paddingRight: "0.75rem", paddingTop: "0.375rem", paddingBottom: "0.375rem" }}
+                >
+                  <FileIcon filename={filename} size={13} />
+                  <span className="font-mono text-[var(--text-secondary)] flex-1 min-w-0 truncate">{filename}</span>
+                  {(f.added > 0 || f.removed > 0) && (
+                    <span className="font-mono ml-2 shrink-0">
+                      <span className="text-green-400">+{f.added}</span>
+                      <span className="text-[var(--text-tertiary)]"> / </span>
+                      <span className="text-red-400">-{f.removed}</span>
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // ── Link helpers ───────────────────────────────────────────────────
 
@@ -3588,7 +3777,7 @@ function MarkdownContent({ text }: { text: string }) {
 // ── Inline plan block (tool-call style) ─────────────────────────────
 
 function InlinePlanBlock({ content }: { content: string }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
   const title = useMemo(() => {
     const m = content.match(/^#\s+(.+)$/m);
@@ -3826,44 +4015,11 @@ function EditDiffView({ filePath, oldStr, newStr }: {
   oldStr: string;
   newStr: string;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const oldLines = useMemo(() => oldStr.split("\n"), [oldStr]);
-  const newLines = useMemo(() => newStr.split("\n"), [newStr]);
-  const oldTokens = useShikiHighlight(oldStr, filePath, containerRef);
-  const newTokens = useShikiHighlight(newStr, filePath, containerRef);
-
-  return (
-    <div ref={containerRef} className="font-mono text-[11px] leading-[18px] overflow-x-auto">
-      <table style={{ minWidth: "100%", borderCollapse: "collapse" }}>
-        <tbody>
-          {oldLines.map((line, i) => (
-            <tr key={`old-${i}`} className="bg-red-500/10">
-              <td className="text-red-400/60 w-5 text-center select-none pr-1 align-top">−</td>
-              <td className="whitespace-pre text-red-300/80">
-                {oldTokens?.[i] ? (
-                  <span className="opacity-70"><TokenLine tokens={oldTokens[i]} /></span>
-                ) : (
-                  line
-                )}
-              </td>
-            </tr>
-          ))}
-          {newLines.map((line, i) => (
-            <tr key={`new-${i}`} className="bg-green-500/15">
-              <td className="text-green-400/60 w-5 text-center select-none pr-1 align-top">+</td>
-              <td className="whitespace-pre">
-                {newTokens?.[i] ? (
-                  <TokenLine tokens={newTokens[i]} />
-                ) : (
-                  <span className="text-green-300">{line}</span>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+  const patch = useMemo(
+    () => createPatch(filePath, oldStr, newStr, "", "", { context: 3 }),
+    [filePath, oldStr, newStr]
   );
+  return <PierreDiff diff={patch} mode="unified" filePath={filePath} />;
 }
 
 function WriteContentView({ filePath, content, startLine }: {
