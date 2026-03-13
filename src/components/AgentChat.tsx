@@ -133,7 +133,8 @@ function groupToolBlocks(blocks: ContentBlock[], messageId: string): GroupedBloc
 
 interface ToolBundle {
   id: string;
-  groups: ToolGroup[];
+  groups: ToolGroup[];         // all groups EXCEPT the last
+  lastGroup: ToolGroup;        // the last group, rendered separately
   toolCounts: Record<string, number>;
   allDone: boolean;
   anyError: boolean;
@@ -163,6 +164,8 @@ function bundleConsecutiveToolGroups(grouped: GroupedBlocks, isLastMessage: bool
     if (currentRun.length === 1) {
       result.push({ type: "toolGroup", group: currentRun[0] });
     } else {
+      const lastGroup = currentRun[currentRun.length - 1];
+      const restGroups = currentRun.slice(0, -1);
       const toolCounts: Record<string, number> = {};
       let allDone = true;
       let anyError = false;
@@ -172,16 +175,21 @@ function bundleConsecutiveToolGroups(grouped: GroupedBlocks, isLastMessage: bool
         if (!g.toolResult && isLastMessage) allDone = false;
         if (g.toolResult?.is_error) anyError = true;
       }
-      result.push({
-        type: "toolBundle",
-        bundle: {
-          id: `bundle-${currentRun[0].blockId}`,
-          groups: currentRun,
-          toolCounts,
-          allDone,
-          anyError,
-        },
-      });
+      if (restGroups.length === 0) {
+        result.push({ type: "toolGroup", group: lastGroup });
+      } else {
+        result.push({
+          type: "toolBundle",
+          bundle: {
+            id: `bundle-${currentRun[0].blockId}`,
+            groups: restGroups,
+            lastGroup,
+            toolCounts,
+            allDone,
+            anyError,
+          },
+        });
+      }
     }
     currentRun = [];
   }
@@ -190,7 +198,9 @@ function bundleConsecutiveToolGroups(grouped: GroupedBlocks, isLastMessage: bool
     if (item.type === "toolGroup") {
       currentRun.push(item.group);
     } else if (currentRun.length > 0 && item.type === "content") {
-      // Inside a tool run: absorb interleaved content (thinking, text) into the bundle
+      // Text/content between tool calls: flush the current bundle and render the content
+      flushRun();
+      result.push(item);
     } else if (
       item.type === "content" &&
       (item.block.type === "thinking" ||
@@ -927,8 +937,12 @@ const AgentChat = memo(function AgentChat({
           const newStr = (b.input?.new_str as string) ?? "";
           const removed = oldStr ? oldStr.split("\n").length : 0;
           const added = newStr ? newStr.split("\n").length : 0;
+          // Use cumulative counts as sequential start positions so hunks don't overlap,
+          // which is required for @pierre/diffs to parse the unified diff correctly.
+          const oldStart = prev.removed + 1;
+          const newStart = prev.added + 1;
           const chunk = [
-            `@@ -1,${removed} +1,${added} @@`,
+            `@@ -${oldStart},${removed} +${newStart},${added} @@`,
             ...oldStr.split("\n").map((l) => `-${l}`),
             ...newStr.split("\n").map((l) => `+${l}`),
           ].join("\n");
@@ -2046,6 +2060,14 @@ const rowVirtualizer = useVirtualizer({
     const activePastedFiles = overridePastedFiles ?? pastedFiles;
     const text = (overrideText ?? inputText).trim();
     if (!text && activeImages.length === 0 && activePastedFiles.length === 0) return;
+
+    // Set session title from first message
+    if (text && !titleGeneratedRef.current && messages.length === 0) {
+      const title = text.slice(0, 50).trimEnd();
+      onRenameRef.current?.(title);
+      onMarkTitleGeneratedRef.current?.();
+      titleGeneratedRef.current = true;
+    }
 
     // Queue message if currently generating
     if (isGeneratingRef.current) {
@@ -3320,21 +3342,13 @@ const MessageBubble = memo(function MessageBubble({
       const item = bundledItems[i];
       if (item.type === "toolGroup") return item.group.blockId;
       if (item.type === "toolBundle") {
-        return item.bundle.groups[item.bundle.groups.length - 1].blockId;
+        return item.bundle.lastGroup.blockId;
       }
     }
     return null;
   }, [bundledItems, isLastMessage, message.type]);
 
-  const lastBundleId = useMemo(() => {
-    if (!isLastMessage || message.type !== "assistant") return null;
-    for (let i = bundledItems.length - 1; i >= 0; i--) {
-      if (bundledItems[i].type === "toolBundle") return (bundledItems[i] as { type: "toolBundle"; bundle: ToolBundle }).bundle.id;
-    }
-    return null;
-  }, [bundledItems, isLastMessage, message.type]);
-
-  if (message.type === "user") {
+if (message.type === "user") {
     // Filter out tool_result blocks (tool plumbing, not user content)
     const visible = content.filter((b) => b.type !== "tool_result");
     if (visible.length === 0) return null;
@@ -3519,18 +3533,29 @@ const MessageBubble = memo(function MessageBubble({
         {bundledItems.map((item, i) => {
           if (item.type === "toolBundle") {
             const { bundle } = item;
-            const isExpanded = toolStates[bundle.id] === "expanded" ||
-              (bundle.id === lastBundleId && toolStates[bundle.id] !== "collapsed");
+            const isExpanded = toolStates[bundle.id] === "expanded";
+            const isLastGroup = bundle.lastGroup.blockId === lastToolGroupId;
             return (
-              <ToolBundleSummaryBar
-                key={bundle.id}
-                bundle={bundle}
-                expanded={isExpanded}
-                onToggleBundle={() => onToggleTool(bundle.id, isExpanded)}
-                toolStates={toolStates}
-                onToggleTool={onToggleTool}
-                isLastMessage={isLastMessage}
-              />
+              <div key={bundle.id} className="flex flex-col gap-3">
+                <ToolBundleSummaryBar
+                  bundle={bundle}
+                  expanded={isExpanded}
+                  onToggleBundle={() => onToggleTool(bundle.id, isExpanded)}
+                  toolStates={toolStates}
+                  onToggleTool={onToggleTool}
+                  isLastMessage={isLastMessage}
+                />
+                <ConsolidatedToolGroup
+                  group={bundle.lastGroup}
+                  isLast={isLastGroup}
+                  isLastMessage={isLastMessage}
+                  expanded={toolStates[bundle.lastGroup.blockId] === "expanded"}
+                  collapsed={toolStates[bundle.lastGroup.blockId] === "collapsed"}
+                  onToggle={(isCurrentlyExpanded) =>
+                    onToggleTool(bundle.lastGroup.blockId, isCurrentlyExpanded)
+                  }
+                />
+              </div>
             );
           }
           if (item.type === "toolGroup") {
@@ -4475,8 +4500,7 @@ function ToolBundleSummaryBar({
     [bundle.toolCounts]
   );
 
-  const totalCount = bundle.groups.length;
-  const lastGroupId = bundle.groups[bundle.groups.length - 1].blockId;
+  const totalCount = bundle.groups.length + 1;
 
   return (
     <div className="border border-[var(--border-subtle)] rounded-lg overflow-hidden shadow-sm">
@@ -4512,22 +4536,19 @@ function ToolBundleSummaryBar({
       </button>
       {expanded && (
         <div className="border-t border-[var(--border-color)] bg-[var(--bg-secondary)] p-2 flex flex-col gap-1.5">
-          {bundle.groups.map((group) => {
-            const isLast = isLastMessage && group.blockId === lastGroupId;
-            return (
-              <ConsolidatedToolGroup
-                key={group.blockId}
-                group={group}
-                isLast={isLast}
-                isLastMessage={isLastMessage}
-                expanded={toolStates[group.blockId] === "expanded"}
-                collapsed={toolStates[group.blockId] === "collapsed"}
-                onToggle={(isCurrentlyExpanded) =>
-                  onToggleTool(group.blockId, isCurrentlyExpanded)
-                }
-              />
-            );
-          })}
+          {bundle.groups.map((group) => (
+            <ConsolidatedToolGroup
+              key={group.blockId}
+              group={group}
+              isLast={false}
+              isLastMessage={isLastMessage}
+              expanded={toolStates[group.blockId] === "expanded"}
+              collapsed={toolStates[group.blockId] === "collapsed"}
+              onToggle={(isCurrentlyExpanded) =>
+                onToggleTool(group.blockId, isCurrentlyExpanded)
+              }
+            />
+          ))}
         </div>
       )}
     </div>

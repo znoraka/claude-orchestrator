@@ -387,7 +387,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const sessionCount = sessionsRef.current.length;
       const session: Session = {
         id,
-        name: name || `Session ${sessionCount + 1}`,
+        name: name || (pendingPrompt ? pendingPrompt.slice(0, 50).trimEnd() : `Session ${sessionCount + 1}`),
+        hasTitleBeenGenerated: !!(name || pendingPrompt),
         status: "starting",
         createdAt: now,
         lastActiveAt: now,

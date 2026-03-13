@@ -282,6 +282,9 @@ export default function App() {
     return isNaN(saved) ? 320 : saved;
   });
   const isResizingRail = useRef(false);
+  const railContainerRef = useRef<HTMLDivElement>(null);
+  const railInnerRef = useRef<HTMLDivElement>(null);
+  const railWidthDuringDrag = useRef<number>(320);
 
   // ── Model picker (per-provider, persisted) ──────────────────
   const [modelByProvider, setModelByProvider] = useState<Record<string, string>>(() => {
@@ -1145,8 +1148,9 @@ export default function App() {
 
         {/* Context rail */}
         <div
+          ref={railContainerRef}
           className="overflow-hidden shrink-0 relative"
-          style={{ width: railOpen && activeSessionId ? railWidth : 0, transition: isResizingRail.current ? "none" : "width 200ms ease" }}
+          style={{ width: railOpen && activeSessionId ? railWidth : 0, transition: "width 200ms ease" }}
         >
           {/* Drag handle */}
           {railOpen && activeSessionId && (
@@ -1155,16 +1159,25 @@ export default function App() {
               onMouseDown={(e) => {
                 e.preventDefault();
                 isResizingRail.current = true;
+                railWidthDuringDrag.current = railWidth;
                 const startX = e.clientX;
                 const startWidth = railWidth;
+                if (railContainerRef.current) railContainerRef.current.style.transition = "none";
+                if (railInnerRef.current) railInnerRef.current.style.transition = "none";
                 const onMove = (ev: MouseEvent) => {
                   const delta = startX - ev.clientX;
-                  setRailWidth(Math.max(200, Math.min(700, startWidth + delta)));
+                  const newWidth = Math.max(200, Math.min(700, startWidth + delta));
+                  railWidthDuringDrag.current = newWidth;
+                  if (railContainerRef.current) railContainerRef.current.style.width = `${newWidth}px`;
+                  if (railInnerRef.current) railInnerRef.current.style.width = `${newWidth}px`;
                 };
                 const onUp = () => {
                   isResizingRail.current = false;
                   window.removeEventListener("mousemove", onMove);
                   window.removeEventListener("mouseup", onUp);
+                  setRailWidth(railWidthDuringDrag.current);
+                  if (railContainerRef.current) railContainerRef.current.style.transition = "";
+                  if (railInnerRef.current) railInnerRef.current.style.transition = "";
                 };
                 window.addEventListener("mousemove", onMove);
                 window.addEventListener("mouseup", onUp);
@@ -1172,11 +1185,12 @@ export default function App() {
             />
           )}
           <div
+            ref={railInnerRef}
             className="h-full"
             style={{
               width: railWidth,
               transform: railOpen && activeSessionId ? "translateX(0)" : `translateX(${railWidth}px)`,
-              transition: isResizingRail.current ? "none" : "transform 150ms ease",
+              transition: "transform 150ms ease",
               willChange: "transform",
             }}
           >
