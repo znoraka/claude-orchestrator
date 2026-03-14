@@ -44,7 +44,7 @@ export function ImageWithLightbox({ src, thumbnail }: { src: string; thumbnail?:
   );
 }
 
-export function LocalFileImage({ path }: { path: string }) {
+export function LocalFileImage({ path, thumbnail }: { path: string; thumbnail?: boolean }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
     invoke<string>("read_file_base64", { filePath: path })
@@ -53,5 +53,5 @@ export function LocalFileImage({ path }: { path: string }) {
   }, [path]);
   if (src === null) return null;
   if (src === "") return <span className="text-xs text-[var(--muted)]">[image unavailable]</span>;
-  return <ImageWithLightbox src={src} />;
+  return <ImageWithLightbox src={src} thumbnail={thumbnail} />;
 }

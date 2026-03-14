@@ -93,6 +93,7 @@ const AgentChat = memo(function AgentChat({
   const onClaudeSessionIdRef = useRef(onClaudeSessionId); onClaudeSessionIdRef.current = onClaudeSessionId;
   const onResumeRef = useRef(onResume); onResumeRef.current = onResume;
   const onStartPendingSessionRef = useRef(onStartPendingSession); onStartPendingSessionRef.current = onStartPendingSession;
+  const sessionRef = useRef(session); sessionRef.current = session;
   const onForkRef = useRef(onFork); onForkRef.current = onFork;
   const onForkWithPromptRef = useRef(onForkWithPrompt); onForkWithPromptRef.current = onForkWithPrompt;
   const onAvailableModelsRef = useRef(onAvailableModels); onAvailableModelsRef.current = onAvailableModels;
@@ -477,7 +478,7 @@ const AgentChat = memo(function AgentChat({
 
     if (text === "/clear") { setMessages([]); setInputText(""); return; }
     if (text === "/compact") { setInputText(""); sendMessage("Please provide a brief summary of our conversation so far, then we can continue from that context."); return; }
-    if (text === "/session-id") { const sid = session?.claudeSessionId; if (sid) navigator.clipboard.writeText(sid); setInputText(""); return; }
+    if (text === "/session-id") { const sid = sessionRef.current?.claudeSessionId; if (sid) navigator.clipboard.writeText(sid); setInputText(""); return; }
     if (text === "/editor" || text.startsWith("/editor ")) {
       const arg = text.slice("/editor".length).trim();
       if (arg) { localStorage.setItem("claude-orchestrator-editor-command", arg); setMessages((prev) => [...prev, { id: `editor-${Date.now()}`, type: "system", content: [{ type: "text", text: `Editor set to: ${arg}` }], timestamp: Date.now() }]); }
@@ -529,8 +530,8 @@ const AgentChat = memo(function AgentChat({
     setIsGenerating(true);
     onActivityRef.current();
 
-    if (session?.status === "pending" && onStartPendingSessionRef.current) {
-      try { await onStartPendingSessionRef.current(session.provider, currentModel); }
+    if (sessionRef.current?.status === "pending" && onStartPendingSessionRef.current) {
+      try { await onStartPendingSessionRef.current(sessionRef.current.provider, currentModel); }
       catch (err) {
         stopGenerating();
         setMessages((prev) => [...prev, { id: `error-${Date.now()}`, type: "error", content: [{ type: "text", text: `Failed to start session: ${err}` }], timestamp: Date.now() }]);
@@ -547,7 +548,7 @@ const AgentChat = memo(function AgentChat({
       }
     }
 
-    if (session?.permissionMode === "plan") {
+    if (sessionRef.current?.permissionMode === "plan") {
       try {
         const classification = await invoke<string>("classify_prompt", { message: typeof content === "string" ? content : text });
         const targetMode = classification === "simple" ? "bypassPermissions" : "plan";
@@ -560,7 +561,7 @@ const AgentChat = memo(function AgentChat({
     const trySend = async (attempt: number) => {
       try {
         await invoke("send_agent_message", { sessionId: targetSessionId, message: jsonLine });
-        if (session?.provider !== "claude-code" && !titleGeneratedRef.current && text) {
+        if (sessionRef.current?.provider !== "claude-code" && !titleGeneratedRef.current && text) {
           titleGeneratedRef.current = true;
           invoke<string | null>("generate_title_from_text", { message: text })
             .then((title) => { if (title) { onRenameRef.current?.(title); onMarkTitleGeneratedRef.current?.(); } })

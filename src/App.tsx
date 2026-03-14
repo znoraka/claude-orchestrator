@@ -19,6 +19,7 @@ import CommandPalette from "./components/CommandPalette";
 import { useUpdater } from "./hooks/useUpdater";
 import { useToast } from "./components/Toast";
 import ActivityBar from "./components/ActivityBar";
+import TitleBar from "./components/TitleBar";
 import OverviewDashboard from "./components/OverviewDashboard";
 import ContextRail from "./components/ContextRail";
 import { useSessionLive } from "./contexts/SessionContext";
@@ -438,6 +439,16 @@ export default function App() {
 
   const panelDirectory = activeSession?.directory ?? "~";
 
+  const titleBarWorkspaceName = useMemo(() => {
+    if (!activeWorktreePath) return undefined;
+    return repoRootDir(activeWorktreePath).split("/").filter(Boolean).pop() ?? undefined;
+  }, [activeWorktreePath]);
+
+  const titleBarSessionTitle = useMemo(() => {
+    if (!activeSession) return undefined;
+    return activeSession.name || activeSession.directory?.split("/").filter(Boolean).pop() || undefined;
+  }, [activeSession]);
+
   const totalCostToday = useMemo(
     () => [...sessionUsage.values()].reduce((sum, u) => sum + (u.costUsd ?? 0), 0),
     [sessionUsage]
@@ -854,6 +865,7 @@ export default function App() {
           </div>
         </div>
       )}
+      <TitleBar workspaceName={titleBarWorkspaceName} sessionTitle={titleBarSessionTitle} />
       <div className="flex flex-1 min-h-0 relative">
         {/* Activity bar */}
         <ActivityBar
@@ -1043,7 +1055,6 @@ export default function App() {
                                   <button
                                     key={wt.path}
                                     onClick={() => addShellTab(wt.path)}
-                                    onMouseEnter={() => setShellPickerIndex(idx)}
                                     className={`w-full text-left px-4 py-2 text-sm transition-colors ${
                                       idx === shellPickerIndex
                                         ? "bg-[var(--bg-hover)] text-[var(--text-primary)]"
@@ -1146,7 +1157,6 @@ export default function App() {
                                             setShowShellPicker(false);
                                             addShellTab(wt.path);
                                           }}
-                                          onMouseEnter={() => setShellPickerIndex(idx)}
                                           className={`w-full text-left px-4 py-1.5 text-sm transition-colors ${
                                             idx === shellPickerIndex
                                               ? "bg-[var(--bg-hover)] text-[var(--text-primary)]"

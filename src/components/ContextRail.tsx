@@ -1,7 +1,7 @@
 import { memo, useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { SessionUsage } from "../types";
-import { UnifiedDiff, classifyLine } from "./DiffViewer";
+import { UnifiedDiff, NewFileViewer } from "./DiffViewer";
 
 interface GitFile {
   path: string;
@@ -31,16 +31,6 @@ function StatusIcon({ status }: { status: string }) {
   return <span className="text-[var(--text-tertiary)] font-mono text-[10px] w-3">{status}</span>;
 }
 
-function parseAddRemoveCounts(diff: string): { added: number; removed: number } {
-  let added = 0;
-  let removed = 0;
-  for (const line of diff.split("\n")) {
-    const classified = classifyLine(line);
-    if (classified.type === "add") added++;
-    else if (classified.type === "remove") removed++;
-  }
-  return { added, removed };
-}
 
 const ContextRail = memo(function ContextRail({
   directory,
@@ -57,6 +47,8 @@ const ContextRail = memo(function ContextRail({
 
   // Map of "path:staged" → diff content (cached after first load)
   const [diffCache, setDiffCache] = useState<Map<string, string>>(new Map());
+  // Map of "path:staged" → { added, removed } from git diff --numstat (fast, loaded eagerly)
+  const [statCache, setStatCache] = useState<Map<string, { added: number; removed: number }>>(new Map());
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   // For files not tracked by git — show raw content
@@ -89,22 +81,30 @@ const ContextRail = memo(function ContextRail({
     return () => { cancelled = true; clearInterval(interval); };
   }, [directory, activeTab]);
 
-  // Eagerly fetch diffs for all files in the background so counts are always visible
+  // Eagerly fetch file stats (added/removed counts) via a single git diff --numstat call per staged state
   useEffect(() => {
     if (!directory || gitFiles.length === 0) return;
     let cancelled = false;
 
-    setDiffCache((prev) => {
-      const uncached = gitFiles.filter((f) => !prev.has(`${f.path}:${f.staged}`));
-      for (const file of uncached) {
-        const key = `${file.path}:${file.staged}`;
-        invoke<string>("get_git_diff", { directory, filePath: file.path, staged: file.staged })
-          .then((diff) => { if (!cancelled) setDiffCache((p) => new Map(p).set(key, diff)); })
-          .catch(() => { if (!cancelled) setDiffCache((p) => new Map(p).set(key, "")); });
+    const fetchStats = async () => {
+      for (const staged of [false, true]) {
+        const hasFiles = gitFiles.some((f) => f.staged === staged && f.status !== "??");
+        if (!hasFiles) continue;
+        try {
+          const stats = await invoke<Record<string, [number, number]>>("get_git_numstat", { directory, staged });
+          if (cancelled) return;
+          setStatCache((prev) => {
+            const next = new Map(prev);
+            for (const [path, [added, removed]] of Object.entries(stats)) {
+              next.set(`${path}:${staged}`, { added, removed });
+            }
+            return next;
+          });
+        } catch { /* ignore */ }
       }
-      return prev;
-    });
+    };
 
+    fetchStats();
     return () => { cancelled = true; };
   }, [directory, gitFiles]);
 
@@ -112,6 +112,19 @@ const ContextRail = memo(function ContextRail({
 
   const handleFileClick = async (file: GitFile) => {
     const key = fileKey(file);
+
+    // Untracked file — show raw content instead of diff
+    if (file.status === "??") {
+      if (untrackedFile?.path === file.path) {
+        setUntrackedFile(null);
+        return;
+      }
+      const absPath = (directory ? (directory.endsWith("/") ? directory : directory + "/") : "") + file.path;
+      invoke<string>("read_file", { filePath: absPath })
+        .then((content) => setUntrackedFile({ path: file.path, content }))
+        .catch(() => setUntrackedFile({ path: file.path, content: "" }));
+      return;
+    }
 
     // Toggle collapse
     if (expandedKey === key) {
@@ -288,9 +301,12 @@ const ContextRail = memo(function ContextRail({
                   </div>
                   <div className="flex-1 min-h-0 overflow-y-auto bg-[var(--bg-primary)]">
                     {untrackedFile.content ? (
-                      <pre className="text-xs font-mono text-[var(--text-secondary)] px-3 py-2 whitespace-pre-wrap break-all leading-relaxed">
-                        {untrackedFile.content}
-                      </pre>
+                      <NewFileViewer
+                        content={untrackedFile.content}
+                        filePath={untrackedFile.path}
+                        searchQuery=""
+                        currentMatch={0}
+                      />
                     ) : (
                       <div className="text-xs text-[var(--text-tertiary)] py-4 text-center">Empty file</div>
                     )}
@@ -304,7 +320,7 @@ const ContextRail = memo(function ContextRail({
               if (!expandedFile) return null;
               const diff = diffCache.get(expandedKey) ?? "";
               const isLoading = loadingKey === expandedKey;
-              const counts = diff ? parseAddRemoveCounts(diff) : null;
+              const counts = statCache.get(expandedKey) ?? null;
 
               return (
                 <div className="flex flex-col h-full">
@@ -356,8 +372,7 @@ const ContextRail = memo(function ContextRail({
                 </div>
                 {gitFiles.map((f) => {
                   const key = fileKey(f);
-                  const diff = diffCache.get(key) ?? "";
-                  const counts = diff ? parseAddRemoveCounts(diff) : null;
+                  const counts = statCache.get(key) ?? null;
 
                   return (
                     <button

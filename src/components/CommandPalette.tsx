@@ -2,8 +2,6 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import type { Session, SessionUsage, Workspace } from "../types";
 import { shortenPath, repoColor, directoryColor } from "./SessionTab";
 import { useSessionLive } from "../contexts/SessionContext";
-import SessionStatusBadge from "./SessionStatusBadge";
-import type { SessionStatus } from "./SessionStatusBadge";
 
 interface CommandPaletteProps {
   isOpen: boolean;
@@ -458,11 +456,6 @@ export default function CommandPalette({
                 const hasDraft = session.hasDraft && isRunning;
                 const unread = item.unread;
 
-                // Derive SessionStatus for badge
-                let badgeStatus: SessionStatus = session.status as SessionStatus;
-                if (hasError) badgeStatus = "error";
-                else if (hasQuestion) badgeStatus = "waiting";
-
                 // Status description text
                 let statusDesc: string | null = null;
                 if (hasQuestion) statusDesc = "Needs input";
@@ -493,11 +486,23 @@ export default function CommandPalette({
                     )}
 
                     {/* Status badge */}
-                    <span className="shrink-0 w-5 flex items-center justify-center">
-                      {unread && !isRunning && !hasQuestion && !hasError ? (
-                        <span className="w-2 h-2 rounded-full" style={{ background: "var(--accent)" }} />
+                    <span className="shrink-0 w-3.5 h-3.5 flex items-center justify-center">
+                      {hasError ? (
+                        <span className="w-2 h-2 rounded-full bg-[var(--danger)]" />
+                      ) : hasQuestion ? (
+                        <svg className="w-3 h-3 text-orange-400" viewBox="0 0 16 16" fill="currentColor">
+                          <path d="M4.5 2a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 4.5 2Zm7 0a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 11.5 2Z" />
+                        </svg>
+                      ) : isBusy ? (
+                        <span className="rounded-full border border-[var(--accent)] border-t-transparent animate-spin" style={{ width: 8, height: 8 }} />
+                      ) : hasDraft ? (
+                        <span className="w-2 h-2 rounded-full bg-blue-400/70" />
+                      ) : unread ? (
+                        <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />
+                      ) : isRunning ? (
+                        <span className="w-2 h-2 rounded-full bg-[var(--accent)]/50" />
                       ) : (
-                        <SessionStatusBadge status={badgeStatus} size="md" />
+                        <span className="w-2 h-2 rounded-full bg-[var(--text-tertiary)]/20" />
                       )}
                     </span>
 

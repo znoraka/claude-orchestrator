@@ -30,6 +30,8 @@
   --font-mono: "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   --activity-bar-bg: #090909;
   --drawer-bg:       #0b0b0b;
+  --titlebar-height: 36px;
+  --traffic-light-width: 72px;
   --rail-bg:         #0b0b0b;
   --card-bg:         #0e0e0e;
   --card-border:     rgba(255,255,255,0.06);
@@ -54,6 +56,21 @@ body {
   -moz-osx-font-smoothing: grayscale;
   letter-spacing: 0;
   color-scheme: dark;
+}
+
+[data-tauri-drag-region],
+[data-tauri-drag-region] * {
+  -webkit-app-region: drag;
+  user-select: none;
+  -webkit-user-select: none;
+}
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] a,
+[data-tauri-drag-region] input,
+[data-tauri-drag-region] [data-no-drag] {
+  -webkit-app-region: no-drag;
+  user-select: auto;
+  -webkit-user-select: auto;
 }
 
 body::before {

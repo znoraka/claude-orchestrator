@@ -30,14 +30,17 @@ export function ChangedFilesPanel({ files, onOpenFile }: { files: ChangedFile[];
   return (
     <div className="mx-3 mb-2 mt-1 rounded-md overflow-hidden text-[11px]" style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-subtle)" }}>
       <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border-subtle)]" style={{ background: "var(--bg-tertiary)" }}>
-        <span className="font-medium text-[var(--text-secondary)] uppercase tracking-wider text-[10px]">
-          Changed files ({files.length})
+        <span className="font-medium text-[var(--text-secondary)] uppercase tracking-wider text-[10px] flex items-center gap-1.5">
+          CHANGED FILES ({files.length})
           {(totalAdded > 0 || totalRemoved > 0) && (
-            <span className="ml-2 font-mono normal-case tracking-normal">
-              <span className="text-green-400">+{totalAdded}</span>
-              <span className="text-[var(--text-tertiary)]"> / </span>
-              <span className="text-red-400">-{totalRemoved}</span>
-            </span>
+            <>
+              <span className="text-[var(--text-tertiary)] normal-case tracking-normal">•</span>
+              <span className="font-mono normal-case tracking-normal">
+                <span className="text-green-400">+{totalAdded}</span>
+                <span className="text-[var(--text-tertiary)]">/</span>
+                <span className="text-red-400">-{totalRemoved}</span>
+              </span>
+            </>
           )}
         </span>
         <div className="flex items-center gap-3">
@@ -84,7 +87,7 @@ export function ChangedFilesPanel({ files, onOpenFile }: { files: ChangedFile[];
                 {(groupAdded > 0 || groupRemoved > 0) && (
                   <span className="font-mono ml-2 shrink-0">
                     <span className="text-green-400">+{groupAdded}</span>
-                    <span className="text-[var(--text-tertiary)]"> / </span>
+                    <span className="text-[var(--text-tertiary)]">/</span>
                     <span className="text-red-400">-{groupRemoved}</span>
                   </span>
                 )}
@@ -105,7 +108,7 @@ export function ChangedFilesPanel({ files, onOpenFile }: { files: ChangedFile[];
                   {(f.added > 0 || f.removed > 0) && (
                     <span className="font-mono ml-2 shrink-0">
                       <span className="text-green-400">+{f.added}</span>
-                      <span className="text-[var(--text-tertiary)]"> / </span>
+                      <span className="text-[var(--text-tertiary)]">/</span>
                       <span className="text-red-400">-{f.removed}</span>
                     </span>
                   )}

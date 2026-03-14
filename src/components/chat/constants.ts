@@ -49,10 +49,10 @@ export function getToolSummary(toolName: string, input: Record<string, unknown>,
       return fp;
     }
     case "Write":
-      if (isPlanFile) return "Plan file (shown in pinned block)";
+      if (isPlanFile) return "Plan file";
       return shortPath(input.file_path as string);
     case "Edit": {
-      if (isPlanFile) return "Plan file (shown in pinned block)";
+      if (isPlanFile) return "Plan file";
       const fp = input.file_path as string || "";
       if (input.old_string != null && input.new_string != null) {
         const removed = (input.old_string as string).split("\n").length;

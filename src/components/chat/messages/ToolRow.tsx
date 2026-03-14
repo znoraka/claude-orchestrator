@@ -27,7 +27,7 @@ export function ToolRow({ group, isLastMessage, isLastTool, toolState, onToggle,
 
   // Expand logic: expanded if manually expanded, in-progress, or last tool in last message
   const isExpanded = !!(isPlanFile
-    ? toolState === "expanded" || (isLastTool && isLastMessage && toolState !== "collapsed")
+    ? toolState === "expanded"
     : toolState === "expanded"
       || (!hasResult && toolState !== "collapsed")
       || (isLastTool && isLastMessage && toolState !== "collapsed"));

@@ -2751,6 +2751,30 @@ async fn get_git_diff(directory: String, file_path: String, staged: bool) -> Res
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
+#[tauri::command]
+async fn get_git_numstat(directory: String, staged: bool) -> Result<HashMap<String, (u32, u32)>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = git_command(&directory);
+        cmd.arg("diff").arg("--numstat");
+        if staged {
+            cmd.arg("--cached");
+        }
+        let output = cmd.output().map_err(|e| format!("Failed to run git diff --numstat: {}", e))?;
+        let mut map = HashMap::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let parts: Vec<&str> = line.splitn(3, '\t').collect();
+            if parts.len() == 3 {
+                let added = parts[0].parse::<u32>().unwrap_or(0);
+                let removed = parts[1].parse::<u32>().unwrap_or(0);
+                map.insert(parts[2].to_string(), (added, removed));
+            }
+        }
+        Ok(map)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 fn get_git_diff_sync(directory: String, file_path: String, staged: bool) -> Result<String, String> {
     let mut cmd = git_command(&directory);
     cmd.arg("diff");
@@ -3888,6 +3912,7 @@ pub fn run() {
             unwatch_jsonl,
             get_git_status,
             get_git_diff,
+            get_git_numstat,
             read_file_content,
             read_file,
             read_file_base64,
