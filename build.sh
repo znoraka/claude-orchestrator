@@ -5,11 +5,13 @@ APP_NAME="Claude Session Manager"
 REPO="znoraka/claude-orchestrator"
 BUNDLE_DIR="src-tauri/target/release/bundle"
 RELEASE=false
+NOBUMP=false
 
 # ── Parse flags ───────────────────────────────────────────────────
 for arg in "$@"; do
   case "$arg" in
     --release) RELEASE=true ;;
+    --no-bump) NOBUMP=true ;;
     *) echo "Unknown flag: $arg"; exit 1 ;;
   esac
 done
@@ -24,7 +26,7 @@ else
 fi
 
 # ── Bump patch version (only on --release) ────────────────────────
-if [[ "$RELEASE" == true ]]; then
+if [[ "$RELEASE" == true && "$NOBUMP" == false ]]; then
 python3 - <<'PYEOF'
 import json, re, pathlib
 
