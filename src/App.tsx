@@ -179,7 +179,6 @@ export default function App() {
     createWorktree,
     archiveSession,
     unarchiveSession,
-    archiveWorktree,
     deleteSession,
     renameSession,
     markTitleGenerated,
@@ -641,26 +640,8 @@ export default function App() {
   // Branch info for all worktrees across all workspaces (shared hook, polls every 10s)
   const { branches: dialogBranches, byRepo: gitWorktreesByRepo } = useWorktreeBranches(workspaces);
 
-  const sidebarWorkspaces = useMemo(() => {
-    return workspaces.map((ws) => {
-      const existingPaths = new Set(ws.worktrees.map((wt) => wt.path));
-      const gitWts = gitWorktreesByRepo.get(ws.directory) || [];
-      const sessionlessWts = gitWts
-        .filter((gwt) => !existingPaths.has(gwt.path))
-        .map((gwt) => ({
-          path: gwt.path,
-          branch: gwt.branch,
-          isMain: gwt.isMain,
-          sessions: [] as Session[],
-          lastActiveAt: 0,
-        }));
-      const merged = [...ws.worktrees, ...sessionlessWts].sort((a, b) => {
-        if (a.isMain !== b.isMain) return a.isMain ? -1 : 1;
-        return b.lastActiveAt - a.lastActiveAt;
-      });
-      return { ...ws, worktrees: merged };
-    });
-  }, [workspaces, gitWorktreesByRepo]);
+  // Sidebar uses workspaces directly — each workspace is one directory
+  const sidebarWorkspaces = workspaces;
 
   const handleNewSession = () => {
     setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
@@ -809,11 +790,6 @@ export default function App() {
     }
   };
 
-  const handleCreateSessionInWorktree = useCallback((dir: string) => {
-    if (creating) return;
-    void quickCreate(dir);
-  }, [creating, quickCreate]);
-
   const handleSelectSession = (id: string) => {
     startTransition(() => {
       selectSession(id);
@@ -903,29 +879,22 @@ export default function App() {
         <div
           className="overflow-hidden shrink-0 transition-all duration-200 h-full"
           style={{
-            width: drawerOpen ? 280 : 0,
+            width: drawerOpen ? 320 : 0,
             background: "var(--drawer-bg)",
             borderRight: drawerOpen ? "1px solid var(--border-subtle)" : "none",
           }}
         >
-          <div style={{ width: 280, height: "100%" }}>
+          <div style={{ width: 320, height: "100%" }}>
             <Sidebar
               workspaces={sidebarWorkspaces}
               activeSessionId={activeSessionId}
-              activeWorktreePath={activeWorktreePath}
               onSelectSession={handleSelectSession}
               onCreateSession={handleNewSession}
-              onCreateSessionInWorktree={handleCreateSessionInWorktree}
-              canCreateSessionInWorktree={!creating}
-              createSessionDisabledReason={undefined}
-              onCreateWorktree={handleCreateWorktree}
               onRenameSession={renameSession}
               onDeleteSession={handleDeleteSession}
               onArchiveSession={archiveSession}
               onUnarchiveSession={unarchiveSession}
-              onArchiveWorktree={archiveWorktree}
               shellProcessDirs={shellProcessDirs}
-              worktreeBranches={dialogBranches}
               youngestDescendantMap={youngestDescendantMap}
             />
           </div>

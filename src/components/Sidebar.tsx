@@ -2,62 +2,43 @@ import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import type { Session, Workspace } from "../types";
-import { worktreeName } from "../utils/workspaces";
 import SessionTab, { repoColor } from "./SessionTab";
 import { useSessionLive } from "../contexts/SessionContext";
-import { showContextMenu } from "./ContextMenu";
 
 
 interface SidebarProps {
   workspaces: Workspace[];
   activeSessionId: string | null;
-  activeWorktreePath: string | null;
   youngestDescendantMap?: Map<string, Session>;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
-  onCreateSessionInWorktree?: (path: string) => void;
-  canCreateSessionInWorktree?: boolean;
-  createSessionDisabledReason?: string;
-  onCreateWorktree: (repoDir: string) => void;
   onRenameSession: (id: string, name: string) => void;
   onDeleteSession: (id: string) => void;
   onArchiveSession?: (id: string) => void;
   onUnarchiveSession?: (id: string) => void;
-  onArchiveWorktree?: (path: string) => void;
   shellProcessDirs?: Map<string, number>;
-  worktreeBranches?: Map<string, string>;
 }
 
 export default function Sidebar({
   workspaces,
   activeSessionId,
-  activeWorktreePath: _activeWorktreePath,
   onSelectSession,
   onCreateSession,
-  onCreateSessionInWorktree,
-  canCreateSessionInWorktree = true,
-  createSessionDisabledReason,
-  onCreateWorktree,
   onRenameSession,
   onDeleteSession,
   onArchiveSession,
   onUnarchiveSession,
-  onArchiveWorktree,
   shellProcessDirs,
-  worktreeBranches,
   youngestDescendantMap,
 }: SidebarProps) {
   const { sessionUsage, unreadSessions } = useSessionLive();
   const [appVersion, setAppVersion] = useState<string>("");
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
-  const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(() => {
+  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(() => {
     try { const v = localStorage.getItem("sidebar:collapsedRepos"); return v ? new Set(JSON.parse(v)) : new Set(); } catch { return new Set(); }
   });
-  const [collapsedWorktrees, setCollapsedWorktrees] = useState<Set<string>>(() => {
-    try { const v = localStorage.getItem("sidebar:collapsedWorktrees"); return v ? new Set(JSON.parse(v)) : new Set(); } catch { return new Set(); }
-  });
-  const [expandedWorktrees, setExpandedWorktrees] = useState<Set<string>>(() => {
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => {
     try { const v = localStorage.getItem("sidebar:expandedWorktrees"); return v ? new Set(JSON.parse(v)) : new Set(); } catch { return new Set(); }
   });
   const [showArchived, setShowArchived] = useState(false);
@@ -69,11 +50,8 @@ export default function Sidebar({
     getVersion().then(setAppVersion).catch(() => {});
   }, []);
 
-  useEffect(() => { localStorage.setItem("sidebar:collapsedRepos", JSON.stringify([...collapsedRepos])); }, [collapsedRepos]);
-  useEffect(() => { localStorage.setItem("sidebar:collapsedWorktrees", JSON.stringify([...collapsedWorktrees])); }, [collapsedWorktrees]);
-  useEffect(() => { localStorage.setItem("sidebar:expandedWorktrees", JSON.stringify([...expandedWorktrees])); }, [expandedWorktrees]);
-
-  const branches = worktreeBranches ?? new Map<string, string>();
+  useEffect(() => { localStorage.setItem("sidebar:collapsedRepos", JSON.stringify([...collapsedDirs])); }, [collapsedDirs]);
+  useEffect(() => { localStorage.setItem("sidebar:expandedWorktrees", JSON.stringify([...expandedDirs])); }, [expandedDirs]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -201,7 +179,7 @@ export default function Sidebar({
     );
   }, [allSessions, filterQ, contentMatchIds]);
 
-  // Memoize filtered workspace/worktree tree so inline JSX map doesn't recompute on every render
+  // Memoize filtered workspaces
   const filteredWorkspaces = useMemo(() => {
     if (!filterQ) return workspaces;
     return workspaces
@@ -262,20 +240,11 @@ export default function Sidebar({
     }
   }, [keyboardSelectedId, onSelectSession]);
 
-  const toggleRepo = (repoId: string) => {
-    setCollapsedRepos((prev) => {
+  const toggleDir = (dirId: string) => {
+    setCollapsedDirs((prev) => {
       const next = new Set(prev);
-      if (next.has(repoId)) next.delete(repoId);
-      else next.add(repoId);
-      return next;
-    });
-  };
-
-  const toggleWorktree = (wtPath: string) => {
-    setCollapsedWorktrees((prev) => {
-      const next = new Set(prev);
-      if (next.has(wtPath)) next.delete(wtPath);
-      else next.add(wtPath);
+      if (next.has(dirId)) next.delete(dirId);
+      else next.add(dirId);
       return next;
     });
   };
@@ -324,7 +293,7 @@ export default function Sidebar({
       <div className="pb-2">
         <div className="relative">
           <svg
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)]"
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-tertiary)]"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -342,7 +311,7 @@ export default function Sidebar({
             onChange={(e) => setFilter(e.target.value)}
             onKeyDown={handleSearchKeyDown}
             placeholder="Search sessions..."
-            className="sidebar-search w-full bg-transparent border-0 border-b border-[var(--border-subtle)] rounded-none pl-7 pr-6 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-all duration-200"
+            className="sidebar-search w-full bg-transparent border-0 border-b border-[var(--border-subtle)] rounded-none pl-8 pr-6 py-2 text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-all duration-200"
           />
           {contentSearching && (
             <div className="absolute right-1 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
@@ -354,27 +323,27 @@ export default function Sidebar({
       <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5">
         {filteredWorkspaces.length > 0 ? (
           filteredWorkspaces.map((workspace, wsIdx) => {
-            const repoName = workspace.directory.split("/").filter(Boolean).pop() || workspace.directory;
-            const isRepoCollapsed = collapsedRepos.has(workspace.id);
-            const filteredWorktrees = workspace.worktrees.filter(
-              (wt) => wt.isMain || wt.sessions.length === 0 || wt.sessions.some((s) => !s.archived)
-            );
+            const dirName = workspace.directory.split("/").filter(Boolean).pop() || workspace.directory;
+            const isDirCollapsed = collapsedDirs.has(workspace.id);
+            const wt = workspace.worktrees[0]; // always exactly 1 worktree per workspace now
+            const sessions = wt?.sessions ?? [];
+            const hasShellProcess = !!(shellProcessDirs?.get(workspace.directory));
 
             const color = repoColor(workspace.directory);
 
             return (
               <div
                 key={workspace.id}
-                className={wsIdx > 0 ? "mt-3" : ""}
+                className={wsIdx > 0 ? "mt-4" : ""}
               >
-                {/* Workspace header — clean, minimal */}
+                {/* Directory header */}
                 <button
-                  onClick={() => toggleRepo(workspace.id)}
-                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-left hover:bg-[var(--bg-hover)]/40 transition-colors group"
+                  onClick={() => toggleDir(workspace.id)}
+                  className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-left hover:bg-[var(--bg-hover)]/40 transition-colors group"
                 >
                   <svg
-                    className={`w-2.5 h-2.5 shrink-0 text-[var(--text-tertiary)] transition-transform duration-150 ${
-                      isRepoCollapsed ? "" : "rotate-90"
+                    className={`w-3 h-3 shrink-0 text-[var(--text-tertiary)] transition-transform duration-150 ${
+                      isDirCollapsed ? "" : "rotate-90"
                     }`}
                     fill="none"
                     viewBox="0 0 24 24"
@@ -383,203 +352,108 @@ export default function Sidebar({
                   >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
-                  <span className="w-1.5 h-1.5 rounded-full shrink-0 opacity-70" style={{ background: color }} />
-                  <span className="text-[11px] font-semibold text-[var(--text-primary)] truncate flex-1 tracking-tight">
-                    {repoName}
+                  <span className="w-2 h-2 rounded-full shrink-0 opacity-80" style={{ background: color }} />
+                  <span className="text-[12px] font-semibold text-[var(--text-primary)] truncate flex-1 tracking-normal">
+                    {dirName}
+                  </span>
+                  <span className="text-[11px] text-[var(--text-tertiary)] shrink-0 flex items-center gap-1">
+                    {hasShellProcess && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="Shell process running" />
+                    )}
+                    {sessions.filter((s) => !s.archived).length}
                   </span>
                 </button>
 
-                {/* Important sessions shown even when repo is collapsed */}
-                {isRepoCollapsed && (() => {
-                  const important = filteredWorktrees
-                    .flatMap((wt) => wt.sessions)
+                {/* Important sessions shown even when collapsed */}
+                {isDirCollapsed && (() => {
+                  const important = sessions
                     .filter((s) => !s.parentSessionId && !s.archived && isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
                   return important.map((session) => renderSession(session, { hideDirectory: true }));
                 })()}
 
-                {/* Worktrees */}
-                {!isRepoCollapsed &&
-                  filteredWorktrees.map((wt, wtIdx) => {
-                    const wtName = wt.isMain ? "main" : worktreeName(wt.path);
-                    const branch = branches.get(wt.path) || wt.branch;
-                    const isWtCollapsed = collapsedWorktrees.has(wt.path);
-                    const hasShellProcess = !!(shellProcessDirs?.get(wt.path));
-                    const hasMultipleWorktrees = filteredWorktrees.length > 1;
-                    const isEmptyWorktree = wt.sessions.length === 0;
-                    const showWorktreeRow = hasMultipleWorktrees || isEmptyWorktree;
-                    const createDisabled = isEmptyWorktree && !canCreateSessionInWorktree;
+                {/* Sessions */}
+                {!isDirCollapsed && (() => {
+                  const MAX_INACTIVE = 3;
+                  const isExpanded = expandedDirs.has(workspace.directory);
+                  const topLevel = sessions.filter((s) => !s.parentSessionId && !s.archived);
+                  const showAll = isExpanded || !!filterQ;
+                  let visible: Session[];
+                  if (showAll) {
+                    visible = topLevel;
+                  } else {
+                    const important = topLevel.filter(isImportantSession);
+                    const rest = topLevel.filter((s) => !isImportantSession(s));
+                    const merged = [...new Set([...important, ...rest.slice(0, Math.max(0, MAX_INACTIVE - important.length))])];
+                    visible = merged.sort((a, b) => topLevel.indexOf(a) - topLevel.indexOf(b));
+                  }
+                  const hiddenCount = topLevel.length - visible.length;
 
-                    // Deduplicate: if worktree name equals branch, show once
-                    const displayLabel = branch && branch !== wtName
-                      ? `${wtName} · ${branch}`
-                      : wtName;
+                  return (
+                    <>
+                      {isExpanded && topLevel.length > MAX_INACTIVE && !filterQ && (
+                        <button
+                          onClick={() => setExpandedDirs((prev) => {
+                            const next = new Set(prev);
+                            next.delete(workspace.directory);
+                            return next;
+                          })}
+                          className="pl-5 w-full px-3 py-1.5 text-[11px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left sticky top-0 z-10 bg-[var(--bg-primary)]"
+                        >
+                          Show less
+                        </button>
+                      )}
+                      {visible.map((session) => renderSession(session, { hideDirectory: true }))}
+                      {hiddenCount > 0 && (
+                        <button
+                          onClick={() => setExpandedDirs((prev) => {
+                            const next = new Set(prev);
+                            next.add(workspace.directory);
+                            return next;
+                          })}
+                          className="pl-5 w-full px-3 py-1.5 text-[11px] text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors text-left font-medium"
+                        >
+                          {hiddenCount > 99 ? "99+" : `+${hiddenCount}`} older sessions
+                        </button>
+                      )}
+                      {isExpanded && topLevel.length > MAX_INACTIVE && !filterQ && (
+                        <button
+                          onClick={() => setExpandedDirs((prev) => {
+                            const next = new Set(prev);
+                            next.delete(workspace.directory);
+                            return next;
+                          })}
+                          className="pl-5 w-full px-3 py-1.5 text-[11px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left"
+                        >
+                          Show less
+                        </button>
+                      )}
 
-                    return (
-                      <div key={wt.path}>
-                        {/* Worktree row — lightweight divider */}
-                        {showWorktreeRow && (
+                      {/* Archived sessions toggle */}
+                      {(() => {
+                        const archivedSessions = sessions.filter((s) => !s.parentSessionId && s.archived);
+                        if (archivedSessions.length === 0) return null;
+                        return (
                           <>
-                            {hasMultipleWorktrees && wtIdx > 0 && (
-                              <div className="mx-2 border-t border-[var(--border-color)]/30 my-1" />
-                            )}
                             <button
-                              onClick={() => {
-                                if (isEmptyWorktree) {
-                                  onCreateSessionInWorktree?.(wt.path);
-                                } else if (hasMultipleWorktrees) {
-                                  toggleWorktree(wt.path);
-                                }
-                              }}
-                              onContextMenu={(e) => {
-                                if (wt.isMain || !onArchiveWorktree) return;
-                                e.preventDefault();
-                                e.stopPropagation();
-                                showContextMenu(e.clientX, e.clientY, [
-                                  {
-                                    label: "Archive worktree",
-                                    onClick: () => onArchiveWorktree(wt.path),
-                                  },
-                                ]);
-                              }}
-                              title={createDisabled ? createSessionDisabledReason : undefined}
-                              className={`w-full flex items-center gap-1.5 pl-4 pr-2 py-1 text-left transition-colors hover:text-[var(--text-primary)] ${
-                                createDisabled ? "opacity-60 cursor-not-allowed" : ""
-                              }`}
+                              onClick={() => setShowArchived((v) => !v)}
+                              className="pl-5 w-full px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left flex items-center gap-1"
                             >
-                              <svg
-                                className={`w-2 h-2 shrink-0 text-[var(--text-tertiary)] transition-transform ${
-                                  hasMultipleWorktrees
-                                    ? (isWtCollapsed ? "" : "rotate-90")
-                                    : "opacity-0"
-                                }`}
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                                strokeWidth={2.5}
-                              >
+                              <svg className={`w-2 h-2 transition-transform ${showArchived ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                               </svg>
-                              <svg className="w-2.5 h-2.5 shrink-0 text-[var(--text-tertiary)]" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
-                              </svg>
-                              <span className="text-[11px] font-medium text-[var(--text-secondary)] truncate flex-1">
-                                {displayLabel}
-                              </span>
-                              <span className="text-[10px] text-[var(--text-tertiary)] shrink-0 flex items-center gap-1">
-                                {hasShellProcess && (
-                                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="Shell process running" />
-                                )}
-                                {wt.sessions.filter((s) => !s.archived).length}
-                              </span>
+                              {archivedSessions.length} archived
                             </button>
+                            {showArchived && archivedSessions.map((session) => (
+                              <div key={`archived-${session.id}`} className="opacity-50">
+                                {renderSession(session, { hideDirectory: true })}
+                              </div>
+                            ))}
                           </>
-                        )}
-
-                        {/* Important sessions shown even when worktree is collapsed */}
-                        {isWtCollapsed && hasMultipleWorktrees && (() => {
-                          const important = wt.sessions.filter((s) => !s.parentSessionId && !s.archived && isImportantSession(s) && (!filterQ || sessionMatchesFilter(s)));
-                          return important.map((session) => renderSession(session, { hideDirectory: true }));
-                        })()}
-
-                        {/* Sessions */}
-                        {(!isWtCollapsed || !hasMultipleWorktrees) && (() => {
-                          const MAX_INACTIVE = 3;
-                          const isExpanded = expandedWorktrees.has(wt.path);
-                          const topLevel = wt.sessions.filter((s) => !s.parentSessionId && !s.archived);
-                          const showAll = isExpanded || !!filterQ;
-                          let visible: Session[];
-                          if (showAll) {
-                            visible = topLevel;
-                          } else {
-                            const important = topLevel.filter(isImportantSession);
-                            const rest = topLevel.filter((s) => !isImportantSession(s));
-                            const merged = [...new Set([...important, ...rest.slice(0, Math.max(0, MAX_INACTIVE - important.length))])];
-                            visible = merged.sort((a, b) => topLevel.indexOf(a) - topLevel.indexOf(b));
-                          }
-                          const hiddenCount = topLevel.length - visible.length;
-
-                          return (
-                            <>
-                              {isExpanded && topLevel.length > MAX_INACTIVE && !filterQ && (
-                                <button
-                                  onClick={() => setExpandedWorktrees((prev) => {
-                                    const next = new Set(prev);
-                                    next.delete(wt.path);
-                                    return next;
-                                  })}
-                                  className="pl-5 w-full px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left sticky top-0 z-10 bg-[var(--bg-primary)]"
-                                >
-                                  Show less
-                                </button>
-                              )}
-                              {visible.map((session) => renderSession(session, { hideDirectory: true }))}
-                              {hiddenCount > 0 && (
-                                <button
-                                  onClick={() => setExpandedWorktrees((prev) => {
-                                    const next = new Set(prev);
-                                    next.add(wt.path);
-                                    return next;
-                                  })}
-                                  className="pl-5 w-full px-3 py-1 text-[10px] text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors text-left font-medium"
-                                >
-                                  +{hiddenCount} more
-                                </button>
-                              )}
-                              {isExpanded && topLevel.length > MAX_INACTIVE && !filterQ && (
-                                <button
-                                  onClick={() => setExpandedWorktrees((prev) => {
-                                    const next = new Set(prev);
-                                    next.delete(wt.path);
-                                    return next;
-                                  })}
-                                  className="pl-5 w-full px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left"
-                                >
-                                  Show less
-                                </button>
-                              )}
-
-                              {/* Archived sessions toggle */}
-                              {(() => {
-                                const archivedSessions = wt.sessions.filter((s) => !s.parentSessionId && s.archived);
-                                if (archivedSessions.length === 0) return null;
-                                return (
-                                  <>
-                                    <button
-                                      onClick={() => setShowArchived((v) => !v)}
-                                      className="pl-5 w-full px-3 py-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-left flex items-center gap-1"
-                                    >
-                                      <svg className={`w-2 h-2 transition-transform ${showArchived ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                                      </svg>
-                                      {archivedSessions.length} archived
-                                    </button>
-                                    {showArchived && archivedSessions.map((session) => (
-                                      <div key={`archived-${session.id}`} className="opacity-50">
-                                        {renderSession(session, { hideDirectory: true })}
-                                      </div>
-                                    ))}
-                                  </>
-                                );
-                              })()}
-                            </>
-                          );
-                        })()}
-                      </div>
-                    );
-                  })}
-
-                {/* New worktree button */}
-                {!isRepoCollapsed && (
-                  <button
-                    onClick={() => onCreateWorktree(workspace.directory)}
-                    className="pl-4 w-full flex items-center gap-1.5 px-2 py-1 text-left text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors text-[10px]"
-                  >
-                    <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                    </svg>
-                    New worktree
-                  </button>
-                )}
+                        );
+                      })()}
+                    </>
+                  );
+                })()}
               </div>
             );
           })
@@ -606,7 +480,7 @@ export default function Sidebar({
 
 {appVersion && (
         <div className="pt-1 text-center">
-          <span className="text-[10px] text-[var(--text-tertiary)]">v{appVersion}</span>
+          <span className="text-[11px] text-[var(--text-tertiary)]">v{appVersion}</span>
         </div>
       )}
     </div>

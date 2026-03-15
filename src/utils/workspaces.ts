@@ -29,60 +29,41 @@ export function worktreeName(path: string): string {
 }
 
 export function deriveWorkspaces(sessions: Session[], nonExistentDirs?: Set<string>): Workspace[] {
-  // Step 1: Group sessions by repo root
-  const byRepo = new Map<string, Map<string, Session[]>>();
+  // Group sessions by repo root, then flatten all sessions into a single worktree
+  const byRepo = new Map<string, Session[]>();
 
   for (const s of sessions) {
     const dir = s.directory || "~";
+    if (nonExistentDirs?.has(dir)) continue;
     const repo = repoRootDir(dir);
-    let repoMap = byRepo.get(repo);
-    if (!repoMap) {
-      repoMap = new Map();
-      byRepo.set(repo, repoMap);
-    }
-    let arr = repoMap.get(dir);
+    let arr = byRepo.get(repo);
     if (!arr) {
       arr = [];
-      repoMap.set(dir, arr);
+      byRepo.set(repo, arr);
     }
     arr.push(s);
   }
 
-  // Step 2: Build workspaces with worktrees
   const workspaces: Workspace[] = [];
-  for (const [repo, worktreeMap] of byRepo) {
-    const worktrees: Worktree[] = [];
-    for (const [dir, dirSessions] of worktreeMap) {
-      const sorted = [...dirSessions].sort((a, b) =>
-        (b.lastActiveAt - a.lastActiveAt) || (b.createdAt - a.createdAt)
-      );
-      const isMain = dir === repo;
-      worktrees.push({
-        path: dir,
-        branch: "", // filled in later by the sidebar via list_worktrees
-        isMain,
-        sessions: sorted,
-        lastActiveAt: sorted[0].lastActiveAt,
-      });
-    }
-    // Filter out worktrees whose directory no longer exists
-    const visibleWorktrees = nonExistentDirs
-      ? worktrees.filter((w) => !nonExistentDirs.has(w.path))
-      : worktrees;
+  for (const [repo, repoSessions] of byRepo) {
+    const sorted = [...repoSessions].sort((a, b) =>
+      (b.lastActiveAt - a.lastActiveAt) || (b.createdAt - a.createdAt)
+    );
 
-    if (visibleWorktrees.length === 0) continue;
-
-    // Sort: main first, then by lastActiveAt desc
-    visibleWorktrees.sort((a, b) => {
-      if (a.isMain !== b.isMain) return a.isMain ? -1 : 1;
-      return b.lastActiveAt - a.lastActiveAt;
-    });
+    // Single flat worktree containing all sessions under this repo root
+    const worktree: Worktree = {
+      path: repo,
+      branch: "",
+      isMain: true,
+      sessions: sorted,
+      lastActiveAt: sorted[0].lastActiveAt,
+    };
 
     workspaces.push({
       id: repo,
       directory: repo,
-      worktrees: visibleWorktrees,
-      lastActiveAt: Math.max(...visibleWorktrees.map((w) => w.lastActiveAt)),
+      worktrees: [worktree],
+      lastActiveAt: worktree.lastActiveAt,
     });
   }
 
