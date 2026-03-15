@@ -17232,6 +17232,15 @@ var log = (msg) => {
 };
 var MODEL = "claude-sonnet-4-6";
 var TITLE_SYSTEM_PROMPT = "You are a title generator. Given a user message, respond with ONLY a 4-5 word title summarizing the request. No quotes, no punctuation, no explanation.";
+var COMMIT_MSG_SYSTEM_PROMPT = `You generate git commit messages in conventional commits format.
+Given a git diff, write a concise commit message: one subject line (max 72 chars, imperative mood, e.g. "feat: add login button"), optionally followed by a blank line and a short body.
+Reply with ONLY the commit message, no explanations.`;
+async function generateCommitMessage(diff) {
+  const truncated = diff.slice(0, 8e3);
+  return runSdkQuery(COMMIT_MSG_SYSTEM_PROMPT, `Generate a commit message for this diff:
+
+${truncated}`);
+}
 var CLASSIFY_SYSTEM_PROMPT = `You classify coding requests as "simple" or "complex".
 
 Simple: single well-defined action \u2014 commit, push, run tests, rename variable, fix typo, create/delete a file, install a package, format code, a quick one-liner change.
@@ -17323,13 +17332,30 @@ var server = createServer(async (req, res) => {
   let body = "";
   for await (const chunk of req) body += chunk;
   try {
-    const { message, images } = JSON.parse(body);
+    const parsed = JSON.parse(body);
+    const url = (req.url || "/").split("?")[0];
+    if (url === "/commit-message") {
+      const { diff } = parsed;
+      if (!diff) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "missing diff" }));
+        return;
+      }
+      log(`Generating commit message for diff (${diff.length} chars)`);
+      const t02 = Date.now();
+      const commitMessage = await generateCommitMessage(diff);
+      log(`Generated commit message (${Date.now() - t02}ms)`);
+      const responseBody2 = JSON.stringify({ message: commitMessage });
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(responseBody2) });
+      res.end(responseBody2);
+      return;
+    }
+    const { message, images } = parsed;
     if (!message && !(images && images.length)) {
       res.writeHead(400);
       res.end(JSON.stringify({ error: "missing message" }));
       return;
     }
-    const url = (req.url || "/").split("?")[0];
     if (url === "/classify") {
       log(`Classifying: ${(message || "").slice(0, 80)}...`);
       const t02 = Date.now();

@@ -2791,6 +2791,209 @@ fn get_git_diff_sync(directory: String, file_path: String, staged: bool) -> Resu
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+// --- Commit & Push ---
+
+#[tauri::command]
+async fn generate_commit_message(
+    directory: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let port = state.title_server_port.load(std::sync::atomic::Ordering::Relaxed);
+    if port == 0 {
+        return Err("Title server not running".to_string());
+    }
+
+    // Get all local changes: try `git diff HEAD` first (captures both staged and unstaged vs last commit),
+    // fall back to `git diff --staged` for repos with no commits yet.
+    let diff = tauri::async_runtime::spawn_blocking(move || {
+        let output = git_command(&directory)
+            .args(["diff", "HEAD"])
+            .output()
+            .map_err(|e| format!("Failed to run git diff HEAD: {}", e))?;
+        if output.status.success() && !output.stdout.is_empty() {
+            return Ok::<String, String>(String::from_utf8_lossy(&output.stdout).to_string());
+        }
+        // Fallback: initial commit or empty working tree — try staged diff
+        let staged = git_command(&directory)
+            .args(["diff", "--staged"])
+            .output()
+            .map_err(|e| format!("Failed to run git diff --staged: {}", e))?;
+        Ok(String::from_utf8_lossy(&staged.stdout).to_string())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))??;
+
+    if diff.trim().is_empty() {
+        return Ok(String::new());
+    }
+
+    // Call title server /commit-message endpoint
+    let body = serde_json::json!({ "diff": diff }).to_string();
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        let client = std::net::TcpStream::connect_timeout(
+            &format!("127.0.0.1:{}", port).parse().unwrap(),
+            std::time::Duration::from_secs(5),
+        )
+        .map_err(|e| format!("Failed to connect to title server: {}", e))?;
+        client.set_read_timeout(Some(std::time::Duration::from_secs(60))).ok();
+        client.set_write_timeout(Some(std::time::Duration::from_secs(5))).ok();
+
+        use std::io::{Read, Write};
+        let mut stream = client;
+        let request = format!(
+            "POST /commit-message HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            port,
+            body.len(),
+            body
+        );
+        stream.write_all(request.as_bytes())
+            .map_err(|e| format!("Failed to send request: {}", e))?;
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response)
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+
+        Ok::<String, String>(response)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))??;
+
+    let body = response.split("\r\n\r\n").nth(1).unwrap_or("");
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(msg) = parsed.get("message").and_then(|m| m.as_str()) {
+            return Ok(msg.trim().to_string());
+        }
+        if let Some(error) = parsed.get("error").and_then(|e| e.as_str()) {
+            return Err(format!("Server error: {}", error));
+        }
+    }
+
+    Ok(String::new())
+}
+
+#[tauri::command]
+async fn git_commit_and_push(directory: String, message: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // git commit
+        let commit = git_command(&directory)
+            .args(["commit", "-m", &message])
+            .output()
+            .map_err(|e| format!("Failed to run git commit: {}", e))?;
+        if !commit.status.success() {
+            return Err(format!(
+                "git commit failed: {}",
+                String::from_utf8_lossy(&commit.stderr)
+            ));
+        }
+
+        // Try git push, fall back to --set-upstream if no upstream configured
+        let push = git_command(&directory)
+            .args(["push"])
+            .output()
+            .map_err(|e| format!("Failed to run git push: {}", e))?;
+
+        if !push.status.success() {
+            let stderr = String::from_utf8_lossy(&push.stderr);
+            if stderr.contains("no upstream") || stderr.contains("has no upstream") || stderr.contains("--set-upstream") {
+                // Get current branch name
+                let branch_out = git_command(&directory)
+                    .args(["branch", "--show-current"])
+                    .output()
+                    .map_err(|e| format!("Failed to get branch: {}", e))?;
+                let branch = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
+
+                let push2 = git_command(&directory)
+                    .args(["push", "--set-upstream", "origin", &branch])
+                    .output()
+                    .map_err(|e| format!("Failed to run git push --set-upstream: {}", e))?;
+                if !push2.status.success() {
+                    return Err(format!(
+                        "git push failed: {}",
+                        String::from_utf8_lossy(&push2.stderr)
+                    ));
+                }
+            } else {
+                return Err(format!("git push failed: {}", stderr));
+            }
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn git_unstage_all(directory: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = git_command(&directory)
+            .args(["restore", "--staged", "."])
+            .output()
+            .map_err(|e| format!("Failed to run git restore: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git restore --staged failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn git_stage_files(directory: String, files: Vec<String>) -> Result<(), String> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = git_command(&directory);
+        cmd.args(["add", "--"]);
+        for f in &files {
+            cmd.arg(f);
+        }
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run git add: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git add failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn git_unstage_files(directory: String, files: Vec<String>) -> Result<(), String> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = git_command(&directory);
+        cmd.args(["restore", "--staged", "--"]);
+        for f in &files {
+            cmd.arg(f);
+        }
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run git restore: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git restore --staged failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 // --- Phase 2: Branch Comparison ---
 
 #[derive(Serialize, Clone)]
@@ -3936,6 +4139,11 @@ pub fn run() {
             set_pr_file_viewed,
             set_dock_badge,
             open_in_editor,
+            generate_commit_message,
+            git_commit_and_push,
+            git_unstage_all,
+            git_unstage_files,
+            git_stage_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

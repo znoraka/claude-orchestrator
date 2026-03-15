@@ -20,6 +20,7 @@ import { useUpdater } from "./hooks/useUpdater";
 import { useToast } from "./components/Toast";
 import ActivityBar from "./components/ActivityBar";
 import TitleBar from "./components/TitleBar";
+import CommitModal from "./components/CommitModal";
 import OverviewDashboard from "./components/OverviewDashboard";
 import ContextRail from "./components/ContextRail";
 import { useSessionLive } from "./contexts/SessionContext";
@@ -259,6 +260,7 @@ export default function App() {
   const [editorFilePath, setEditorFilePath] = useState<string | undefined>();
   const [showDirDialog, setShowDirDialog] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showCommitModal, setShowCommitModal] = useState(false);
   const [dirInput, setDirInput] = useState(() =>
     localStorage.getItem("claude-orchestrator-last-dir") || "~"
   );
@@ -842,7 +844,37 @@ export default function App() {
           </div>
         </div>
       )}
-      <TitleBar workspaceName={titleBarWorkspaceName} sessionTitle={titleBarSessionTitle} />
+      <TitleBar workspaceName={titleBarWorkspaceName} sessionTitle={titleBarSessionTitle}>
+        <button
+          onClick={() => setShowCommitModal(true)}
+          data-no-drag
+          style={{
+            background: "none",
+            border: "1px solid var(--border-subtle)",
+            borderRadius: 5,
+            padding: "3px 9px",
+            fontSize: 11,
+            color: "var(--text-secondary)",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            flexShrink: 0,
+          }}
+          title="Commit & Push"
+        >
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" style={{ flexShrink: 0 }}>
+            <path d="M11.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5zm-2.25.75a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.492 2.492 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25zM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5zM4.25 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5z"/>
+          </svg>
+          Commit &amp; Push
+        </button>
+      </TitleBar>
+      {showCommitModal && (
+        <CommitModal
+          directory={panelDirectory}
+          onClose={() => setShowCommitModal(false)}
+        />
+      )}
       <div className="flex flex-1 min-h-0 relative">
         {/* Activity bar */}
         <ActivityBar
