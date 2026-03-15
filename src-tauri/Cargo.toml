@@ -1,6 +1,6 @@
 [package]
 name = "claude-orchestrator"
-version = "0.2.2"
+version = "0.3.0"
 description = "Claude Session Manager"
 authors = ["you"]
 edition = "2021"
