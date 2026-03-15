@@ -1,7 +1,7 @@
 import { memo, useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { SessionUsage } from "../types";
-import { UnifiedDiff, NewFileViewer } from "./DiffViewer";
+import { NewFileViewer, PierreDiff, type DiffMode } from "./DiffViewer";
 
 interface GitFile {
   path: string;
@@ -41,6 +41,9 @@ const ContextRail = memo(function ContextRail({
   selectedFile,
 }: Props) {
   const [activeTab, setActiveTab] = useState<"git" | "cost">(defaultTab);
+  const [diffMode, setDiffMode] = useState<DiffMode>(
+    () => (localStorage.getItem("git-diff-mode") as DiffMode) || "unified"
+  );
   const [gitFiles, setGitFiles] = useState<GitFile[]>([]);
   const [gitBranch, setGitBranch] = useState<string>("");
   const [gitLoading, setGitLoading] = useState(false);
@@ -204,6 +207,12 @@ const ContextRail = memo(function ContextRail({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFile, gitFiles, gitLoading]);
 
+  const toggleDiffMode = () => {
+    const next = diffMode === "unified" ? "split" : "unified";
+    setDiffMode(next);
+    localStorage.setItem("git-diff-mode", next);
+  };
+
   const totalCost = [...sessionUsage.values()].reduce((sum, u) => sum + (u.costUsd ?? 0), 0);
   const activeUsage = activeSessionId ? sessionUsage.get(activeSessionId) : undefined;
 
@@ -272,10 +281,18 @@ const ContextRail = memo(function ContextRail({
                     Back
                   </button>
                   <span className="text-xs font-mono text-[var(--text-primary)] truncate flex-1 min-w-0 ml-1">{providedDiffView.path}</span>
+                  <button
+                    onClick={toggleDiffMode}
+                    className="text-[11px] font-medium text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors px-2 py-1 rounded-lg hover:bg-[var(--bg-tertiary)] shrink-0"
+                  >
+                    {diffMode === "unified" ? "Split" : "Unified"}
+                  </button>
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto bg-[var(--bg-primary)]">
                   {providedDiffView.diff ? (
-                    <UnifiedDiff diff={providedDiffView.diff} filePath={providedDiffView.path} searchQuery="" currentMatch={-1} />
+                    <div className="diff-panel-viewport">
+                      <PierreDiff diff={providedDiffView.diff} mode={diffMode} filePath={providedDiffView.path} />
+                    </div>
                   ) : (
                     <div className="text-xs text-[var(--text-tertiary)] py-4 text-center">No changes</div>
                   )}
@@ -345,18 +362,21 @@ const ContextRail = memo(function ContextRail({
                         <span className="text-red-400 ml-0.5">-{counts.removed}</span>
                       </span>
                     )}
+                    <button
+                      onClick={toggleDiffMode}
+                      className="text-[11px] font-medium text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors px-2 py-1 rounded-lg hover:bg-[var(--bg-tertiary)] shrink-0"
+                    >
+                      {diffMode === "unified" ? "Split" : "Unified"}
+                    </button>
                   </div>
                   {/* Full-height diff */}
                   <div className="flex-1 min-h-0 overflow-y-auto bg-[var(--bg-primary)]">
                     {isLoading ? (
                       <div className="text-xs text-[var(--text-tertiary)] py-4 text-center">Loading…</div>
                     ) : diff ? (
-                      <UnifiedDiff
-                        diff={diff}
-                        filePath={expandedFile.path}
-                        searchQuery=""
-                        currentMatch={-1}
-                      />
+                      <div className="diff-panel-viewport">
+                        <PierreDiff diff={diff} mode={diffMode} filePath={expandedFile.path} />
+                      </div>
                     ) : (
                       <div className="text-xs text-[var(--text-tertiary)] py-4 text-center">No diff available</div>
                     )}

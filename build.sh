@@ -83,7 +83,7 @@ rm -rf "${DMG_STAGING}"
 echo "DMG created: ${DMG_OUTPUT}"
 
 # ── Locate artifacts ──────────────────────────────────────────────
-DMG=$(find "${BUNDLE_DIR}/dmg" -name '*.dmg' 2>/dev/null | head -1)
+DMG="$DMG_OUTPUT"
 APP=$(find "${BUNDLE_DIR}/macos" -name '*.app' 2>/dev/null | head -1)
 TARGZ=$(find "${BUNDLE_DIR}/macos" -name "*${VERSION}*.tar.gz" 2>/dev/null | head -1)
 SIG=$(find "${BUNDLE_DIR}/macos" -name "*${VERSION}*.tar.gz.sig" 2>/dev/null | head -1)

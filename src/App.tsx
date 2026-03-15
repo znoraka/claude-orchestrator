@@ -297,6 +297,7 @@ export default function App() {
   const railContainerRef = useRef<HTMLDivElement>(null);
   const railInnerRef = useRef<HTMLDivElement>(null);
   const railWidthDuringDrag = useRef<number>(320);
+  const rafId = useRef<number | null>(null);
 
   // ── Model picker (per-provider, persisted) ──────────────────
   const [modelByProvider, setModelByProvider] = useState<Record<string, string>>(() => {
@@ -1239,17 +1240,30 @@ export default function App() {
                 const startWidth = railWidth;
                 if (railContainerRef.current) railContainerRef.current.style.transition = "none";
                 if (railInnerRef.current) railInnerRef.current.style.transition = "none";
+                document.body.style.cursor = "col-resize";
+                document.body.style.userSelect = "none";
                 const onMove = (ev: MouseEvent) => {
                   const delta = startX - ev.clientX;
                   const newWidth = Math.max(200, Math.min(700, startWidth + delta));
                   railWidthDuringDrag.current = newWidth;
-                  if (railContainerRef.current) railContainerRef.current.style.width = `${newWidth}px`;
-                  if (railInnerRef.current) railInnerRef.current.style.width = `${newWidth}px`;
+                  if (rafId.current !== null) return;
+                  rafId.current = requestAnimationFrame(() => {
+                    rafId.current = null;
+                    const w = railWidthDuringDrag.current;
+                    if (railContainerRef.current) railContainerRef.current.style.width = `${w}px`;
+                    if (railInnerRef.current) railInnerRef.current.style.width = `${w}px`;
+                  });
                 };
                 const onUp = () => {
                   isResizingRail.current = false;
                   window.removeEventListener("mousemove", onMove);
                   window.removeEventListener("mouseup", onUp);
+                  document.body.style.cursor = "";
+                  document.body.style.userSelect = "";
+                  if (rafId.current !== null) {
+                    cancelAnimationFrame(rafId.current);
+                    rafId.current = null;
+                  }
                   setRailWidth(railWidthDuringDrag.current);
                   if (railContainerRef.current) railContainerRef.current.style.transition = "";
                   if (railInnerRef.current) railInnerRef.current.style.transition = "";
