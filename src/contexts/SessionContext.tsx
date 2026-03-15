@@ -780,12 +780,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  const [nonExistentDirs, setNonExistentDirs] = useState<Set<string>>(new Set());
+
   // ── Auto-revert sessions whose worktree directory was removed ────
   useEffect(() => {
     const check = async () => {
       const current = sessionsRef.current;
       const worktreeSessions = current.filter((s) => s.directory?.includes("/.worktrees/"));
-      if (worktreeSessions.length === 0) return;
       await Promise.all(
         worktreeSessions.map(async (s) => {
           try {
@@ -802,6 +803,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           }
         })
       );
+      // Check all unique session directories and hide non-existent ones from the sidebar
+      const allDirs = [...new Set(current.map((s) => s.directory).filter(Boolean))] as string[];
+      const results = await Promise.all(
+        allDirs.map(async (dir) => {
+          const exists = await invoke<boolean>("directory_exists", { path: dir });
+          return { dir, exists };
+        })
+      );
+      const missing = new Set(results.filter((r) => !r.exists).map((r) => r.dir));
+      setNonExistentDirs(missing);
     };
     check();
     const interval = setInterval(check, 15_000);
@@ -1045,7 +1056,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return youngest.id;
   }, [activeSessionId, sessions]);
 
-  const workspaces = useMemo(() => deriveWorkspaces(sessions), [sessions]);
+  const workspaces = useMemo(() => deriveWorkspaces(sessions, nonExistentDirs), [sessions, nonExistentDirs]);
 
   const activeWorkspaceId = useMemo(
     () => activeSessionId ? workspaceForSession(activeSessionId, sessions) : null,

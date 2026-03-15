@@ -28,7 +28,7 @@ export function worktreeName(path: string): string {
   return "main";
 }
 
-export function deriveWorkspaces(sessions: Session[]): Workspace[] {
+export function deriveWorkspaces(sessions: Session[], nonExistentDirs?: Set<string>): Workspace[] {
   // Step 1: Group sessions by repo root
   const byRepo = new Map<string, Map<string, Session[]>>();
 
@@ -65,8 +65,15 @@ export function deriveWorkspaces(sessions: Session[]): Workspace[] {
         lastActiveAt: sorted[0].lastActiveAt,
       });
     }
+    // Filter out worktrees whose directory no longer exists
+    const visibleWorktrees = nonExistentDirs
+      ? worktrees.filter((w) => !nonExistentDirs.has(w.path))
+      : worktrees;
+
+    if (visibleWorktrees.length === 0) continue;
+
     // Sort: main first, then by lastActiveAt desc
-    worktrees.sort((a, b) => {
+    visibleWorktrees.sort((a, b) => {
       if (a.isMain !== b.isMain) return a.isMain ? -1 : 1;
       return b.lastActiveAt - a.lastActiveAt;
     });
@@ -74,8 +81,8 @@ export function deriveWorkspaces(sessions: Session[]): Workspace[] {
     workspaces.push({
       id: repo,
       directory: repo,
-      worktrees,
-      lastActiveAt: Math.max(...worktrees.map((w) => w.lastActiveAt)),
+      worktrees: visibleWorktrees,
+      lastActiveAt: Math.max(...visibleWorktrees.map((w) => w.lastActiveAt)),
     });
   }
 
