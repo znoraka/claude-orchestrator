@@ -46,17 +46,47 @@ function TitleBar({ workspaceName, sessionTitle, children }: TitleBarProps) {
       {/* Left spacer behind traffic lights */}
       <div style={{ width: "var(--traffic-light-width)", flexShrink: 0 }} />
       {/* Right content */}
-      <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 6, padding: "0 12px", minWidth: 0 }}>
+      <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 5, padding: "0 10px", minWidth: 0 }}>
         {workspaceName && (
-          <span style={{ fontSize: 11, color: "var(--text-tertiary)", whiteSpace: "nowrap" }}>
+          <span style={{
+            fontSize: 12,
+            color: "var(--text-tertiary)",
+            background: "rgba(255,255,255,0.05)",
+            borderRadius: 999,
+            padding: "0 9px",
+            height: 22,
+            display: "inline-flex",
+            alignItems: "center",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            maxWidth: 130,
+            flexShrink: 1,
+          }}>
             {workspaceName}
           </span>
         )}
         {workspaceName && sessionTitle && (
-          <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>/</span>
+          <svg width="6" height="10" viewBox="0 0 6 10" fill="none" style={{ flexShrink: 0, opacity: 0.3 }}>
+            <path d="M1 1l4 4-4 4" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
         )}
         {sessionTitle && (
-          <span style={{ fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <span style={{
+            fontSize: 12,
+            color: "var(--text-secondary)",
+            background: "rgba(255,255,255,0.05)",
+            borderRadius: 999,
+            padding: "0 9px",
+            height: 22,
+            display: "inline-flex",
+            alignItems: "center",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            maxWidth: 160,
+            flexShrink: 1,
+          }}>
             {sessionTitle}
           </span>
         )}

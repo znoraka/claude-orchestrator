@@ -87,6 +87,107 @@ body::before {
   height: 100vh;
 }
 
+/* ── Title bar pill buttons ─────────────────────────────────────── */
+.tb-pill {
+  background: rgba(255,255,255,0.07);
+  border: none;
+  border-radius: 999px;
+  padding: 0 10px;
+  height: 22px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: background 100ms, color 100ms;
+}
+.tb-pill:hover { background: rgba(255,255,255,0.13); color: var(--text-primary); }
+
+/* Split button wrapper */
+.tb-split {
+  display: inline-flex;
+  align-items: stretch;
+  background: rgba(255,255,255,0.07);
+  border-radius: 999px;
+  flex-shrink: 0;
+  height: 22px;
+  transition: background 100ms;
+}
+.tb-split:hover { background: rgba(255,255,255,0.13); }
+
+.tb-split-main {
+  background: none;
+  border: none;
+  border-radius: 999px 0 0 999px;
+  padding: 0 7px 0 10px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  transition: color 100ms;
+}
+.tb-split-main:hover { color: var(--text-primary); }
+
+.tb-split-sep {
+  width: 1px;
+  background: rgba(255,255,255,0.12);
+  margin: 5px 0;
+  flex-shrink: 0;
+}
+
+.tb-split-chev {
+  background: none;
+  border: none;
+  border-radius: 0 999px 999px 0;
+  padding: 0 9px 0 5px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  transition: color 100ms;
+}
+.tb-split-chev:hover { color: var(--text-primary); }
+
+/* Dropdown */
+.tb-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: #1a1a1a;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 140px;
+  z-index: 200;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+.tb-dropdown-item {
+  background: none;
+  border: none;
+  border-radius: 5px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  text-align: left;
+  transition: background 80ms, color 80ms;
+  white-space: nowrap;
+}
+.tb-dropdown-item:hover { background: rgba(255,255,255,0.07); color: var(--text-primary); }
+
 /* ── Chat surface ──────────────────────────────────────────────── */
 
 .chat-shell {

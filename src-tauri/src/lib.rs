@@ -3810,11 +3810,19 @@ fn open_in_editor(editor: String, file_path: String) -> Result<(), String> {
     } else {
         file_path
     };
-    std::process::Command::new(&editor)
-        .arg(&expanded)
-        .env("PATH", shell_path())
-        .spawn()
-        .map_err(|e| format!("Failed to open editor '{}': {}", editor, e))?;
+    if let Some(app_name) = editor.strip_prefix("app:") {
+        // macOS app bundle — use `open -a "AppName" path`
+        std::process::Command::new("open")
+            .args(["-a", app_name, &expanded])
+            .spawn()
+            .map_err(|e| format!("Failed to open app '{}': {}", app_name, e))?;
+    } else {
+        std::process::Command::new(&editor)
+            .arg(&expanded)
+            .env("PATH", shell_path())
+            .spawn()
+            .map_err(|e| format!("Failed to open editor '{}': {}", editor, e))?;
+    }
     Ok(())
 }
 
