@@ -5,6 +5,8 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 /// Maximum stored messages per session for replay on component remount.
 const MAX_HISTORY_MESSAGES: usize = 10_000;
@@ -24,6 +26,15 @@ fn history_file_for(session_id: &str) -> PathBuf {
 pub struct AgentSession {
     stdin: ChildStdin,
     child: Child,
+    pid: u32,
+}
+
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    let _ = Command::new("kill")
+        .args(["-9", &format!("-{}", pid)])
+        .env("PATH", "/bin:/usr/bin")
+        .status();
 }
 
 pub struct AgentManager {
@@ -97,22 +108,24 @@ impl AgentManager {
             node_bin, bridge_script_path, bridge_cwd
         );
 
-        let mut child = Command::new(&node_bin)
-            .arg(bridge_script_path)
+        let mut cmd = Command::new(&node_bin);
+        cmd.arg(bridge_script_path)
             .arg(config_json)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .current_dir(&bridge_cwd)
             .env("PATH", path_env)
-            .env("HOME", &home)
-            .spawn()
-            .map_err(|e| {
-                format!(
-                    "Failed to spawn agent bridge (node={}, cwd={}): {}",
-                    node_bin, bridge_cwd, e
-                )
-            })?;
+            .env("HOME", &home);
+        #[cfg(unix)]
+        cmd.process_group(0);
+        let mut child = cmd.spawn().map_err(|e| {
+            format!(
+                "Failed to spawn agent bridge (node={}, cwd={}): {}",
+                node_bin, bridge_cwd, e
+            )
+        })?;
+        let pid = child.id();
 
         let stdin = child
             .stdin
@@ -203,7 +216,7 @@ impl AgentManager {
             }
         });
 
-        let session = AgentSession { stdin, child };
+        let session = AgentSession { stdin, child, pid };
         {
             let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
             sessions.insert(sid, session);
@@ -253,15 +266,27 @@ impl AgentManager {
         Ok(())
     }
 
-    /// Send an abort command to the bridge.
+    /// Send an abort command to the bridge and hard-kill the entire process group.
     pub fn abort(&self, session_id: &str) -> Result<(), String> {
-        self.send_message(session_id, r#"{"type":"abort"}"#)
+        // Send graceful abort first (best-effort)
+        let _ = self.send_message(session_id, r#"{"type":"abort"}"#);
+
+        // Hard-kill the entire process group (bridge + CLI + subtree)
+        let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+        if let Some(session) = sessions.get_mut(session_id) {
+            #[cfg(unix)]
+            kill_process_group(session.pid);
+            let _ = session.child.kill();
+        }
+        Ok(())
     }
 
     /// Kill the bridge process and clean up.
     pub fn kill_all(&self) {
         if let Ok(mut sessions) = self.sessions.lock() {
             for (_id, mut session) in sessions.drain() {
+                #[cfg(unix)]
+                kill_process_group(session.pid);
                 let _ = session.child.kill();
             }
         }
@@ -270,6 +295,8 @@ impl AgentManager {
     pub fn destroy_session(&self, session_id: &str) -> Result<(), String> {
         let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         if let Some(mut session) = sessions.remove(session_id) {
+            #[cfg(unix)]
+            kill_process_group(session.pid);
             let _ = session.child.kill();
         }
         // Keep history for replay if component remounts

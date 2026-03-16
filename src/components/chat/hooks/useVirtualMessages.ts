@@ -12,7 +12,8 @@ export function useVirtualMessages(
   isActive: boolean,
   sessionId: string,
   scrollRef: React.RefObject<HTMLDivElement | null>,
-  scrollToBottom: () => void
+  scrollToBottom: () => void,
+  isGenerating: boolean = false
 ) {
   const [renderCount, setRenderCount] = useState(INITIAL_WINDOW);
   const [isLayoutReady, setIsLayoutReady] = useState(true);
@@ -59,7 +60,7 @@ export function useVirtualMessages(
     [deferredMessages, trailingMessages],
   );
 
-  const useVirtualRendering = allMessages.length >= VIRTUAL_THRESHOLD;
+  const useVirtualRendering = allMessages.length >= VIRTUAL_THRESHOLD && !isGenerating;
 
   const estimateItemSize = useMemo(() => {
     const sizeCache = new Map<string, number>();
@@ -71,18 +72,25 @@ export function useVirtualMessages(
       let estimatedSize = 80;
       switch (message.type) {
         case "user": estimatedSize = 60; break;
-        case "assistant": estimatedSize = message.isStreaming ? 40 : 100; break;
+        case "assistant": {
+          let size = 80;
+          if (message.content && Array.isArray(message.content)) {
+            for (const block of message.content) {
+              if (block.type === "thinking") size += 60;
+              else if (block.type === "tool_use") size += 100;
+              else if (block.type === "tool_result") size += 80;
+              else if (block.type === "text" && block.text) {
+                size += Math.min(600, Math.ceil(block.text.length / 60) * 20);
+              }
+            }
+          }
+          estimatedSize = Math.min(size, 1500);
+          break;
+        }
         case "system": estimatedSize = 30; break;
         case "result": estimatedSize = 50; break;
         case "error": estimatedSize = 40; break;
         default: estimatedSize = 80;
-      }
-      if (message.content && Array.isArray(message.content)) {
-        const textContent = message.content
-          .filter(block => block.type === "text" && block.text)
-          .reduce((total, block) => total + (block.text?.length || 0), 0);
-        estimatedSize += Math.floor(textContent / 100) * 12;
-        estimatedSize = Math.min(estimatedSize, 300);
       }
       sizeCache.set(`index-${index}`, estimatedSize);
       return estimatedSize;
@@ -105,16 +113,18 @@ export function useVirtualMessages(
     return Math.min(Math.max(calculatedOverscan, 3), 15);
   }, [scrollRef.current, allMessages, estimateItemSize]);
 
+  const estimateItemSizeRef = useRef(estimateItemSize);
+  estimateItemSizeRef.current = estimateItemSize;
+
   const measureElementCache = useCallback((el: Element | null): number => {
     if (!el) return 0;
     const height = el.getBoundingClientRect().height;
     if (height === 0) {
-      const datasetIndex = (el as HTMLElement).dataset?.index;
-      const index = datasetIndex ? Number(datasetIndex) : -1;
-      return index >= 0 ? estimateItemSize(index) : 80;
+      const index = Number((el as HTMLElement).dataset?.index ?? -1);
+      return index >= 0 ? estimateItemSizeRef.current(index) : 80;
     }
     return height;
-  }, [estimateItemSize]);
+  }, []); // stable — no deps
 
   const rowVirtualizer = useVirtualizer({
     count: useVirtualRendering ? allMessages.length : 0,
