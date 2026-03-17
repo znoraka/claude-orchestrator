@@ -494,6 +494,14 @@ export default function App() {
   const shellCounter = useRef(0);
   const shellProcessDirs = useShellProcessStatus(shellTabs);
 
+  // Lazy mounting: track which sessions have ever been viewed so we don't
+  // mount all session panels on startup. Running/starting sessions are always
+  // mounted so they never miss IPC events even before first view.
+  const everMountedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (effectiveSessionId) everMountedRef.current.add(effectiveSessionId);
+  }, [effectiveSessionId]);
+
 
   const suggestionsRef = useRef<HTMLDivElement>(null);
   const dirListRef = useRef<HTMLDivElement>(null);
@@ -1125,8 +1133,15 @@ export default function App() {
           <div className="absolute inset-0">
             <div className="absolute inset-0 flex flex-col">
               <div className="flex-1 min-h-0 relative">
-              {/* Session panels — one per session, visibility-toggled */}
-              {sessions.map((session) => (
+              {/* Session panels — lazily mounted on first view, or proactively for running sessions */}
+              {sessions
+                .filter((s) =>
+                  everMountedRef.current.has(s.id) ||
+                  s.id === effectiveSessionId ||
+                  s.status === "running" ||
+                  s.status === "starting"
+                )
+                .map((session) => (
                 <SessionPanel
                   key={session.id}
                   session={session}

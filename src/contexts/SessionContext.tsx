@@ -28,8 +28,7 @@ type SessionAction =
   | { type: "ADD"; session: Session }
   | { type: "REMOVE"; id: string }
   | { type: "UPDATE"; id: string; patch: Partial<Session> }
-  | { type: "MARK_STOPPED"; ids: string[] }
-  | { type: "TICK_ACTIVE_TIMES"; updates: Array<{ id: string; activeTime: number }> };
+  | { type: "MARK_STOPPED"; ids: string[] };
 
 function sessionReducer(state: Session[], action: SessionAction): Session[] {
   switch (action.type) {
@@ -47,13 +46,6 @@ function sessionReducer(state: Session[], action: SessionAction): Session[] {
       return state.map((s) =>
         action.ids.includes(s.id) ? { ...s, status: "stopped" as const, exitCode: 0 } : s
       );
-    case "TICK_ACTIVE_TIMES": {
-      const map = new Map(action.updates.map((u) => [u.id, u.activeTime]));
-      return state.map((s) => {
-        const at = map.get(s.id);
-        return at !== undefined ? { ...s, activeTime: at } : s;
-      });
-    }
     default:
       return state;
   }
@@ -216,6 +208,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // Values are merged into session metas on save.
   const lastActiveAtRef = useRef<Map<string, number>>(new Map());
 
+  // Live activeTime accumulator — avoids dispatching TICK_ACTIVE_TIMES to the reducer
+  // every 60s (which cascades all workspace/session memos). Instead we accumulate here
+  // and read it back in buildSessionMetas so saves stay accurate.
+  const liveActiveTimeRef = useRef<Map<string, number>>(new Map());
+
   // ── Helper to build session metadata for saving ───────────────────
   const buildSessionMetas = useCallback(() => {
     return sessionsRef.current.map((s) => ({
@@ -231,7 +228,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       claudeSessionId: s.claudeSessionId,
       dangerouslySkipPermissions: s.dangerouslySkipPermissions,
       permissionMode: s.permissionMode,
-      activeTime: s.activeTime || 0,
+      activeTime: liveActiveTimeRef.current.get(s.id) ?? s.activeTime ?? 0,
       hasTitleBeenGenerated: s.hasTitleBeenGenerated,
       planContent: s.planContent,
       parentSessionId: s.parentSessionId,
@@ -258,7 +255,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   // ── Persist sessions on every change (debounced, after initial load) ─
   // Use a stable key that excludes volatile fields (activeTime) to avoid
-  // re-saving every 60s when TICK_ACTIVE_TIMES fires.
+  // re-saving on every session status change.
   const saveKey = useMemo(
     () =>
       sessions
@@ -661,22 +658,29 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runningStatusKey]);
 
+  // Seed liveActiveTimeRef for any session not yet tracked (runs on every session change,
+  // but only initializes new entries — no state mutation, no re-render cascade).
+  useEffect(() => {
+    for (const s of sessions) {
+      if (!liveActiveTimeRef.current.has(s.id)) {
+        liveActiveTimeRef.current.set(s.id, s.activeTime || 0);
+      }
+    }
+  }, [sessions]);
+
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
       const running = sessionsRef.current.filter((s) => s.status === "running");
       if (running.length === 0) return;
 
-      const updates: Array<{ id: string; activeTime: number }> = [];
       for (const s of running) {
         const since = runningSinceRef.current.get(s.id);
         if (!since) continue;
         const elapsed = now - since;
         runningSinceRef.current.set(s.id, now);
-        updates.push({ id: s.id, activeTime: (s.activeTime || 0) + elapsed });
-      }
-      if (updates.length > 0) {
-        dispatch({ type: "TICK_ACTIVE_TIMES", updates });
+        const prev = liveActiveTimeRef.current.get(s.id) ?? s.activeTime ?? 0;
+        liveActiveTimeRef.current.set(s.id, prev + elapsed);
       }
     }, 60_000);
     return () => clearInterval(interval);
@@ -845,8 +849,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "UPDATE", id: sessionId, patch: { permissionMode: mode } });
   }, []);
 
-  // Merge JSONL usage with agent busy state and agent-reported usage
-  const sessionUsage = useMemo(() => {
+  // Stable usage data: token/cost info that changes only when JSONL flushes or
+  // agent reports new usage — not on every agent message (avoids re-computing
+  // during active streaming sessions).
+  const baseUsage = useMemo(() => {
     const merged = new Map<string, SessionUsage>();
     // Copy all JSONL usage entries
     for (const [id, usage] of jsonlUsage) {
@@ -859,6 +865,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         merged.set(id, usage);
       }
     }
+    return merged;
+  }, [jsonlUsage, agentUsageMap]);
+
+  // Merge busy overlay on top of base usage. This re-runs on every agent message
+  // but is now a cheap pass over the already-computed base map.
+  const sessionUsage = useMemo(() => {
+    const merged = new Map(baseUsage);
     // Override isBusy for agent-based sessions
     for (const [id, isBusy] of agentBusyMap) {
       const existing = merged.get(id);
@@ -902,7 +915,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
     }
     return merged;
-  }, [jsonlUsage, agentBusyMap, agentUsageMap, sessions]);
+  }, [baseUsage, agentBusyMap, sessions]);
 
   useBackgroundNotifications(sessions, sessionUsage, activeSessionId);
 
