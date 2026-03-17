@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { sendNotification } from "@tauri-apps/plugin-notification";
@@ -65,6 +65,9 @@ export function useAgentEvents(props: AgentEventsProps) {
 
   const { pendingStreamRef, accumulatedBlocksRef, currentStreamIdRef, scheduleFlush } = streamAccumulator;
 
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+
   const handleAgentMessage = useCallback((msg: Record<string, unknown>) => {
     const msgType = msg.type as string;
 
@@ -83,25 +86,25 @@ export function useAgentEvents(props: AgentEventsProps) {
     }
 
     if (msgType === "system" && msg.subtype === "bridge_ready") {
-      if (session?.provider === "claude-code" && currentModelRef.current !== "claude-opus-4-6") {
+      if (sessionRef.current?.provider === "claude-code" && currentModelRef.current !== "claude-opus-4-6") {
         const setModelMsg = JSON.stringify({ type: "set_model", model: currentModelRef.current });
         invoke("send_agent_message", { sessionId, message: setModelMsg }).catch(() => { });
       }
-      if (session?.pendingPrompt && !pendingPromptConsumedRef.current) {
+      if (sessionRef.current?.pendingPrompt && !pendingPromptConsumedRef.current) {
         pendingPromptConsumedRef.current = true;
         onClearPendingPromptRef.current?.();
-        const prompt = session.pendingPrompt;
+        const prompt = sessionRef.current.pendingPrompt;
 
         // Build content with images/files if present
         let pastedFileContext = "";
-        if (session.pendingFiles && session.pendingFiles.length > 0) {
-          pastedFileContext = session.pendingFiles.map((f: { name: string; content: string }) => `<file name="${f.name}">\n${f.content}\n</file>`).join("\n\n") + "\n\n";
+        if (sessionRef.current.pendingFiles && sessionRef.current.pendingFiles.length > 0) {
+          pastedFileContext = sessionRef.current.pendingFiles.map((f: { name: string; content: string }) => `<file name="${f.name}">\n${f.content}\n</file>`).join("\n\n") + "\n\n";
         }
         const fullText = pastedFileContext + prompt;
         let sendContent: unknown;
-        if (session.pendingImages && session.pendingImages.length > 0) {
+        if (sessionRef.current.pendingImages && sessionRef.current.pendingImages.length > 0) {
           const blocks: unknown[] = [];
-          for (const img of session.pendingImages)
+          for (const img of sessionRef.current.pendingImages)
             blocks.push({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } });
           blocks.push({ type: "text", text: fullText });
           sendContent = blocks;
@@ -109,10 +112,10 @@ export function useAgentEvents(props: AgentEventsProps) {
           sendContent = fullText;
         }
 
-        const displayText = session?.planContent ? "Execute the plan." : prompt;
-        const displayContent = session?.pendingImages && session.pendingImages.length > 0
+        const displayText = sessionRef.current?.planContent ? "Execute the plan." : prompt;
+        const displayContent = sessionRef.current?.pendingImages && sessionRef.current.pendingImages.length > 0
           ? [
-              ...session.pendingImages.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } })),
+              ...sessionRef.current.pendingImages.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } })),
               { type: "text", text: displayText },
             ]
           : [{ type: "text", text: displayText }];
@@ -127,7 +130,7 @@ export function useAgentEvents(props: AgentEventsProps) {
         const jsonLine = JSON.stringify({ type: "user", message: { role: "user", content: sendContent } });
         const trySendAuto = (attempt: number) => {
           invoke("send_agent_message", { sessionId, message: jsonLine }).then(() => {
-            if (session?.provider !== "claude-code" && !titleGeneratedRef.current) {
+            if (sessionRef.current?.provider !== "claude-code" && !titleGeneratedRef.current) {
               titleGeneratedRef.current = true;
               invoke<string | null>("generate_title_from_text", { message: prompt.substring(0, 500) })
                 .then((title) => { if (title) { onRenameRef.current?.(title); onMarkTitleGeneratedRef.current?.(); } })
@@ -263,7 +266,7 @@ export function useAgentEvents(props: AgentEventsProps) {
       stopGenerating(); setCurrentTodo(null); setPendingQuestion(null);
       accumulatedBlocksRef.current.clear();
       onUsageUpdateRef.current?.({ ...accumulatedUsageRef.current, isBusy: !!queuedMessageRef.current });
-      if (session?.permissionMode === "plan") {
+      if (sessionRef.current?.permissionMode === "plan") {
         const restoreMsg = JSON.stringify({ type: "set_permission_mode", permissionMode: "plan" });
         invoke("send_agent_message", { sessionId, message: restoreMsg }).catch(() => { });
       }
@@ -297,7 +300,7 @@ export function useAgentEvents(props: AgentEventsProps) {
       setPendingPermission({ toolName: msg.toolName as string, input: msg.input as Record<string, unknown> });
       onQuestionChangeRef.current?.(true);
       if (msg.toolName === "ExitPlanMode") {
-        sendNotification({ title: "Plan ready", body: session?.name || "A session needs your approval" });
+        sendNotification({ title: "Plan ready", body: sessionRef.current?.name || "A session needs your approval" });
       }
       return;
     }
@@ -331,17 +334,39 @@ export function useAgentEvents(props: AgentEventsProps) {
     let cancelled = false;
     const unlistenFns: (() => void)[] = [];
 
-    const registerListener = (promise: Promise<() => void>) => {
+    const registerListener = (promise: Promise<() => void>, onRegistered?: () => void) => {
       promise.then((fn) => {
         if (cancelled) fn();
-        else unlistenFns.push(fn);
+        else {
+          unlistenFns.push(fn);
+          onRegistered?.();
+        }
       });
     };
 
     registerListener(listen<string>(`agent-message-${sessionId}`, (event) => {
       if (cancelled || !mountedRef.current) return;
       try { const msg = JSON.parse(event.payload); handleAgentMessage(msg); } catch { }
-    }));
+    }), () => {
+      // Recovery: if bridge_ready fired before our listener registered, it won't arrive
+      // via the live channel but IS stored in agent history — check for it now.
+      if (sessionRef.current?.pendingPrompt && !pendingPromptConsumedRef.current) {
+        invoke<string[]>("get_agent_history", { sessionId })
+          .then((lines) => {
+            if (cancelled || pendingPromptConsumedRef.current) return;
+            for (const line of lines) {
+              try {
+                const msg = JSON.parse(line) as Record<string, unknown>;
+                if (msg.type === "system" && msg.subtype === "bridge_ready") {
+                  handleAgentMessage(msg);
+                  break;
+                }
+              } catch { /* ignore */ }
+            }
+          })
+          .catch(() => { /* ignore */ });
+      }
+    });
 
     registerListener(listen<string>(`agent-exit-${sessionId}`, (event) => {
       if (cancelled || !mountedRef.current) return;
