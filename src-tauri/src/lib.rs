@@ -1,5 +1,6 @@
 mod agent_manager;
 mod clipboard_image;
+mod db;
 mod file_watcher;
 mod pty_manager;
 mod signal_watcher;
@@ -125,74 +126,60 @@ struct AppState {
     title_server_port: std::sync::atomic::AtomicU16,
     _title_server_child: Mutex<Option<std::process::Child>>,
     file_list_cache: Mutex<FileListCache>,
+    db: Arc<Mutex<rusqlite::Connection>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct SessionMeta {
-    id: String,
-    name: String,
+pub(crate) struct SessionMeta {
+    pub(crate) id: String,
+    pub(crate) name: String,
     #[serde(rename = "createdAt")]
-    created_at: f64,
+    pub(crate) created_at: f64,
     #[serde(rename = "lastActiveAt")]
-    last_active_at: f64,
+    pub(crate) last_active_at: f64,
     #[serde(default, rename = "lastMessageAt")]
-    last_message_at: f64,
+    pub(crate) last_message_at: f64,
     #[serde(default)]
-    directory: String,
+    pub(crate) directory: String,
     #[serde(default, rename = "homeDirectory", skip_serializing_if = "Option::is_none")]
-    home_directory: Option<String>,
+    pub(crate) home_directory: Option<String>,
     #[serde(default, rename = "claudeSessionId", skip_serializing_if = "Option::is_none")]
-    claude_session_id: Option<String>,
+    pub(crate) claude_session_id: Option<String>,
     #[serde(default, rename = "dangerouslySkipPermissions")]
-    dangerously_skip_permissions: bool,
+    pub(crate) dangerously_skip_permissions: bool,
     #[serde(default, rename = "permissionMode", skip_serializing_if = "Option::is_none")]
-    permission_mode: Option<String>,
+    pub(crate) permission_mode: Option<String>,
     #[serde(default, rename = "activeTime")]
-    active_time: f64,
+    pub(crate) active_time: f64,
     #[serde(default, rename = "hasTitleBeenGenerated")]
-    has_title_been_generated: bool,
+    pub(crate) has_title_been_generated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
+    pub(crate) provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    model: Option<String>,
+    pub(crate) model: Option<String>,
     #[serde(default, rename = "planContent", skip_serializing_if = "Option::is_none")]
-    plan_content: Option<String>,
+    pub(crate) plan_content: Option<String>,
     #[serde(default, rename = "parentSessionId", skip_serializing_if = "Option::is_none")]
-    parent_session_id: Option<String>,
+    pub(crate) parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    archived: Option<bool>,
+    pub(crate) archived: Option<bool>,
     #[serde(default, rename = "archivedAt", skip_serializing_if = "Option::is_none")]
-    archived_at: Option<f64>,
-}
-
-fn sessions_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {}", e))?;
-    Ok(dir.join("sessions.json"))
+    pub(crate) archived_at: Option<f64>,
 }
 
 #[tauri::command]
-fn save_sessions(app_handle: AppHandle, sessions: Vec<SessionMeta>) -> Result<(), String> {
-    let path = sessions_path(&app_handle)?;
-    let json = serde_json::to_string_pretty(&sessions)
-        .map_err(|e| format!("Serialize error: {}", e))?;
-    std::fs::write(path, json).map_err(|e| format!("Write error: {}", e))?;
-    Ok(())
+fn save_sessions(
+    sessions: Vec<SessionMeta>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::db_save_sessions(&conn, &sessions).map_err(|e| format!("DB write error: {}", e))
 }
 
 #[tauri::command]
-fn load_sessions(app_handle: AppHandle) -> Result<Vec<SessionMeta>, String> {
-    let path = sessions_path(&app_handle)?;
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-    let data = std::fs::read_to_string(&path).map_err(|e| format!("Read error: {}", e))?;
-    let sessions: Vec<SessionMeta> =
-        serde_json::from_str(&data).map_err(|e| format!("Parse error: {}", e))?;
-    Ok(sessions)
+fn load_sessions(state: State<'_, AppState>) -> Result<Vec<SessionMeta>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::db_load_sessions(&conn).map_err(|e| format!("DB read error: {}", e))
 }
 
 #[tauri::command]
@@ -1095,21 +1082,21 @@ fn dirs_opencode_db() -> Option<std::path::PathBuf> {
 }
 
 #[derive(Serialize, Clone, Default)]
-struct SessionUsage {
+pub(crate) struct SessionUsage {
     #[serde(rename = "inputTokens")]
-    input_tokens: u64,
+    pub(crate) input_tokens: u64,
     #[serde(rename = "outputTokens")]
-    output_tokens: u64,
+    pub(crate) output_tokens: u64,
     #[serde(rename = "cacheCreationInputTokens")]
-    cache_creation_input_tokens: u64,
+    pub(crate) cache_creation_input_tokens: u64,
     #[serde(rename = "cacheReadInputTokens")]
-    cache_read_input_tokens: u64,
+    pub(crate) cache_read_input_tokens: u64,
     #[serde(rename = "costUsd")]
-    cost_usd: f64,
+    pub(crate) cost_usd: f64,
     #[serde(rename = "contextTokens")]
-    context_tokens: u64,
+    pub(crate) context_tokens: u64,
     #[serde(rename = "isBusy")]
-    is_busy: bool,
+    pub(crate) is_busy: bool,
 }
 
 /// Check if the LLM is currently busy by finding the last "user" or "assistant"
@@ -1235,12 +1222,34 @@ fn get_session_usage(
         return Ok(SessionUsage::default());
     }
 
-    // Get current offset and base usage from cache (or start from scratch)
+    let jsonl_path_str = jsonl_path.to_string_lossy().to_string();
+
+    // Get current mtime to detect file changes
+    let current_mtime = jsonl_path
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Check in-memory cache first; fall back to SQLite cache on a cache miss
     let (byte_offset, base_usage) = {
         let cache = state.jsonl_cache.lock().map_err(|e| e.to_string())?;
         match cache.usage.get(&jsonl_path) {
             Some(entry) => (entry.byte_offset, entry.value.clone()),
-            None => (0, SessionUsage::default()),
+            None => {
+                // Try loading from SQLite so we don't re-scan from byte 0
+                let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+                match db::db_get_usage_cache(&db_conn, &jsonl_path_str) {
+                    Ok(Some((offset, usage, stored_mtime)))
+                        if stored_mtime == current_mtime || offset > 0 =>
+                    {
+                        (offset, usage)
+                    }
+                    _ => (0, SessionUsage::default()),
+                }
+            }
         }
     };
 
@@ -1254,13 +1263,28 @@ fn get_session_usage(
     // Check if LLM is currently busy (last entry is not "assistant")
     usage.is_busy = is_session_busy(&jsonl_path);
 
-    // Update cache with new offset
+    // Update in-memory cache and persist to SQLite when new data was parsed
     if new_offset != byte_offset {
-        let mut cache = state.jsonl_cache.lock().map_err(|e| e.to_string())?;
-        cache.usage.insert(jsonl_path, IncrementalUsageEntry {
-            byte_offset: new_offset,
-            value: usage.clone(),
-        });
+        {
+            let mut cache = state.jsonl_cache.lock().map_err(|e| e.to_string())?;
+            cache.usage.insert(
+                jsonl_path,
+                IncrementalUsageEntry {
+                    byte_offset: new_offset,
+                    value: usage.clone(),
+                },
+            );
+        }
+        // Persist to SQLite (best-effort; don't fail the command on DB errors)
+        if let Ok(db_conn) = state.db.lock() {
+            let _ = db::db_set_usage_cache(
+                &db_conn,
+                &jsonl_path_str,
+                new_offset,
+                current_mtime,
+                &usage,
+            );
+        }
     }
 
     Ok(usage)
@@ -3993,6 +4017,45 @@ pub fn run() {
                 candidates.into_iter().flatten().find(|p| p.exists())
             };
 
+            // Open (or create) the SQLite database.
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+            std::fs::create_dir_all(&data_dir)
+                .map_err(|e| format!("Failed to create data dir: {}", e))?;
+
+            let db_conn = db::open_db(&data_dir)
+                .map_err(|e| format!("Failed to open database: {}", e))?;
+
+            // One-time migration: if sessions.json exists and DB is empty, import it.
+            {
+                let count: i64 = db_conn
+                    .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+                    .unwrap_or(0);
+                if count == 0 {
+                    let json_path = data_dir.join("sessions.json");
+                    if json_path.exists() {
+                        if let Ok(data) = std::fs::read_to_string(&json_path) {
+                            if let Ok(legacy) =
+                                serde_json::from_str::<Vec<SessionMeta>>(&data)
+                            {
+                                let n = legacy.len();
+                                if let Err(e) =
+                                    db::db_migrate_from_json(&db_conn, legacy)
+                                {
+                                    eprintln!("[db] Migration from sessions.json failed: {}", e);
+                                } else {
+                                    eprintln!("[db] Migrated {} sessions from sessions.json", n);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let db = Arc::new(Mutex::new(db_conn));
+
             app.manage(AppState {
                 pty_manager: Mutex::new(PtyManager::new()),
                 agent_manager: Arc::new(Mutex::new(AgentManager::new())),
@@ -4005,6 +4068,7 @@ pub fn run() {
                 title_server_port: std::sync::atomic::AtomicU16::new(0),
                 _title_server_child: Mutex::new(None),
                 file_list_cache: Mutex::new(FileListCache { entries: HashMap::new() }),
+                db,
             });
 
             // Spawn the title generation server in a background thread so it
