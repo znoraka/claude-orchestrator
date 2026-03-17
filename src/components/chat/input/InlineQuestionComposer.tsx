@@ -8,7 +8,6 @@ interface InlineQuestionComposerProps {
 
 export function InlineQuestionComposer({ questions, onAnswer }: InlineQuestionComposerProps) {
   const [selected, setSelected] = useState<Record<number, string>>({});
-  const [customText, setCustomText] = useState("");
   const isSingle = questions.length === 1;
 
   const handleSelect = (qi: number, label: string) => {
@@ -16,18 +15,6 @@ export function InlineQuestionComposer({ questions, onAnswer }: InlineQuestionCo
       onAnswer({ [questions[0].question]: label });
     } else {
       setSelected((prev) => ({ ...prev, [qi]: label }));
-    }
-  };
-
-  const handleCustomSubmit = () => {
-    const text = customText.trim();
-    if (!text) return;
-    if (isSingle) {
-      onAnswer({ [questions[0].question]: text });
-    } else {
-      const answers: Record<string, string> = {};
-      questions.forEach((q) => { answers[q.question] = text; });
-      onAnswer(answers);
     }
   };
 
@@ -67,22 +54,8 @@ export function InlineQuestionComposer({ questions, onAnswer }: InlineQuestionCo
           )}
         </div>
       ))}
-      <div className="flex gap-1.5 mt-0.5">
-        <input
-          type="text"
-          value={customText}
-          onChange={(e) => setCustomText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") handleCustomSubmit(); }}
-          placeholder="Type a custom answer…"
-          className="flex-1 px-3 py-1.5 rounded-md text-xs bg-[var(--bg-tertiary)] text-[var(--text-primary)] border border-[var(--border-color)] outline-none focus:border-[var(--accent)] transition-colors placeholder:text-[var(--text-tertiary)]"
-        />
-        <button
-          disabled={!customText.trim()}
-          onClick={handleCustomSubmit}
-          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${customText.trim() ? "bg-[var(--accent)] text-white hover:bg-[var(--accent)]/90" : "bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] cursor-not-allowed"}`}
-        >
-          Send
-        </button>
+      <div className="text-xs text-[var(--text-tertiary)]">
+        Or reply using the main input below.
       </div>
       {!isSingle && (
         <button

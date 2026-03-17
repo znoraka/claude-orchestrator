@@ -87,6 +87,7 @@ interface SessionContextValue {
     permissionMode?: "bypassPermissions" | "plan"
   ) => Promise<string>;
   startPendingSession: (id: string, provider: AgentProvider, model?: string) => Promise<void>;
+  updateSessionModel: (id: string, model: string) => void;
   updateSessionProvider: (id: string, provider: AgentProvider) => void;
   createWorktree: (repoDir: string, branchName: string, worktreeName?: string) => Promise<string>;
   removeWorktree: (path: string) => Promise<void>;
@@ -486,6 +487,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const updateSessionProvider = useCallback((id: string, provider: AgentProvider) => {
     dispatch({ type: "UPDATE", id, patch: { provider } });
+  }, []);
+
+  const updateSessionModel = useCallback((id: string, model: string) => {
+    dispatch({ type: "UPDATE", id, patch: { model } });
   }, []);
 
   const deleteSession = useCallback(
@@ -1105,6 +1110,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       createSession,
       createPendingSession,
       startPendingSession,
+      updateSessionModel,
       updateSessionProvider,
       createWorktree,
       removeWorktree,
@@ -1140,6 +1146,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       createSession,
       createPendingSession,
       startPendingSession,
+      updateSessionModel,
       updateSessionProvider,
       createWorktree,
       removeWorktree,

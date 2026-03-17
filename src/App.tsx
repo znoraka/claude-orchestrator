@@ -177,6 +177,7 @@ export default function App() {
     selectSession,
     createSession,
     startPendingSession,
+    updateSessionModel,
     updateSessionProvider,
     createWorktree,
     archiveSession,
@@ -328,12 +329,13 @@ export default function App() {
       localStorage.setItem("claude-orchestrator-models", JSON.stringify(next));
       return next;
     });
+    if (activeSessionId) updateSessionModel(activeSessionId, modelId);
     // Send set_model to the active session's agent
     if (activeSessionId) {
       const msg = JSON.stringify({ type: "set_model", model: modelId });
       invoke("send_agent_message", { sessionId: activeSessionId, message: msg }).catch(() => {});
     }
-  }, [activeSessionId, sessions]);
+  }, [activeSessionId, sessions, updateSessionModel]);
 
   const handleProviderChange = useCallback((sessionId: string, provider: AgentProvider) => {
     updateSessionProvider(sessionId, provider);
@@ -1060,10 +1062,10 @@ export default function App() {
             data-no-drag
             title={railOpen ? "Hide context rail (⌘\\)" : "Show context rail (⌘\\)"}
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
               {railOpen
-                ? <><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>
-                : <path d="M9 18l6-6-6-6" />
+                ? <path d="M9 18l6-6-6-6" />
+                : <path d="M15 18l-6-6 6-6" />
               }
             </svg>
           </button>
@@ -1168,7 +1170,7 @@ export default function App() {
                   clearPendingPrompt={clearPendingPrompt}
                   restartSession={restartSession}
                   createSession={createSession}
-                  currentModel={selectedModel}
+                  currentModel={session.model ?? selectedModel}
                   onModelChange={handleModelChange}
                   activeModels={activeModels}
                   setChatInputHeight={setChatInputHeight}

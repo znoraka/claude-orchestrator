@@ -23,7 +23,7 @@ export function ToolCallGroup({ groups, isLastMessage, toolStates, onToggle }: T
   });
 
   const [explicitState, setExplicitState] = useState<boolean | null>(null);
-  const isExpanded = explicitState !== null ? explicitState : hasPlanFile;
+const isExpanded = explicitState !== null ? explicitState : false;
 
   const handleToggle = () => setExplicitState(!isExpanded);
 

@@ -26,11 +26,7 @@ export function ToolRow({ group, isLastMessage, isLastTool, toolState, onToggle,
   const isError = group.toolResult?.is_error;
 
   // Expand logic: expanded if manually expanded, in-progress, or last tool in last message
-  const isExpanded = !!(isPlanFile
-    ? toolState === "expanded"
-    : toolState === "expanded"
-      || (!hasResult && toolState !== "collapsed")
-      || (isLastTool && isLastMessage && toolState !== "collapsed"));
+const isExpanded = toolState === "expanded";
 
   const summary = useMemo(() => getToolSummary(toolName, input, isPlanFile), [toolName, input, isPlanFile]);
   const toolColor = useMemo(() => getToolColor(toolName, isPlanFile), [toolName, isPlanFile]);
