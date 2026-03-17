@@ -104,7 +104,7 @@ export function AssistantMessage({ message, toolStates, onToggleTool, isLastMess
           return <ContentBlockView key={index} block={block} />;
         })}
         {planContentFromTool && (
-          <InlinePlanBlock content={planContentFromTool} defaultOpen={true} />
+          <InlinePlanBlock planMarkdown={planContentFromTool} />
         )}
       </div>
     </div>

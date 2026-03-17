@@ -98,7 +98,7 @@ export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planCont
           })()}
         </div>
       </div>
-      {hasPlan && planContent && <InlinePlanBlock content={planContent} />}
+      {hasPlan && planContent && <InlinePlanBlock planMarkdown={planContent} />}
     </div>
   );
 }

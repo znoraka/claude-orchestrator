@@ -1,10 +1,48 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { invoke } from "../lib/bridge";
 import { getVersion } from "../lib/bridge";
 import type { Session, Workspace } from "../types";
 import SessionTab, { repoColor } from "./SessionTab";
 import { useSessionLive } from "../contexts/SessionContext";
+import {
+  DndContext,
+  type DragEndEvent,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { useStore } from "../store";
 
+
+function SortableWorkspaceItem({
+  id,
+  children,
+}: {
+  id: string;
+  children: (dragHandleListeners: ReturnType<typeof useSortable>["listeners"]) => React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id });
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    position: "relative",
+  };
+  return (
+    <div ref={setNodeRef} style={style} {...attributes}>
+      {children(listeners)}
+    </div>
+  );
+}
 
 interface SidebarProps {
   workspaces: Workspace[];
@@ -32,6 +70,7 @@ export default function Sidebar({
   youngestDescendantMap,
 }: SidebarProps) {
   const { sessionUsage, unreadSessions } = useSessionLive();
+  const { workspaceOrder, reorderWorkspaces } = useStore();
   const [appVersion, setAppVersion] = useState<string>("");
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -195,6 +234,33 @@ export default function Sidebar({
       .filter((workspace) => workspace.worktrees.length > 0);
   }, [workspaces, filterQ, sessionMatchesFilter]);
 
+  // Sort workspaces by stored order
+  const sortedWorkspaces = useMemo(() => {
+    if (workspaceOrder.length === 0) return filteredWorkspaces;
+    return [...filteredWorkspaces].sort((a, b) => {
+      const ai = workspaceOrder.indexOf(a.id);
+      const bi = workspaceOrder.indexOf(b.id);
+      if (ai === -1 && bi === -1) return 0;
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
+    });
+  }, [filteredWorkspaces, workspaceOrder]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+  );
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const ids = sortedWorkspaces.map((w) => w.id);
+    const oldIndex = ids.indexOf(active.id as string);
+    const newIndex = ids.indexOf(over.id as string);
+    if (oldIndex < 0 || newIndex < 0) return;
+    reorderWorkspaces(arrayMove(ids, oldIndex, newIndex));
+  }, [sortedWorkspaces, reorderWorkspaces]);
+
   const flatSessions = useMemo(() => {
     const list = filteredWorkspaces.flatMap((ws) =>
       ws.worktrees.flatMap((wt) =>
@@ -321,26 +387,37 @@ export default function Sidebar({
 
       {/* Tree */}
       <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5">
-        {filteredWorkspaces.length > 0 ? (
-          filteredWorkspaces.map((workspace, wsIdx) => {
-            const dirName = workspace.directory.split("/").filter(Boolean).pop() || workspace.directory;
-            const isDirCollapsed = collapsedDirs.has(workspace.id);
-            const wt = workspace.worktrees[0]; // always exactly 1 worktree per workspace now
-            const sessions = wt?.sessions ?? [];
-            const hasShellProcess = !!(shellProcessDirs?.get(workspace.directory));
+        {sortedWorkspaces.length > 0 ? (
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <SortableContext items={sortedWorkspaces.map((w) => w.id)} strategy={verticalListSortingStrategy}>
+              {sortedWorkspaces.map((workspace, wsIdx) => {
+                const dirName = workspace.directory.split("/").filter(Boolean).pop() || workspace.directory;
+                const isDirCollapsed = collapsedDirs.has(workspace.id);
+                const wt = workspace.worktrees[0]; // always exactly 1 worktree per workspace now
+                const sessions = wt?.sessions ?? [];
+                const hasShellProcess = !!(shellProcessDirs?.get(workspace.directory));
 
-            const color = repoColor(workspace.directory);
+                const color = repoColor(workspace.directory);
 
-            return (
-              <div
-                key={workspace.id}
-                className={wsIdx > 0 ? "mt-4" : ""}
-              >
+                return (
+                  <SortableWorkspaceItem key={workspace.id} id={workspace.id}>
+                    {(dragListeners) => (
+                  <div className={wsIdx > 0 ? "mt-4" : ""}>
                 {/* Directory header */}
                 <button
                   onClick={() => toggleDir(workspace.id)}
                   className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-left hover:bg-[var(--bg-hover)]/40 transition-colors group"
                 >
+                  <span
+                    {...dragListeners}
+                    className="shrink-0 cursor-grab active:cursor-grabbing text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
+                    onClick={(e) => e.stopPropagation()}
+                    title="Drag to reorder"
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8h16M4 16h16" />
+                    </svg>
+                  </span>
                   <svg
                     className={`w-3 h-3 shrink-0 text-[var(--text-tertiary)] transition-transform duration-150 ${
                       isDirCollapsed ? "" : "rotate-90"
@@ -454,9 +531,13 @@ export default function Sidebar({
                     </>
                   );
                 })()}
-              </div>
-            );
-          })
+                  </div>
+                    )}
+                  </SortableWorkspaceItem>
+                );
+              })}
+            </SortableContext>
+          </DndContext>
         ) : (
           <div className="px-3 py-12 text-center">
             {workspaces.length > 0 ? (
