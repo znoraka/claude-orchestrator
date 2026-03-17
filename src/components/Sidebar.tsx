@@ -380,7 +380,7 @@ export default function Sidebar({
             className="sidebar-search w-full bg-transparent border-0 border-b border-[var(--border-subtle)] rounded-none pl-8 pr-6 py-2 text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-all duration-200"
           />
           {contentSearching && (
-            <div className="absolute right-1 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
+            <div className="absolute right-1 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--accent-color)]/50 border-t-transparent rounded-full animate-spin" />
           )}
         </div>
       </div>

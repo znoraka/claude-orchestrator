@@ -38,7 +38,7 @@ export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planCont
 
   return (
     <div className="flex flex-col items-end gap-1 animate-message-enter">
-      <div className="group flex justify-end items-end gap-1">
+      <div className="group flex justify-end items-end gap-1 w-full">
         {/* Hover action buttons */}
         <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-0.5 mb-1">
           {onRetry && (

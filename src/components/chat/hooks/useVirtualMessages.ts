@@ -12,7 +12,6 @@ export function useVirtualMessages(
   isActive: boolean,
   sessionId: string,
   scrollRef: React.RefObject<HTMLDivElement | null>,
-  scrollToBottom: () => void,
   isGenerating: boolean = false
 ) {
   const [renderCount, setRenderCount] = useState(INITIAL_WINDOW);
@@ -201,13 +200,6 @@ export function useVirtualMessages(
     setRenderCount((prev) => Math.min(prev + LOAD_MORE_CHUNK, messages.length));
   }, [messages.length]);
 
-  // Auto-scroll on new messages
-  const isAtBottomRef = useRef(true);
-  useEffect(() => {
-    if (isAtBottomRef.current && isActive) {
-      requestAnimationFrame(() => scrollToBottom());
-    }
-  }, [deferredMessages, trailingMessages, virtualizerTotalSize, isActive, scrollToBottom]);
 
   return {
     allMessages,

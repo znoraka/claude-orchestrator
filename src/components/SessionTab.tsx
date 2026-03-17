@@ -163,7 +163,7 @@ export default memo(function SessionTab({
             <path d="M4.5 2a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 4.5 2Zm7 0a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 11.5 2Z" />
           </svg>
         ) : isBusy ? (
-          <span className="w-2 h-2 border border-[var(--accent)] border-t-transparent rounded-full animate-spin" style={{ width: 8, height: 8 }} />
+          <span className="w-3.5 h-3.5 border-2 border-[var(--accent-color)]/50 border-t-transparent rounded-full animate-spin shrink-0" />
         ) : hasDraft ? (
           <span className="w-2 h-2 rounded-full bg-blue-400/70" />
         ) : unread ? (

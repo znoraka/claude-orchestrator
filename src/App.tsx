@@ -271,7 +271,7 @@ export default function App() {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [skipPermissions, setSkipPermissions] = useState(false);
-  const [permissionMode, setPermissionMode] = useState<"bypassPermissions" | "plan">("plan");
+  const [permissionMode, setPermissionMode] = useState<"bypassPermissions" | "plan">("bypassPermissions");
   const [creating, setCreating] = useState(false);
   const [dirInputDirty, setDirInputDirty] = useState(false);
   const [searchFilter, setSearchFilter] = useState("");

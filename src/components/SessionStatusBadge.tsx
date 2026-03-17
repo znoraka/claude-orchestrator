@@ -21,7 +21,7 @@ export default memo(function SessionStatusBadge({ status, size = "sm" }: Props) 
   if (status === "starting") {
     return (
       <span
-        className={`${dotSize} rounded-full border-2 border-[var(--text-tertiary)] border-t-transparent animate-spin shrink-0`}
+        className={`${dotSize} rounded-full border-2 border-[var(--accent-color)] border-t-transparent animate-spin shrink-0`}
         style={{ width: size === "md" ? 10 : 8, height: size === "md" ? 10 : 8 }}
         title="Starting"
       />

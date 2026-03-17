@@ -109,7 +109,7 @@
   --text-tertiary:  #52525b;
   --accent-color:   #7c5bf0;
   --accent-hover:   #9178f5;
-  --accent-muted:   rgba(124, 91, 240, 0.10);
+  --accent-muted:   rgba(124, 91, 240, 0.18);
   --accent-glow:    rgba(124, 91, 240, 0.20);
   --danger:         #f06060;
   --section-label:  #7c5bf0;
@@ -392,7 +392,7 @@ textarea:focus-visible {
   z-index: 0;
 }
 
-.chat-scroll { position: relative; z-index: 1; }
+.chat-scroll { position: relative; z-index: 1; overflow-x: hidden; }
 .chat-column { position: relative; z-index: 1; }
 
 .chat-bubble-user {
@@ -579,6 +579,8 @@ textarea:focus-visible {
 /* ── Chat markdown ──────────────────────────────────────────────────── */
 
 .chat-markdown {
+  font-family: "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  width: 100%;
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -623,7 +625,7 @@ textarea:focus-visible {
   border: 1px solid var(--border);
   border-radius: 0.75rem;
   background: var(--muted);
-  padding: 0.8rem 0.9rem;
+  padding: 0.8rem 0.9rem 1.4rem;
 }
 .chat-markdown pre code {
   border: none;
@@ -635,6 +637,7 @@ textarea:focus-visible {
 .chat-markdown .chat-markdown-codeblock {
   position: relative;
   margin: 0.65rem 0;
+  padding-bottom: 8px;
 }
 .chat-markdown .chat-markdown-codeblock pre { margin: 0; }
 .chat-markdown .chat-markdown-copy-button {

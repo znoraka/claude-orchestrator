@@ -269,7 +269,7 @@ const AgentChat = memo(function AgentChat({
   const {
     allMessages, hasMore, loadMore, useVirtualRendering, isLayoutReady,
     rowVirtualizer, virtualizerTotalSize, virtualItems, deferredMessages, trailingMessages,
-  } = useVirtualMessages(messages, isActive, sessionId, scrollRef, scrollToBottom, isGenerating);
+  } = useVirtualMessages(messages, isActive, sessionId, scrollRef, isGenerating);
 
   // Modified files (for "Changed files" panel), scoped per run
   const modifiedFilesByResult = useMemo(() => {

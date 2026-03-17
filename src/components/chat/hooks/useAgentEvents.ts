@@ -63,10 +63,16 @@ export function useAgentEvents(props: AgentEventsProps) {
     sdkMessageToChatMessage,
   } = props;
 
-  const { pendingStreamRef, accumulatedBlocksRef, currentStreamIdRef, scheduleFlush } = streamAccumulator;
+  const { pendingStreamRef, accumulatedBlocksRef, currentStreamIdRef, scheduleFlush, flushPendingStream } = streamAccumulator;
 
   const sessionRef = useRef(session);
   sessionRef.current = session;
+
+  // Track whether bridge_ready has been received for the current bridge lifecycle.
+  // When the session is destroyed and a new bridge boots, some providers (e.g. OpenCode)
+  // replay historical assistant/result events BEFORE bridge_ready. We must skip those
+  // to avoid corrupting the live message state (duplicates, spurious stopGenerating, etc.).
+  const bridgeReadyRef = useRef(true);
 
   const handleAgentMessage = useCallback((msg: Record<string, unknown>) => {
     const msgType = msg.type as string;
@@ -86,6 +92,7 @@ export function useAgentEvents(props: AgentEventsProps) {
     }
 
     if (msgType === "system" && msg.subtype === "bridge_ready") {
+      bridgeReadyRef.current = true;
       if (sessionRef.current?.provider === "claude-code" && currentModelRef.current !== "claude-opus-4-6") {
         const setModelMsg = JSON.stringify({ type: "set_model", model: currentModelRef.current });
         invoke("send_agent_message", { sessionId, message: setModelMsg }).catch(() => { });
@@ -153,13 +160,14 @@ export function useAgentEvents(props: AgentEventsProps) {
     }
 
     if (msgType === "assistant") {
+      if (!bridgeReadyRef.current) return; // Skip historical events during bridge history replay
       if (abortedRef.current) return;
       if (!isGeneratingRef.current) { isGeneratingRef.current = true; setIsGenerating(true); }
       const messageObj = msg.message as Record<string, unknown> | undefined;
       const content = normalizeContent(messageObj?.content);
       const apiMsgId = messageObj?.id as string | undefined;
       if (content) {
-        const streamId = apiMsgId || "stream-current";
+        const streamId = apiMsgId || currentStreamIdRef.current || `stream-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         currentStreamIdRef.current = streamId;
         const existing = accumulatedBlocksRef.current.get(streamId) || [];
         const merged = [...existing];
@@ -227,10 +235,13 @@ export function useAgentEvents(props: AgentEventsProps) {
     }
 
     if (msgType === "result") {
+      if (!bridgeReadyRef.current) return; // Skip historical result events during bridge history replay
       stopGenerating();
       setCurrentTodo(null);
       setPendingQuestion(null);
+      flushPendingStream();
       accumulatedBlocksRef.current.clear();
+      currentStreamIdRef.current = null;
       const result = msg as Record<string, unknown>;
       const durationMs = generationStartRef.current ? Date.now() - generationStartRef.current : undefined;
       const resultUsage = result.usage as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
@@ -258,13 +269,17 @@ export function useAgentEvents(props: AgentEventsProps) {
       });
       if (!queuedMessageRef.current && !pendingPermissionRef.current) {
         invoke("destroy_agent_session", { sessionId }).catch(() => {});
+        bridgeReadyRef.current = false;
       }
       return;
     }
 
     if (msgType === "query_complete") {
+      if (!bridgeReadyRef.current) return; // Skip historical query_complete during bridge history replay
       stopGenerating(); setCurrentTodo(null); setPendingQuestion(null);
+      flushPendingStream();
       accumulatedBlocksRef.current.clear();
+      currentStreamIdRef.current = null;
       onUsageUpdateRef.current?.({ ...accumulatedUsageRef.current, isBusy: !!queuedMessageRef.current });
       if (sessionRef.current?.permissionMode === "plan") {
         const restoreMsg = JSON.stringify({ type: "set_permission_mode", permissionMode: "plan" });
@@ -272,23 +287,26 @@ export function useAgentEvents(props: AgentEventsProps) {
       }
       if (!queuedMessageRef.current && !pendingPermissionRef.current) {
         invoke("destroy_agent_session", { sessionId }).catch(() => {});
+        bridgeReadyRef.current = false;
       }
       return;
     }
 
     if (msgType === "aborted") {
       if (abortedRef.current) stopGenerating();
+      flushPendingStream();
       setCurrentTodo(null); setPendingQuestion(null); accumulatedBlocksRef.current.clear();
+      currentStreamIdRef.current = null;
       return;
     }
 
     if (msgType === "error") {
       const errorText = (msg.error as string) || "";
       if (errorText.includes("aborted by user")) {
-        if (abortedRef.current) { stopGenerating(); setCurrentTodo(null); setPendingQuestion(null); accumulatedBlocksRef.current.clear(); }
+        if (abortedRef.current) { stopGenerating(); flushPendingStream(); setCurrentTodo(null); setPendingQuestion(null); accumulatedBlocksRef.current.clear(); currentStreamIdRef.current = null; }
         return;
       }
-      stopGenerating(); setCurrentTodo(null); setPendingQuestion(null); accumulatedBlocksRef.current.clear();
+      stopGenerating(); flushPendingStream(); setCurrentTodo(null); setPendingQuestion(null); accumulatedBlocksRef.current.clear(); currentStreamIdRef.current = null;
       setMessages((prev) => [...prev.filter((m) => !m.isStreaming), {
         id: `error-${Date.now()}`, type: "error",
         content: [{ type: "text", text: errorText || "Unknown error" }], timestamp: Date.now(),
@@ -315,10 +333,19 @@ export function useAgentEvents(props: AgentEventsProps) {
       const messageObj = msg.message as Record<string, unknown> | undefined;
       const content = normalizeContent(messageObj?.content);
       if (content) {
-        setMessages((prev) => [...prev, {
-          id: (messageObj?.id as string) || `user-history-${Date.now()}`,
-          type: "user", content, timestamp: Date.now(),
-        }]);
+        const histText = content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+        setMessages((prev) => {
+          // Skip if a user message with the same text already exists (replay dedup)
+          if (histText && prev.some((m) => m.type === "user" &&
+            m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim() === histText
+          )) {
+            return prev;
+          }
+          return [...prev, {
+            id: (messageObj?.id as string) || `user-history-${Date.now()}`,
+            type: "user", content, timestamp: Date.now(),
+          }];
+        });
       }
       return;
     }

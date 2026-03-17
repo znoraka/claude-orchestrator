@@ -17,7 +17,7 @@ export function ThinkingBlock({ thinking }: { thinking: string }) {
         >
           <path d="M9 18l6-6-6-6" />
         </svg>
-        <span className="text-xs font-medium text-sky-400">Thinking</span>
+        <span className="text-xs font-medium text-[var(--text-tertiary)]">Thinking</span>
         {!open && summary && (
           <span className="text-xs text-[var(--text-tertiary)] truncate flex-1 font-mono">{summary}</span>
         )}

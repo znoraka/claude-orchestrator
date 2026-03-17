@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="Claude Session Manager"
 REPO="znoraka/claude-orchestrator"
-BUNDLE_DIR="src-tauri/target/release/bundle"
+BUNDLE_DIR="target/release/bundle"
 RELEASE=false
 NOBUMP=false
 
@@ -61,6 +61,8 @@ TAG="v${VERSION}"
 echo "Building ${APP_NAME} ${TAG}..."
 
 # ── Build ─────────────────────────────────────────────────────────
+# Force Cargo to recompile so it re-embeds the latest frontend assets.
+touch src-tauri/src/lib.rs
 pnpm tauri build --bundles app
 
 # ── Create DMG manually (Tauri --bundles dmg is broken on macOS 26) ──

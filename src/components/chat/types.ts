@@ -71,6 +71,10 @@ export interface GroupedBlocks {
   items: Array<{ type: "content"; block: ContentBlock } | { type: "toolGroup"; group: ToolGroup }>;
 }
 
+export type ToolsSegmentItem =
+  | { type: "tool"; group: ToolGroup }
+  | { type: "thinking"; block: ContentBlock };
+
 export interface ToolBundle {
   id: string;
   groups: ToolGroup[];

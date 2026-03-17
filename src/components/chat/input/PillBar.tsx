@@ -46,7 +46,7 @@ export function PillBar({
           <div className="relative">
             <button
               onClick={() => setOpenPill(openPill === "provider" ? null : "provider")}
-              className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-md bg-[var(--accent)]/15 text-[var(--accent)] hover:bg-[var(--accent)]/25 transition-colors"
+              className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
             >
               {AGENT_PROVIDERS.find((p) => p.id === sessionProvider)?.label ?? "Provider"}
               <svg className="w-2.5 h-2.5 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>

@@ -29,12 +29,12 @@ function ActivityIcon({
       data-tooltip={tooltip}
       className={`activity-tooltip relative w-10 h-10 flex items-center justify-center rounded-xl ${
         active
-          ? "bg-[var(--accent)]/20 text-[var(--accent)]"
-          : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-white/5"
+          ? "bg-[var(--accent-color)]/15 text-[var(--accent-color)]"
+          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-white/5"
       }`}
     >
       {children}
-      <span className={`absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r bg-[var(--accent)] ${active ? "opacity-100" : "opacity-0"}`} />
+      <span className={`absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r bg-[var(--accent-color)] ${active ? "opacity-100" : "opacity-0"}`} />
     </button>
   );
 }

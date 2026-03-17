@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { ChatMessage, ToolGroup, ContentBlock } from "../types";
+import type { ChatMessage, ContentBlock, ToolsSegmentItem } from "../types";
 import { groupToolBlocks, normaliseWs } from "../constants";
 import { ContentBlockView } from "./shared/ContentBlockView";
 import { ToolCallGroup } from "./ToolCallGroup";
@@ -42,23 +42,39 @@ export function AssistantMessage({ message, toolStates, onToggleTool, isLastMess
     return undefined;
   }, [content]);
 
-  // Partition items into contiguous tool-group runs and content blocks
+  // Partition items into contiguous tool/thinking runs and content blocks.
+  // Thinking blocks between/around tool calls are merged into the tools segment.
   const segments = useMemo(() => {
-    type Segment =
-      | { type: "tools"; groups: ToolGroup[]; key: string }
-      | { type: "content"; block: ContentBlock; index: number };
+    type ToolsSegment = { type: "tools"; items: ToolsSegmentItem[]; key: string };
+    type ContentSegment = { type: "content"; block: ContentBlock; index: number };
+    type Segment = ToolsSegment | ContentSegment;
     const result: Segment[] = [];
     for (let i = 0; i < grouped.items.length; i++) {
       const item = grouped.items[i];
       if (item.type === "toolGroup") {
         const last = result[result.length - 1];
-        if (last && last.type === "tools") {
-          last.groups.push(item.group);
+        if (last?.type === "tools") {
+          last.items.push({ type: "tool", group: item.group });
         } else {
-          result.push({ type: "tools", groups: [item.group], key: item.group.blockId });
+          result.push({ type: "tools", items: [{ type: "tool", group: item.group }], key: item.group.blockId });
         }
       } else {
-        result.push({ type: "content", block: item.block, index: i });
+        const block = item.block;
+        if (block.type === "thinking") {
+          const last = result[result.length - 1];
+          if (last?.type === "tools") {
+            last.items.push({ type: "thinking", block });
+          } else {
+            const hasToolsAhead = grouped.items.slice(i + 1).some((ni) => ni.type === "toolGroup");
+            if (hasToolsAhead) {
+              result.push({ type: "tools", items: [{ type: "thinking", block }], key: `thinking-${i}` });
+            } else {
+              result.push({ type: "content", block, index: i });
+            }
+          }
+        } else {
+          result.push({ type: "content", block, index: i });
+        }
       }
     }
     return result;
@@ -70,19 +86,20 @@ export function AssistantMessage({ message, toolStates, onToggleTool, isLastMess
         {segments.map((segment) => {
           if (segment.type === "tools") {
             // Filter out plan-file writes — they're rendered as InlinePlanBlock below
-            const nonPlanGroups = planContentFromTool
-              ? segment.groups.filter((g) => {
-                  const name = g.toolUse.name || "";
-                  const fp = (g.toolUse.input as Record<string, unknown>)?.file_path;
+            const filteredItems = planContentFromTool
+              ? segment.items.filter((si) => {
+                  if (si.type !== "tool") return true;
+                  const name = si.group.toolUse.name || "";
+                  const fp = (si.group.toolUse.input as Record<string, unknown>)?.file_path;
                   return !((name === "Write" || name === "Edit") &&
                     typeof fp === "string" && fp.includes(".claude/plans/"));
                 })
-              : segment.groups;
-            if (nonPlanGroups.length === 0) return null;
+              : segment.items;
+            if (filteredItems.length === 0) return null;
             return (
               <ToolCallGroup
                 key={segment.key}
-                groups={nonPlanGroups}
+                items={filteredItems}
                 isLastMessage={isLastMessage}
                 toolStates={toolStates}
                 onToggle={onToggleTool}

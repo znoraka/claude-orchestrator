@@ -125,6 +125,17 @@ export function useHistoryLoader({
           const existingParent = prev.filter(m => m.isParentMessage);
           const existingOwn = prev.filter(m => !m.isParentMessage);
           const finalParent = existingParent.length > 0 ? existingParent : parentMessages;
+          // Remap replayed user messages to reuse optimistic IDs (user-<timestamp>) when
+          // text matches, so React keys stay stable and the message doesn't flicker.
+          const replayedWithStableIds = replayed.map((r) => {
+            if (r.type !== "user") return r;
+            const rText = extractUserText(r.content);
+            const optimistic = existingOwn.find(
+              (m) => m.type === "user" && m.id.startsWith("user-") && extractUserText(m.content) === rText
+            );
+            return optimistic ? { ...r, id: optimistic.id } : r;
+          });
+          replayed = replayedWithStableIds;
           if (existingOwn.length === 0) return [...finalParent, ...replayed];
           const newMessages = existingOwn.filter((m) => {
             if (replayed.some((r) => r.id === m.id)) return false;
