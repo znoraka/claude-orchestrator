@@ -11,7 +11,9 @@ import UsagePanel from "./components/UsagePanel";
 import FileEditor from "./components/FileEditor";
 import { repoColor } from "./components/SessionTab";
 import { prewarmContextMenu } from "./components/ContextMenu";
-import { repoRootDir, worktreeName } from "./utils/workspaces";
+import { repoRootDir, worktreeName, normalizeDir } from "./utils/workspaces";
+import NewSessionPanel from "./components/NewSessionPanel";
+import type { VirtualSessionState } from "./components/NewSessionPanel";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
 import { useShellProcessStatus } from "./hooks/useShellProcessStatus";
 import { defaultModelForProvider, jsonlDirectory, modelsForProvider, type AgentProvider, type ModelOption, type Session } from "./types";
@@ -174,7 +176,6 @@ export default function App() {
     youngestDescendantMap,
     selectSession,
     createSession,
-    createPendingSession,
     startPendingSession,
     updateSessionProvider,
     createWorktree,
@@ -276,6 +277,10 @@ export default function App() {
   const [addDirMode, setAddDirMode] = useState(false);
   // Track exact last-used session directory (including worktree paths)
   const [preselectedDir, setPreselectedDir] = useState<string | null>(null);
+
+  // ── Virtual sessions (per-worktree draft compose views) ─────────
+  const [virtualSessions, setVirtualSessions] = useState<Map<string, VirtualSessionState>>(new Map());
+  const [activeVirtualDir, setActiveVirtualDir] = useState<string | null>(null);
 
   // ── Panel state (replaces per-workspace tab state) ──────────────
   const [activePanel, setActivePanel] = useState<"prs" | "shell" | null>(null);
@@ -434,6 +439,23 @@ export default function App() {
     }
     return modelsForProvider(activeProvider);
   }, [activeProvider, opencodeModels, codexModels]);
+
+  const virtualActiveModels = useMemo(() => {
+    const virtualProvider = activeVirtualDir
+      ? virtualSessions.get(activeVirtualDir)?.provider
+      : undefined;
+    if (!virtualProvider) return activeModels;
+    if (virtualProvider === "opencode" && opencodeModels.length > 0) {
+      const free = opencodeModels.filter((m) => m.free);
+      const paid = opencodeModels.filter((m) => !m.free);
+      return [
+        ...free.map((m) => ({ id: `${m.providerID}/${m.id}`, name: m.name, desc: "Free", free: true as const })),
+        ...paid.map((m) => ({ id: `${m.providerID}/${m.id}`, name: m.name, desc: `$${m.costIn}/${m.costOut} per MTok`, free: false as const })),
+      ];
+    }
+    if (virtualProvider === "codex" && codexModels.length > 0) return codexModels;
+    return modelsForProvider(virtualProvider);
+  }, [activeVirtualDir, virtualSessions, opencodeModels, codexModels, activeModels]);
   const selectedModel = modelByProvider[activeProvider] || (
     activeProvider === "opencode" && activeModels.length > 0
       ? activeModels[0].id // first free model
@@ -549,6 +571,40 @@ export default function App() {
       if (e.metaKey && e.key === "n") {
         e.preventDefault();
         if (anyModalOpen) return;
+        // If virtual panel is already showing, open the picker to choose a different directory
+        if (activeVirtualDir) {
+          setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
+          setPreselectedDir(localStorage.getItem("claude-orchestrator-last-session-dir") || null);
+          setRecentDirs(loadRecentDirs());
+          setSearchFilter("");
+          setAddDirMode(false);
+          setShowDirDialog(true);
+          return;
+        }
+        const activeSession = sessions.find(s => s.id === activeSessionId);
+        if (activeSession) {
+          const dir = normalizeDir(activeSession.directory);
+          if (!virtualSessions.has(dir)) {
+            setVirtualSessions(prev => {
+              const next = new Map(prev);
+              next.set(dir, {
+                directory: dir,
+                draftText: "",
+                provider: activeSession.provider ?? "claude-code",
+                model: selectedModel,
+                permissionMode,
+                reasoningEffort: "medium",
+                images: [],
+                pastedFiles: [],
+              });
+              return next;
+            });
+          }
+          setActiveVirtualDir(dir);
+          setActivePanel(null);
+          return;
+        }
+        // No active session — show dir picker
         setDirInput(localStorage.getItem("claude-orchestrator-last-dir") || "~");
         setPreselectedDir(localStorage.getItem("claude-orchestrator-last-session-dir") || null);
         setRecentDirs(loadRecentDirs());
@@ -604,12 +660,27 @@ export default function App() {
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [activePanel, panelDirectory, showDirDialog, showCommandPalette, shellTabs, activeShellId]);
+  }, [activePanel, panelDirectory, showDirDialog, showCommandPalette, shellTabs, activeShellId, activeSessionId, sessions, virtualSessions, selectedModel, permissionMode]);
 
   // Wrap deleteSession to handle shell PTY lifecycle
   const handleDeleteSession = async (id: string) => {
     await deleteSession(id);
   };
+
+  const handleCommitClick = useCallback(async () => {
+    try {
+      const commands = await invoke<{ name: string }[]>("list_slash_commands", {
+        directory: panelDirectory,
+      });
+      if (commands.some((cmd) => cmd.name === "commit")) {
+        window.dispatchEvent(new CustomEvent("orchestrator-commit"));
+      } else {
+        setShowCommitModal(true);
+      }
+    } catch {
+      setShowCommitModal(true);
+    }
+  }, [panelDirectory]);
 
   // Worktree creation dialog
   const [showWorktreeDialog, setShowWorktreeDialog] = useState(false);
@@ -732,12 +803,16 @@ export default function App() {
     localStorage.setItem("claude-orchestrator-last-session-dir", dir);
     saveRecentDir(rootDir);
     setShowDirDialog(false);
-    try {
-      await createPendingSession(undefined, dir, skipPermissions, permissionMode);
-      setActivePanel(null);
-    } finally {
-      setCreating(false);
-    }
+    const normalized = normalizeDir(dir);
+    setVirtualSessions(prev => {
+      if (prev.has(normalized)) return prev;
+      const next = new Map(prev);
+      next.set(normalized, { directory: normalized, draftText: "", provider: "claude-code", model: selectedModel, permissionMode, reasoningEffort: "medium", images: [], pastedFiles: [] });
+      return next;
+    });
+    setActiveVirtualDir(normalized);
+    setActivePanel(null);
+    setCreating(false);
   };
 
   const handleDirCancel = () => {
@@ -776,29 +851,48 @@ export default function App() {
     setSuggestions([]);
   };
 
-  const quickCreate = async (dir: string) => {
+  const quickCreate = (dir: string) => {
     if (creating) return;
-    setCreating(true);
     // Save the repo root as last-dir so worktrees are always listed from the main repo
     const rootDir = repoRootDir(dir);
     localStorage.setItem("claude-orchestrator-last-dir", rootDir);
     localStorage.setItem("claude-orchestrator-last-session-dir", dir);
     saveRecentDir(rootDir);
     setShowDirDialog(false);
-    try {
-      await createPendingSession(undefined, dir, skipPermissions, permissionMode);
-      setActivePanel(null);
-    } finally {
-      setCreating(false);
-    }
+    const normalized = normalizeDir(dir);
+    setVirtualSessions(prev => {
+      if (prev.has(normalized)) return prev;
+      const next = new Map(prev);
+      next.set(normalized, { directory: normalized, draftText: "", provider: "claude-code", model: selectedModel, permissionMode, reasoningEffort: "medium", images: [], pastedFiles: [] });
+      return next;
+    });
+    setActiveVirtualDir(normalized);
+    setActivePanel(null);
   };
 
   const handleSelectSession = (id: string) => {
     startTransition(() => {
       selectSession(id);
       setActivePanel(null);
+      setActiveVirtualDir(null);
     });
   };
+
+  const handleVirtualSessionSend = useCallback(async (
+    text: string,
+    provider: import("./types").AgentProvider,
+    model: string,
+    pMode: "bypassPermissions" | "plan",
+    images?: Array<{ id: string; data: string; mediaType: string; name: string }>,
+    files?: Array<{ id: string; name: string; content: string; mimeType: string }>
+  ) => {
+    if (!activeVirtualDir) return;
+    const dir = activeVirtualDir;
+    await createSession(undefined, dir, skipPermissions, undefined, text, provider, model, pMode, undefined, undefined, images, files);
+    setActiveVirtualDir(null);
+    setVirtualSessions(prev => { const next = new Map(prev); next.delete(dir); return next; });
+    setActivePanel(null);
+  }, [activeVirtualDir, createSession, skipPermissions]);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[var(--bg-primary)]">
@@ -912,7 +1006,7 @@ export default function App() {
         <div className="tb-split" data-no-drag>
           <button
             className="tb-split-main"
-            onClick={() => setShowCommitModal(true)}
+            onClick={handleCommitClick}
             title="Commit & Push"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
@@ -923,7 +1017,7 @@ export default function App() {
           <div className="tb-split-sep" />
           <button
             className="tb-split-chev"
-            onClick={() => setShowCommitModal(true)}
+            onClick={handleCommitClick}
             title="Commit options"
           >
             <svg width="9" height="9" viewBox="0 0 10 6" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
@@ -1065,6 +1159,66 @@ export default function App() {
                   onStartPendingSession={(provider, model) => handleStartPendingSession(session.id, provider, model)}
                 />
               ))}
+
+              {/* Virtual session compose panel */}
+              {activeVirtualDir && virtualSessions.has(activeVirtualDir) && (
+                <div className="absolute inset-0 z-10 bg-[var(--bg-primary)]">
+                  <NewSessionPanel
+                    virtualSession={virtualSessions.get(activeVirtualDir)!}
+                    isActive={activePanel === null}
+                    activeModels={virtualActiveModels}
+                    providerAvailability={providerAvailability}
+                    onSend={handleVirtualSessionSend}
+                    onDraftChange={(dir, text) => setVirtualSessions(prev => {
+                      const e = prev.get(dir); if (!e) return prev;
+                      const next = new Map(prev); next.set(dir, { ...e, draftText: text }); return next;
+                    })}
+                    onProviderChange={(dir, provider) => {
+                      let models: ModelOption[];
+                      if (provider === "opencode" && opencodeModels.length > 0) {
+                        const free = opencodeModels.filter(m => m.free);
+                        const paid = opencodeModels.filter(m => !m.free);
+                        models = [
+                          ...free.map(m => ({ id: `${m.providerID}/${m.id}`, name: m.name, desc: "Free", free: true as const })),
+                          ...paid.map(m => ({ id: `${m.providerID}/${m.id}`, name: m.name, desc: `$${m.costIn}/${m.costOut} per MTok`, free: false as const })),
+                        ];
+                      } else if (provider === "codex" && codexModels.length > 0) {
+                        models = codexModels;
+                      } else {
+                        models = modelsForProvider(provider);
+                      }
+                      const newModel = models[0]?.id ?? "";
+                      setVirtualSessions(prev => {
+                        const e = prev.get(dir); if (!e) return prev;
+                        const next = new Map(prev);
+                        next.set(dir, { ...e, provider, model: newModel });
+                        return next;
+                      });
+                    }}
+                    onModelChange={(dir, model) => setVirtualSessions(prev => {
+                      const e = prev.get(dir); if (!e) return prev;
+                      const next = new Map(prev); next.set(dir, { ...e, model }); return next;
+                    })}
+                    onPermissionModeChange={(dir, mode) => setVirtualSessions(prev => {
+                      const e = prev.get(dir); if (!e) return prev;
+                      const next = new Map(prev); next.set(dir, { ...e, permissionMode: mode }); return next;
+                    })}
+                    onReasoningEffortChange={(dir, effort) => setVirtualSessions(prev => {
+                      const e = prev.get(dir); if (!e) return prev;
+                      const next = new Map(prev); next.set(dir, { ...e, reasoningEffort: effort }); return next;
+                    })}
+                    onAttachmentsChange={(dir, images, pastedFiles) => setVirtualSessions(prev => {
+                      const e = prev.get(dir); if (!e) return prev;
+                      const next = new Map(prev); next.set(dir, { ...e, images, pastedFiles }); return next;
+                    })}
+                    onCursorChange={(dir, start, end) => setVirtualSessions(prev => {
+                      const e = prev.get(dir); if (!e) return prev;
+                      const next = new Map(prev); next.set(dir, { ...e, selectionStart: start, selectionEnd: end }); return next;
+                    })}
+                    onDismiss={() => setActiveVirtualDir(null)}
+                  />
+                </div>
+              )}
 
               {/* PRs panel */}
               <div
@@ -1675,21 +1829,22 @@ export default function App() {
         </div>
       )}
 
-      {/* Command palette */}
-      <CommandPalette
-        isOpen={showCommandPalette}
-        onClose={() => setShowCommandPalette(false)}
-        sessions={sessions}
-        workspaces={workspaces}
-        activeSessionId={activeSessionId}
-        youngestDescendantMap={youngestDescendantMap}
-        onSelectSession={handleSelectSession}
-        onCreateSession={handleNewSession}
-        onToggleSidebar={() => {}} // sidebar always visible
-        onOpenUsage={() => setShowUsagePanel(true)}
-        onOpenPRs={() => togglePanel("prs")}
-        onOpenShell={() => togglePanel("shell")}
-      />
+      {/* Command palette — conditionally mounted so no DOM cost when closed */}
+      {showCommandPalette && (
+        <CommandPalette
+          onClose={() => setShowCommandPalette(false)}
+          sessions={sessions}
+          workspaces={workspaces}
+          activeSessionId={activeSessionId}
+          youngestDescendantMap={youngestDescendantMap}
+          onSelectSession={handleSelectSession}
+          onCreateSession={handleNewSession}
+          onToggleSidebar={() => {}} // sidebar always visible
+          onOpenUsage={() => setShowUsagePanel(true)}
+          onOpenPRs={() => togglePanel("prs")}
+          onOpenShell={() => togglePanel("shell")}
+        />
+      )}
 
       {/* Worktree creation dialog */}
       {showWorktreeDialog && (

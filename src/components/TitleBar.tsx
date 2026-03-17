@@ -32,6 +32,7 @@ function TitleBar({ workspaceName, sessionTitle, children }: TitleBarProps) {
 
   return (
     <div
+      data-tauri-drag-region
       onMouseDown={handleMouseDown}
       style={{
         height: "var(--titlebar-height)",

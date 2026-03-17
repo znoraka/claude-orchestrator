@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Session, SessionUsage, Workspace } from "../types";
 import { shortenPath, repoColor, directoryColor } from "./SessionTab";
 import { useSessionLive } from "../contexts/SessionContext";
 
 interface CommandPaletteProps {
-  isOpen: boolean;
   onClose: () => void;
   sessions: Session[];
   workspaces: Workspace[];
@@ -31,6 +31,10 @@ interface ResultItem {
   childCount?: number;
   unread?: boolean;
 }
+
+type VRow =
+  | { kind: "header"; label: string }
+  | { kind: "item"; item: ResultItem; globalIndex: number };
 
 const DATE_GROUP_ORDER = ["Today", "Yesterday", "This Week", "This Month", "Older"];
 
@@ -132,7 +136,6 @@ const CommandIcon = ({ id }: { id: string }) => {
 };
 
 export default function CommandPalette({
-  isOpen,
   onClose,
   sessions,
   workspaces: _workspaces,
@@ -152,12 +155,10 @@ export default function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // Focus input on mount
   useEffect(() => {
-    if (isOpen) {
-      setQuery("");
-      requestAnimationFrame(() => inputRef.current?.focus());
-    }
-  }, [isOpen]);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
 
   // Parent/child maps (same as Sidebar)
   const { parentNameMap, childCountMap } = useMemo(() => {
@@ -277,11 +278,44 @@ export default function CommandPalette({
     setSelectedIndex((i) => Math.min(i, Math.max(0, results.length - 1)));
   }, [results.length]);
 
+  // Build flat rows array: section headers + items (for virtualizer)
+  const rows: VRow[] = useMemo(() => {
+    const map = new Map<string, { item: ResultItem; globalIndex: number }[]>();
+    const order: string[] = [];
+    results.forEach((item, idx) => {
+      if (!map.has(item.section)) { map.set(item.section, []); order.push(item.section); }
+      map.get(item.section)!.push({ item, globalIndex: idx });
+    });
+
+    const flat: VRow[] = [];
+    for (const key of order) {
+      flat.push({ kind: "header", label: key.toUpperCase() });
+      for (const entry of map.get(key)!) {
+        flat.push({ kind: "item", item: entry.item, globalIndex: entry.globalIndex });
+      }
+    }
+    return flat;
+  }, [results]);
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: (i) => {
+      const r = rows[i];
+      if (r.kind === "header") return 32;
+      if (r.kind === "item" && r.item.type === "command") return 44;
+      return 72; // session item — measured dynamically
+    },
+    overscan: 5,
+    measureElement: (el) => el.getBoundingClientRect().height,
+  });
+
+  // Scroll selected item into view
   useEffect(() => {
-    if (!listRef.current) return;
-    const el = listRef.current.querySelector(`[data-index="${selectedIndex}"]`);
-    el?.scrollIntoView({ block: "nearest" });
-  }, [selectedIndex]);
+    // Find the row index for the selected globalIndex
+    const rowIdx = rows.findIndex((r) => r.kind === "item" && r.globalIndex === selectedIndex);
+    if (rowIdx >= 0) virtualizer.scrollToIndex(rowIdx, { align: "auto" });
+  }, [selectedIndex, rows, virtualizer]);
 
   const executeItem = useCallback(
     (item: ResultItem) => {
@@ -331,29 +365,195 @@ export default function CommandPalette({
     [results, selectedIndex, executeItem, onClose],
   );
 
-  const sections = useMemo(() => {
-    const secs: { key: string; label: string; items: { item: ResultItem; globalIndex: number }[] }[] = [];
-    const seenSections: string[] = [];
-    for (const item of results) {
-      if (!seenSections.includes(item.section)) seenSections.push(item.section);
+  const renderRow = (row: VRow) => {
+    if (row.kind === "header") {
+      return (
+        <div
+          className="px-3 pt-3 pb-1 text-[11px] font-semibold tracking-wider"
+          style={{ color: "var(--section-label)" }}
+        >
+          {row.label}
+        </div>
+      );
     }
-    for (const sKey of seenSections) {
-      const sectionItems: { item: ResultItem; globalIndex: number }[] = [];
-      results.forEach((item, idx) => {
-        if (item.section === sKey) sectionItems.push({ item, globalIndex: idx });
-      });
-      if (sectionItems.length > 0) {
-        secs.push({ key: sKey, label: sKey.toUpperCase(), items: sectionItems });
-      }
+
+    const { item, globalIndex: gi } = row;
+    const isSelected = gi === selectedIndex;
+
+    if (item.type === "command") {
+      return (
+        <div
+          data-index={gi}
+          onClick={() => executeItem(item)}
+          className="mx-2 flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2.5 transition-colors relative overflow-hidden"
+          style={{
+            background: isSelected ? "var(--accent-glow)" : "transparent",
+          }}
+        >
+          {isSelected && (
+            <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 rounded-r" style={{ background: "var(--accent)" }} />
+          )}
+          <span
+            className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors"
+            style={{
+              background: isSelected ? "var(--accent-muted)" : "var(--bg-tertiary)",
+              color: isSelected ? "var(--accent)" : "var(--text-secondary)",
+            }}
+          >
+            <CommandIcon id={item.id} />
+          </span>
+          <span className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+            {item.label}
+          </span>
+        </div>
+      );
     }
-    return secs;
-  }, [results]);
+
+    // Session item
+    const session = item.session!;
+    const usage = item.usage;
+    const isRunning = session.status === "running" || session.status === "starting";
+    const isBusy = usage?.isBusy && isRunning;
+    const hasQuestion = session.hasQuestion && isRunning;
+    const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
+    const hasDraft = session.hasDraft && isRunning;
+    const unread = item.unread;
+
+    let statusDesc: string | null = null;
+    if (hasQuestion) statusDesc = "Needs input";
+    else if (isBusy) statusDesc = "Working…";
+    else if (hasDraft) statusDesc = "Has draft";
+    else if (hasError) statusDesc = "Error";
+    else if (!isRunning) statusDesc = timeAgo(session.lastActiveAt);
+
+    const rowBg = hasQuestion
+      ? "bg-orange-500/10 animate-pulse-glow"
+      : hasError
+      ? "bg-red-500/5"
+      : "";
+
+    return (
+      <div
+        data-index={gi}
+        onClick={() => executeItem(item)}
+        className={`mx-2 flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 my-px transition-colors relative overflow-hidden ${rowBg}`}
+        style={{
+          background: isSelected && !hasQuestion ? "var(--accent-glow)" : undefined,
+        }}
+      >
+        {isSelected && (
+          <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 rounded-r" style={{ background: "var(--accent)" }} />
+        )}
+
+        <span className="shrink-0 w-3.5 h-3.5 flex items-center justify-center">
+          {hasError ? (
+            <span className="w-2 h-2 rounded-full bg-[var(--danger)]" />
+          ) : hasQuestion ? (
+            <svg className="w-3 h-3 text-orange-400" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4.5 2a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 4.5 2Zm7 0a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 11.5 2Z" />
+            </svg>
+          ) : isBusy ? (
+            <span className="rounded-full border border-[var(--accent)] border-t-transparent animate-spin" style={{ width: 8, height: 8 }} />
+          ) : hasDraft ? (
+            <span className="w-2 h-2 rounded-full bg-blue-400/70" />
+          ) : unread ? (
+            <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />
+          ) : isRunning ? (
+            <span className="w-2 h-2 rounded-full bg-[var(--accent)]/50" />
+          ) : (
+            <span className="w-2 h-2 rounded-full bg-[var(--text-tertiary)]/20" />
+          )}
+        </span>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 leading-snug">
+            {item.childCount !== undefined && item.childCount > 0 && (
+              <span
+                className="inline-flex items-center gap-0.5 shrink-0 text-[9px] px-1 py-px rounded font-medium"
+                style={{ background: "rgba(96,165,250,0.15)", color: "rgb(147,197,253)" }}
+                title={`${item.childCount} execution session${item.childCount !== 1 ? "s" : ""}`}
+              >
+                <svg className="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75v-.878a2.25 2.25 0 1 1 1.5 0v.878a2.25 2.25 0 0 1-2.25 2.25h-1.5v2.128a2.251 2.251 0 1 1-1.5 0V8.5h-1.5A2.25 2.25 0 0 1 3.5 6.25v-.878a2.25 2.25 0 1 1 1.5 0Z" />
+                </svg>
+                {item.childCount}
+              </span>
+            )}
+            <span className="text-sm font-medium truncate" style={{ color: "var(--text-primary)" }}>
+              {session.name}
+            </span>
+            {session.provider && (
+              <span
+                className="ml-1 text-[9px] px-1 py-px rounded uppercase tracking-wider font-semibold shrink-0"
+                style={{ background: "var(--bg-tertiary)", color: "var(--text-tertiary)" }}
+              >
+                {session.provider === "opencode" ? "OC" : session.provider === "claude-code" ? "CC" : session.provider === "codex" ? "CX" : session.provider}
+              </span>
+            )}
+          </div>
+
+          {statusDesc && (
+            <span
+              className="text-[11px] truncate block mt-0.5"
+              style={{
+                color: hasQuestion
+                  ? "var(--status-waiting)"
+                  : hasError
+                  ? "var(--danger)"
+                  : isBusy
+                  ? "var(--status-running)"
+                  : "var(--text-tertiary)",
+              }}
+            >
+              {statusDesc}
+            </span>
+          )}
+
+          {item.parentName && (
+            <span className="text-[10px] truncate block mt-0.5" style={{ color: "rgba(167,139,250,0.7)" }}>
+              from: {item.parentName}
+            </span>
+          )}
+
+          {session.directory && (() => {
+            const isWorktree = session.directory.includes("/.worktrees/") || session.directory.includes("/.claude/worktrees/");
+            if (isWorktree) {
+              const short = shortenPath(session.directory);
+              const slashIdx = short.indexOf("/");
+              const repo = short.slice(0, slashIdx);
+              const wt = short.slice(slashIdx);
+              return (
+                <span className="text-[10px] truncate block mt-0.5">
+                  <span style={{ color: repoColor(session.directory) }}>{repo}</span>
+                  <span style={{ color: directoryColor(session.directory) }}>{wt}</span>
+                </span>
+              );
+            }
+            return (
+              <span
+                className="text-[10px] truncate block mt-0.5"
+                style={{ color: repoColor(session.directory) }}
+              >
+                {shortenPath(session.directory)}
+              </span>
+            );
+          })()}
+
+          {usage && (usage.inputTokens > 0 || usage.outputTokens > 0) && (
+            <span className="text-[10px] truncate block mt-0.5" style={{ color: "var(--text-tertiary)" }}>
+              {formatTokens(usage.inputTokens + usage.outputTokens)} tokens · ${usage.costUsd.toFixed(2)}
+              {session.activeTime ? ` · ${formatDuration(session.activeTime)}` : ""}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div
       className="command-palette-backdrop fixed inset-0 z-50 flex items-start justify-center pt-[15vh]"
       onClick={onClose}
-      style={{ display: isOpen ? undefined : "none" }}
     >
       <div
         className="command-palette animate-slide-down flex flex-col rounded-xl shadow-2xl"
@@ -393,207 +593,26 @@ export default function CommandPalette({
           )}
         </div>
 
-        {/* Results */}
+        {/* Results — virtualised */}
         <div ref={listRef} className="flex-1 overflow-y-auto py-1.5" style={{ maxHeight: 460 }}>
-          {sections.length === 0 && (
+          {rows.length === 0 && (
             <div className="px-4 py-10 text-center text-sm" style={{ color: "var(--text-tertiary)" }}>
               No results found
             </div>
           )}
 
-          {sections.map((section) => (
-            <div key={section.key} className="mb-1">
-              {/* Section header */}
+          <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+            {virtualizer.getVirtualItems().map((vItem) => (
               <div
-                className="px-3 pt-3 pb-1 text-[11px] font-semibold tracking-wider"
-                style={{ color: "var(--section-label)" }}
+                key={vItem.key}
+                ref={virtualizer.measureElement}
+                data-index={vItem.index}
+                style={{ position: "absolute", top: vItem.start, width: "100%" }}
               >
-                {section.label}
+                {renderRow(rows[vItem.index])}
               </div>
-
-              {section.items.map(({ item, globalIndex: gi }) => {
-                const isSelected = gi === selectedIndex;
-
-                if (item.type === "command") {
-                  return (
-                    <div
-                      key={item.id}
-                      data-index={gi}
-                      onClick={() => executeItem(item)}
-                      className="mx-2 flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2.5 transition-colors relative overflow-hidden"
-                      style={{
-                        background: isSelected ? "var(--accent-glow)" : "transparent",
-                      }}
-                    >
-                      {/* Left accent bar */}
-                      {isSelected && (
-                        <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 rounded-r" style={{ background: "var(--accent)" }} />
-                      )}
-                      {/* Icon container */}
-                      <span
-                        className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors"
-                        style={{
-                          background: isSelected ? "var(--accent-muted)" : "var(--bg-tertiary)",
-                          color: isSelected ? "var(--accent)" : "var(--text-secondary)",
-                        }}
-                      >
-                        <CommandIcon id={item.id} />
-                      </span>
-                      <span className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-                        {item.label}
-                      </span>
-                    </div>
-                  );
-                }
-
-                // Session item
-                const session = item.session!;
-                const usage = item.usage;
-                const isRunning = session.status === "running" || session.status === "starting";
-                const isBusy = usage?.isBusy && isRunning;
-                const hasQuestion = session.hasQuestion && isRunning;
-                const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
-                const hasDraft = session.hasDraft && isRunning;
-                const unread = item.unread;
-
-                // Status description text
-                let statusDesc: string | null = null;
-                if (hasQuestion) statusDesc = "Needs input";
-                else if (isBusy) statusDesc = "Working…";
-                else if (hasDraft) statusDesc = "Has draft";
-                else if (hasError) statusDesc = "Error";
-                else if (!isRunning) statusDesc = timeAgo(session.lastActiveAt);
-
-                const rowBg = hasQuestion
-                  ? "bg-orange-500/10 animate-pulse-glow"
-                  : hasError
-                  ? "bg-red-500/5"
-                  : "";
-
-                return (
-                  <div
-                    key={item.id}
-                    data-index={gi}
-                    onClick={() => executeItem(item)}
-                    className={`mx-2 flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 my-px transition-colors relative overflow-hidden ${rowBg}`}
-                    style={{
-                      background: isSelected && !hasQuestion ? "var(--accent-glow)" : undefined,
-                    }}
-                  >
-                    {/* Left accent bar */}
-                    {isSelected && (
-                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 rounded-r" style={{ background: "var(--accent)" }} />
-                    )}
-
-                    {/* Status badge */}
-                    <span className="shrink-0 w-3.5 h-3.5 flex items-center justify-center">
-                      {hasError ? (
-                        <span className="w-2 h-2 rounded-full bg-[var(--danger)]" />
-                      ) : hasQuestion ? (
-                        <svg className="w-3 h-3 text-orange-400" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M4.5 2a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 4.5 2Zm7 0a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 11.5 2Z" />
-                        </svg>
-                      ) : isBusy ? (
-                        <span className="rounded-full border border-[var(--accent)] border-t-transparent animate-spin" style={{ width: 8, height: 8 }} />
-                      ) : hasDraft ? (
-                        <span className="w-2 h-2 rounded-full bg-blue-400/70" />
-                      ) : unread ? (
-                        <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />
-                      ) : isRunning ? (
-                        <span className="w-2 h-2 rounded-full bg-[var(--accent)]/50" />
-                      ) : (
-                        <span className="w-2 h-2 rounded-full bg-[var(--text-tertiary)]/20" />
-                      )}
-                    </span>
-
-                    {/* Name + directory + usage */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 leading-snug">
-                        {item.childCount !== undefined && item.childCount > 0 && (
-                          <span
-                            className="inline-flex items-center gap-0.5 shrink-0 text-[9px] px-1 py-px rounded font-medium"
-                            style={{ background: "rgba(96,165,250,0.15)", color: "rgb(147,197,253)" }}
-                            title={`${item.childCount} execution session${item.childCount !== 1 ? "s" : ""}`}
-                          >
-                            <svg className="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
-                              <path d="M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75v-.878a2.25 2.25 0 1 1 1.5 0v.878a2.25 2.25 0 0 1-2.25 2.25h-1.5v2.128a2.251 2.251 0 1 1-1.5 0V8.5h-1.5A2.25 2.25 0 0 1 3.5 6.25v-.878a2.25 2.25 0 1 1 1.5 0Z" />
-                            </svg>
-                            {item.childCount}
-                          </span>
-                        )}
-                        <span className="text-sm font-medium truncate" style={{ color: "var(--text-primary)" }}>
-                          {session.name}
-                        </span>
-                        {session.provider && (
-                          <span
-                            className="ml-1 text-[9px] px-1 py-px rounded uppercase tracking-wider font-semibold shrink-0"
-                            style={{ background: "var(--bg-tertiary)", color: "var(--text-tertiary)" }}
-                          >
-                            {session.provider === "opencode" ? "OC" : session.provider === "claude-code" ? "CC" : session.provider === "codex" ? "CX" : session.provider}
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Status description */}
-                      {statusDesc && (
-                        <span
-                          className="text-[11px] truncate block mt-0.5"
-                          style={{
-                            color: hasQuestion
-                              ? "var(--status-waiting)"
-                              : hasError
-                              ? "var(--danger)"
-                              : isBusy
-                              ? "var(--status-running)"
-                              : "var(--text-tertiary)",
-                          }}
-                        >
-                          {statusDesc}
-                        </span>
-                      )}
-
-                      {item.parentName && (
-                        <span className="text-[10px] truncate block mt-0.5" style={{ color: "rgba(167,139,250,0.7)" }}>
-                          from: {item.parentName}
-                        </span>
-                      )}
-
-                      {session.directory && (() => {
-                        const isWorktree = session.directory.includes("/.worktrees/") || session.directory.includes("/.claude/worktrees/");
-                        if (isWorktree) {
-                          const short = shortenPath(session.directory);
-                          const slashIdx = short.indexOf("/");
-                          const repo = short.slice(0, slashIdx);
-                          const wt = short.slice(slashIdx);
-                          return (
-                            <span className="text-[10px] truncate block mt-0.5">
-                              <span style={{ color: repoColor(session.directory) }}>{repo}</span>
-                              <span style={{ color: directoryColor(session.directory) }}>{wt}</span>
-                            </span>
-                          );
-                        }
-                        return (
-                          <span
-                            className="text-[10px] truncate block mt-0.5"
-                            style={{ color: repoColor(session.directory) }}
-                          >
-                            {shortenPath(session.directory)}
-                          </span>
-                        );
-                      })()}
-
-                      {usage && (usage.inputTokens > 0 || usage.outputTokens > 0) && (
-                        <span className="text-[10px] truncate block mt-0.5" style={{ color: "var(--text-tertiary)" }}>
-                          {formatTokens(usage.inputTokens + usage.outputTokens)} tokens · ${usage.costUsd.toFixed(2)}
-                          {session.activeTime ? ` · ${formatDuration(session.activeTime)}` : ""}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
 
         {/* Footer hints */}

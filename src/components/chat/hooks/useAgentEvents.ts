@@ -11,7 +11,7 @@ interface AgentEventsProps {
   sessionId: string;
   childSessions?: Array<{ id: string; status: string }>;
   childSessionsKey: string;
-  session?: { provider?: string; pendingPrompt?: string; planContent?: string; permissionMode?: string; name?: string };
+  session?: { provider?: string; pendingPrompt?: string; planContent?: string; permissionMode?: string; name?: string; pendingImages?: Array<{ id: string; data: string; mediaType: string; name: string }>; pendingFiles?: Array<{ id: string; name: string; content: string; mimeType: string }> };
   mountedRef: React.MutableRefObject<boolean>;
   isGeneratingRef: React.MutableRefObject<boolean>;
   setIsGenerating: (v: boolean) => void;
@@ -24,6 +24,7 @@ interface AgentEventsProps {
     costUsd: number; contextTokens: number;
   }>;
   queuedMessageRef: React.MutableRefObject<unknown>;
+  pendingPermissionRef: React.MutableRefObject<{ toolName: string; input: Record<string, unknown> } | null>;
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
   setCurrentTodo: (v: string | null) => void;
   setPendingPermission: (v: { toolName: string; input: Record<string, unknown> } | null) => void;
@@ -53,6 +54,7 @@ export function useAgentEvents(props: AgentEventsProps) {
     sessionId, childSessions, childSessionsKey, session,
     mountedRef, isGeneratingRef, setIsGenerating, stopGenerating,
     abortedRef, generationStartRef, accumulatedUsageRef, queuedMessageRef,
+    pendingPermissionRef,
     setMessages, setCurrentTodo, setPendingPermission, setPendingQuestion,
     pendingPromptConsumedRef, currentModelRef, titleGeneratedRef,
     streamAccumulator,
@@ -89,20 +91,40 @@ export function useAgentEvents(props: AgentEventsProps) {
         pendingPromptConsumedRef.current = true;
         onClearPendingPromptRef.current?.();
         const prompt = session.pendingPrompt;
+
+        // Build content with images/files if present
+        let pastedFileContext = "";
+        if (session.pendingFiles && session.pendingFiles.length > 0) {
+          pastedFileContext = session.pendingFiles.map((f: { name: string; content: string }) => `<file name="${f.name}">\n${f.content}\n</file>`).join("\n\n") + "\n\n";
+        }
+        const fullText = pastedFileContext + prompt;
+        let sendContent: unknown;
+        if (session.pendingImages && session.pendingImages.length > 0) {
+          const blocks: unknown[] = [];
+          for (const img of session.pendingImages)
+            blocks.push({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } });
+          blocks.push({ type: "text", text: fullText });
+          sendContent = blocks;
+        } else {
+          sendContent = fullText;
+        }
+
+        const displayText = session?.planContent ? "Execute the plan." : prompt;
+        const displayContent = session?.pendingImages && session.pendingImages.length > 0
+          ? [
+              ...session.pendingImages.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } })),
+              { type: "text", text: displayText },
+            ]
+          : [{ type: "text", text: displayText }];
         setMessages((prev) => [
           ...prev,
-          {
-            id: `user-${Date.now()}`,
-            type: "user",
-            content: [{ type: "text", text: session?.planContent ? "Execute the plan." : prompt }],
-            timestamp: Date.now(),
-          },
+          { id: `user-${Date.now()}`, type: "user", content: displayContent, timestamp: Date.now() },
         ]);
         abortedRef.current = false;
         generationStartRef.current = Date.now();
         isGeneratingRef.current = true;
         setIsGenerating(true);
-        const jsonLine = JSON.stringify({ type: "user", message: { role: "user", content: prompt } });
+        const jsonLine = JSON.stringify({ type: "user", message: { role: "user", content: sendContent } });
         const trySendAuto = (attempt: number) => {
           invoke("send_agent_message", { sessionId, message: jsonLine }).then(() => {
             if (session?.provider !== "claude-code" && !titleGeneratedRef.current) {
@@ -231,6 +253,9 @@ export function useAgentEvents(props: AgentEventsProps) {
           durationMs,
         }];
       });
+      if (!queuedMessageRef.current && !pendingPermissionRef.current) {
+        invoke("destroy_agent_session", { sessionId }).catch(() => {});
+      }
       return;
     }
 
@@ -241,6 +266,9 @@ export function useAgentEvents(props: AgentEventsProps) {
       if (session?.permissionMode === "plan") {
         const restoreMsg = JSON.stringify({ type: "set_permission_mode", permissionMode: "plan" });
         invoke("send_agent_message", { sessionId, message: restoreMsg }).catch(() => { });
+      }
+      if (!queuedMessageRef.current && !pendingPermissionRef.current) {
+        invoke("destroy_agent_session", { sessionId }).catch(() => {});
       }
       return;
     }

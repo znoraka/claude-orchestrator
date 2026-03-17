@@ -52,6 +52,8 @@ const AgentChat = memo(function AgentChat({
   const [isGenerating, setIsGenerating] = useState(false);
   const [currentTodo, setCurrentTodo] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] = useState<{ toolName: string; input: Record<string, unknown> } | null>(null);
+  const pendingPermissionRef = useRef<{ toolName: string; input: Record<string, unknown> } | null>(null);
+  pendingPermissionRef.current = pendingPermission;
   const [pendingQuestion, setPendingQuestion] = useState<{ blockId: string; questions: AskQuestion[] } | null>(null);
   const [toolStates, setToolStates] = useState<Record<string, "expanded" | "collapsed">>({});
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -68,6 +70,7 @@ const AgentChat = memo(function AgentChat({
   const [currentBranch, setCurrentBranch] = useState("");
 
   const abortedRef = useRef(false);
+  const planDeniedRef = useRef(false);
   const generationStartRef = useRef<number>(0);
   const isGeneratingRef = useRef(false);
   const isGeneratingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -85,7 +88,11 @@ const AgentChat = memo(function AgentChat({
   const modelSearchRef = useRef<HTMLInputElement>(null);
 
   // Stable refs for callback props
-  const onExitRef = useRef(onExit); onExitRef.current = onExit;
+  const wrappedOnExit = useCallback((exitCode?: number) => {
+    onExit(planDeniedRef.current ? undefined : exitCode);
+    planDeniedRef.current = false;
+  }, [onExit]);
+  const onExitRef = useRef(wrappedOnExit); onExitRef.current = wrappedOnExit;
   const onActivityRef = useRef(onActivity); onActivityRef.current = onActivity;
   const onBusyChangeRef = useRef(onBusyChange); onBusyChangeRef.current = onBusyChange;
   const onDraftChangeRef = useRef(onDraftChange); onDraftChangeRef.current = onDraftChange;
@@ -167,7 +174,9 @@ const AgentChat = memo(function AgentChat({
 
   // Focus on active
   useEffect(() => {
-    if (isActive) setTimeout(() => inputRef.current?.focus(), 50);
+    if (!isActive) return;
+    const id = setTimeout(() => inputRef.current?.focus(), 50);
+    return () => clearTimeout(id);
   }, [isActive]);
 
   const addFileReference = useCallback((ref: FileReference) => {
@@ -419,6 +428,7 @@ const AgentChat = memo(function AgentChat({
     sessionId, childSessions, childSessionsKey, session,
     mountedRef, isGeneratingRef, setIsGenerating, stopGenerating,
     abortedRef, generationStartRef, accumulatedUsageRef, queuedMessageRef,
+    pendingPermissionRef,
     setMessages, setCurrentTodo, setPendingPermission, setPendingQuestion,
     pendingPromptConsumedRef, currentModelRef, titleGeneratedRef,
     streamAccumulator,
@@ -600,10 +610,16 @@ const AgentChat = memo(function AgentChat({
   }, [targetSessionId]);
 
   const respondPermission = useCallback((allowed: boolean) => {
+    const isPlanDenial = !allowed && pendingPermissionRef.current?.toolName === "ExitPlanMode";
     setPendingPermission(null); onQuestionChangeRef.current?.(false);
     if (!allowed) { stopGenerating(); onUsageUpdateRef.current?.({ ...accumulatedUsageRef.current, isBusy: false }); }
     const msg = JSON.stringify({ type: "permission_response", allowed });
     invoke("send_agent_message", { sessionId: targetSessionId, message: msg }).catch(() => { });
+    if (isPlanDenial) {
+      planDeniedRef.current = true;
+      abortedRef.current = true;
+      invoke("abort_agent", { sessionId: targetSessionId }).catch(() => {});
+    }
   }, [targetSessionId, stopGenerating]);
 
   const sendPlanFeedback = useCallback((text: string) => {

@@ -60,6 +60,9 @@ export function useAttachments(isActive: boolean, inputRef: React.RefObject<HTML
     if (!isActive) return;
     const handler = (e: ClipboardEvent) => {
       if (document.activeElement === inputRef.current) return;
+      // If any other textarea/input is focused, let that component's own onPaste handle it
+      const tag = document.activeElement?.tagName.toLowerCase();
+      if (tag === "textarea" || tag === "input") return;
       const items = e.clipboardData?.items;
       if (!items) return;
       let hasAttachment = false;

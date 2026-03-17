@@ -21,8 +21,6 @@ import { jsonlDirectory, type AgentProvider, type Session, type SessionUsage, ty
 import { deriveWorkspaces, workspaceForSession, normalizeDir, repoRootDir } from "../utils/workspaces";
 import { getYoungestDescendant, getRootSession } from "../utils/sessionLineage";
 
-const MAX_RUNNING_SESSIONS = 8;
-
 // ── Reducer ──────────────────────────────────────────────────────────
 
 type SessionAction =
@@ -86,7 +84,9 @@ interface SessionContextValue {
     model?: string,
     permissionMode?: "bypassPermissions" | "plan",
     planContent?: string,
-    parentSessionId?: string
+    parentSessionId?: string,
+    pendingImages?: Array<{ id: string; data: string; mediaType: string; name: string }>,
+    pendingFiles?: Array<{ id: string; name: string; content: string; mimeType: string }>
   ) => Promise<string>;
   createPendingSession: (
     name: string | undefined,
@@ -304,27 +304,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, [saveSessionsImmediately]);
 
-  const enforceMaxSessions = useCallback(async (excludeId?: string) => {
-    const current = sessionsRef.current;
-    const running = current
-      .filter((s) => s.status === "running" && s.id !== excludeId)
-      .sort((a, b) => (lastActiveAtRef.current.get(a.id) ?? a.lastActiveAt) - (lastActiveAtRef.current.get(b.id) ?? b.lastActiveAt));
-
-    const totalRunning = running.length + (excludeId ? 1 : 0);
-    if (totalRunning <= MAX_RUNNING_SESSIONS) return;
-
-    const toKill = running.slice(0, totalRunning - MAX_RUNNING_SESSIONS);
-    for (const session of toKill) {
-      try {
-        await invoke("destroy_agent_session", { sessionId: session.id });
-      } catch (err) {
-        console.error(`Failed to kill excess session ${session.id}:`, err);
-      }
-    }
-
-    dispatch({ type: "MARK_STOPPED", ids: toKill.map((s) => s.id) });
-  }, []);
-
   // ── Actions ──────────────────────────────────────────────────────
 
   const selectSession = useCallback((id: string) => {
@@ -387,7 +366,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       model?: string,
       permissionMode?: "bypassPermissions" | "plan",
       planContent?: string,
-      parentSessionId?: string
+      parentSessionId?: string,
+      pendingImages?: Array<{ id: string; data: string; mediaType: string; name: string }>,
+      pendingFiles?: Array<{ id: string; name: string; content: string; mimeType: string }>
     ) => {
       const dir = normalizeDir(directory);
       const id = uuidv4();
@@ -407,6 +388,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         dangerouslySkipPermissions,
         permissionMode,
         pendingPrompt,
+        pendingImages,
+        pendingFiles,
         planContent,
         parentSessionId,
       };
@@ -437,7 +420,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           permissionMode: permissionMode || null,
         });
         dispatch({ type: "UPDATE", id, patch: { status: "running" } });
-        await enforceMaxSessions(id);
       } catch (err) {
         console.error("Failed to create session:", err);
         showError(`Failed to create session: ${err}`);
@@ -446,7 +428,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
       return id;
     },
-    [enforceMaxSessions, showError, saveSessionsImmediately]
+    [showError, saveSessionsImmediately]
   );
 
   const createPendingSession = useCallback(
@@ -497,13 +479,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           permissionMode: session.permissionMode || null,
         });
         dispatch({ type: "UPDATE", id, patch: { status: "running", provider, model: model || undefined } });
-        await enforceMaxSessions(id);
       } catch (err) {
         dispatch({ type: "UPDATE", id, patch: { status: "stopped" } });
         throw err;
       }
     },
-    [enforceMaxSessions]
+    []
   );
 
   const updateSessionProvider = useCallback((id: string, provider: AgentProvider) => {
@@ -576,7 +557,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const markStopped = useCallback((id: string, exitCode?: number) => {
     const session = sessionsRef.current.find((s) => s.id === id);
-    if (session?.status === "stopped") return; // already stopped (e.g. by enforceMaxSessions)
+    if (session?.status === "stopped") return;
     dispatch({ type: "UPDATE", id, patch: { status: "stopped", exitCode } });
   }, []);
 
@@ -624,14 +605,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           permissionMode: session.permissionMode || null,
         });
         dispatch({ type: "UPDATE", id, patch: { status: "running" } });
-        await enforceMaxSessions(id);
       } catch (err) {
         console.error("Failed to restart session:", err);
         showError(`Failed to restart session: ${err}`);
         dispatch({ type: "UPDATE", id, patch: { status: "stopped" } });
       }
     },
-    [enforceMaxSessions, showError]
+    [showError]
   );
 
   const touchSession = useCallback((id: string) => {

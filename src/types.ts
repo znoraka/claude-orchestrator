@@ -57,6 +57,8 @@ export interface Session {
   activeTime?: number; // cumulative ms of running time
   hasTitleBeenGenerated?: boolean; // true if a smart title has been generated
   pendingPrompt?: string; // auto-sent on bridge_ready (e.g. PR review)
+  pendingImages?: Array<{ id: string; data: string; mediaType: string; name: string }>; // images attached to the pending prompt
+  pendingFiles?: Array<{ id: string; name: string; content: string; mimeType: string }>; // files attached to the pending prompt
   planContent?: string; // plan markdown shown as pinned block (from plan-mode fork)
   exitCode?: number; // last process exit code (non-zero = error)
   hasDraft?: boolean; // true when user has typed text in the input but not sent it

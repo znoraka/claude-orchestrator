@@ -34,7 +34,10 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
   // (each resize sends SIGWINCH, which can disrupt ink's interactive UI rendering)
   const lastPtySizeRef = useRef<{ cols: number; rows: number } | null>(null);
 
+  const isActiveRef = useRef(isActive);
+
   // Keep refs current without causing remounts
+  useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
   useEffect(() => { onExitRef.current = onExit; }, [onExit]);
   useEffect(() => { onTitleChangeRef.current = onTitleChange; }, [onTitleChange]);
   useEffect(() => { onActivityRef.current = onActivity; }, [onActivity]);
@@ -138,6 +141,7 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
     // clear and re-render interactive UI (e.g. AskUserQuestion picker).
     // Redundant SIGWINCHs can disrupt ink mid-render, losing picker options.
     const resizeObserver = new ResizeObserver(() => {
+      if (!isActiveRef.current) return;
       fitAddon.fit();
       const { cols, rows } = term;
       const last = lastPtySizeRef.current;
