@@ -26,6 +26,9 @@ dist-ssr
 *.sln
 *.sw?
 
+# TanStack generated files
+.tanstack/
+
 # Worktrees
 .worktrees/
 

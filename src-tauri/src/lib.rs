@@ -2683,7 +2683,7 @@ async fn get_git_status(directory: String) -> Result<GitStatusResult, String> {
 
 fn get_git_status_sync(directory: String) -> Result<GitStatusResult, String> {
     let output = git_command(&directory)
-        .args(["status", "--porcelain", "-b"])
+        .args(["status", "--porcelain", "-b", "--untracked-files=all"])
         .output()
         .map_err(|e| format!("Failed to run git: {}", e))?;
 
@@ -2760,6 +2760,8 @@ fn get_git_status_sync(directory: String) -> Result<GitStatusResult, String> {
             }
         }
     }
+
+    files.truncate(500);
 
     Ok(GitStatusResult {
         branch,

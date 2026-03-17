@@ -4,9 +4,9 @@ import { ThinkingBlock } from "./ThinkingBlock";
 import { ImageWithLightbox, LocalFileImage } from "./ImageWithLightbox";
 import type { ContentBlock } from "../../types";
 
-export function ContentBlockView({ block }: { block: ContentBlock }) {
+export function ContentBlockView({ block, isStreaming }: { block: ContentBlock; isStreaming?: boolean }) {
   if (block.type === "text" && block.text) {
-    return <MarkdownContent text={block.text} />;
+    return <MarkdownContent text={block.text} isStreaming={isStreaming} />;
   }
 
   if (block.type === "thinking" && block.thinking) {

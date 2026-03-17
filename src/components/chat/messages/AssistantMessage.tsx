@@ -10,10 +10,11 @@ interface AssistantMessageProps {
   toolStates: Record<string, "expanded" | "collapsed">;
   onToggleTool: (blockId: string, isCurrentlyExpanded: boolean) => void;
   isLastMessage: boolean;
+  isStreaming?: boolean;
   planContent?: string;
 }
 
-export function AssistantMessage({ message, toolStates, onToggleTool, isLastMessage, planContent }: AssistantMessageProps) {
+export function AssistantMessage({ message, toolStates, onToggleTool, isLastMessage, isStreaming, planContent }: AssistantMessageProps) {
   const content = Array.isArray(message.content)
     ? message.content
     : typeof message.content === "string"
@@ -101,7 +102,7 @@ export function AssistantMessage({ message, toolStates, onToggleTool, isLastMess
             }
           }
 
-          return <ContentBlockView key={index} block={block} />;
+          return <ContentBlockView key={index} block={block} isStreaming={isStreaming} />;
         })}
         {planContentFromTool && (
           <InlinePlanBlock planMarkdown={planContentFromTool} />
