@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../../../lib/bridge";
 
 export function ImageWithLightbox({ src, thumbnail }: { src: string; thumbnail?: boolean }) {
   const [open, setOpen] = useState(false);

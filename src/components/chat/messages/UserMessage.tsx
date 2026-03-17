@@ -64,25 +64,38 @@ export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planCont
         </div>
 
         {/* Right-aligned bubble */}
-        <div className="max-w-[85%] max-h-96 overflow-y-auto chat-bubble-user text-[var(--text-primary)] rounded-2xl rounded-br-sm px-4 py-3">
-          {visible.map((block, i) => {
-            if (hasPlan && block.type === "text" && block.text && block.text.length > 200) {
-              return <ContentBlockView key={i} block={{ type: "text", text: "Execute the plan." }} />;
-            }
-            if (block.type === "text" && block.text?.startsWith("\u{1F4CE} ")) {
-              return (
-                <div key={i} className="flex flex-wrap gap-1.5 mb-2">
-                  {block.text.split("\n").map((line, j) => (
-                    <span key={j} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-[var(--accent)]/15 text-[var(--text-secondary)] border border-[var(--accent)]/20">
-                      <svg className="w-3 h-3 shrink-0 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" /></svg>
-                      {line.replace(/^\u{1F4CE}\s*/u, "")}
-                    </span>
-                  ))}
-                </div>
-              );
-            }
-            return <ContentBlockView key={i} block={block} />;
-          })}
+        <div className="max-w-[85%] max-h-96 overflow-y-auto overflow-x-hidden break-words chat-bubble-user text-[var(--text-primary)] rounded-2xl rounded-br-sm px-4 py-3">
+          {(() => {
+            const imageBlocks = visible.filter(b => b.type === "image");
+            const nonImageBlocks = visible.filter(b => b.type !== "image");
+            return (
+              <>
+                {imageBlocks.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-1">
+                    {imageBlocks.map((block, i) => <ContentBlockView key={`img-${i}`} block={block} />)}
+                  </div>
+                )}
+                {nonImageBlocks.map((block, i) => {
+                  if (hasPlan && block.type === "text" && block.text && block.text.length > 200) {
+                    return <ContentBlockView key={i} block={{ type: "text", text: "Execute the plan." }} />;
+                  }
+                  if (block.type === "text" && block.text?.startsWith("\u{1F4CE} ")) {
+                    return (
+                      <div key={i} className="flex flex-wrap gap-1.5 mb-2">
+                        {block.text.split("\n").map((line, j) => (
+                          <span key={j} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-[var(--accent)]/15 text-[var(--text-secondary)] border border-[var(--accent)]/20">
+                            <svg className="w-3 h-3 shrink-0 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" /></svg>
+                            {line.replace(/^\u{1F4CE}\s*/u, "")}
+                          </span>
+                        ))}
+                      </div>
+                    );
+                  }
+                  return <ContentBlockView key={i} block={block} />;
+                })}
+              </>
+            );
+          })()}
         </div>
       </div>
       {hasPlan && planContent && <InlinePlanBlock content={planContent} />}

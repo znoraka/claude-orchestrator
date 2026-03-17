@@ -9,9 +9,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "../lib/bridge";
+import { listen } from "../lib/bridge";
+import { getCurrentWindow } from "../lib/bridge";
 import { v4 as uuidv4 } from "uuid";
 import { useConversationTitles } from "../hooks/useConversationTitles";
 import { useSessionUsage } from "../hooks/useSessionUsage";

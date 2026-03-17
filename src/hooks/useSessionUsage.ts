@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke } from "../lib/bridge";
+import { listen } from "../lib/bridge";
 import { jsonlDirectory, type Session, type SessionUsage } from "../types";
 import { useAppVisible } from "./useAppVisible";
 

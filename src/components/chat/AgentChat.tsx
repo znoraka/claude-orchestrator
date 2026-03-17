@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../lib/bridge";
 import { modelsForProvider } from "../../types";
 import FilePickerModal, { type FileReference } from "../FilePickerModal";
-import type { AgentChatProps, ChatMessage, ContentBlock, AskQuestion, ChangedFile } from "./types";
+import type { AgentChatProps, ChatMessage, ContentBlock, AskQuestion, ChangedFile, TodoItem } from "./types";
+import { TodoListView } from "./messages/ToolExpandedDetail";
 import { normalizeContent, normaliseWs, canonicalToolName } from "./constants";
 import { useStreamAccumulator } from "./hooks/useStreamAccumulator";
 import { useScrollManager } from "./hooks/useScrollManager";
@@ -14,6 +15,55 @@ import { useAgentEvents } from "./hooks/useAgentEvents";
 import { useMessageActions } from "./hooks/useMessageActions";
 import { MessageBubble } from "./messages/MessageList";
 import { ChatInput } from "./input/ChatInput";
+
+interface PendingTodosPanelProps {
+  todos: TodoItem[];
+  collapsed: boolean;
+  onToggle: () => void;
+}
+
+function PendingTodosPanel({ todos, collapsed, onToggle }: PendingTodosPanelProps) {
+  const completedCount = todos.filter((t) => t.status === "completed").length;
+  const inProgressCount = todos.filter((t) => t.status === "in_progress").length;
+
+  return (
+    <div className="border-t border-[var(--border-color)] bg-[var(--bg-secondary)]">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-2 hover:bg-[var(--bg-hover)] transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <svg className="w-3.5 h-3.5 text-[var(--text-tertiary)] shrink-0" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+          </svg>
+          <span className="text-xs font-medium text-[var(--text-secondary)]">Tasks</span>
+          <div className="flex items-center gap-1">
+            {inProgressCount > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 font-medium">
+                {inProgressCount} active
+              </span>
+            )}
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-tertiary)]">
+              {completedCount}/{todos.length}
+            </span>
+          </div>
+        </div>
+        <svg
+          className={`w-3.5 h-3.5 text-[var(--text-tertiary)] transition-transform duration-150 ${collapsed ? "" : "rotate-180"}`}
+          viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2}
+        >
+          <polyline points="4 7 10 13 16 7" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+
+      {!collapsed && (
+        <div className="px-1 pb-2 max-h-48 overflow-y-auto">
+          <TodoListView todos={todos} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 const AgentChat = memo(function AgentChat({
   sessionId,
@@ -62,6 +112,7 @@ const AgentChat = memo(function AgentChat({
   const [viewingFileRef, setViewingFileRef] = useState<FileReference | null>(null);
   const [reasoningEffort, setReasoningEffort] = useState<"low" | "medium" | "high">("high");
   const [openPill, setOpenPill] = useState<"provider" | "model" | "mode" | "effort" | null>(null);
+  const [todosPanelCollapsed, setTodosPanelCollapsed] = useState(false);
   const [modelSearchTerm, setModelSearchTerm] = useState("");
   const [queuedMessage, setQueuedMessage] = useState<{
     text: string; images: Array<{ id: string; data: string; mediaType: string; name: string }>;
@@ -77,6 +128,7 @@ const AgentChat = memo(function AgentChat({
   const generationCountRef = useRef(0);
   const queuedMessageRef = useRef<typeof queuedMessage>(null);
   const sendMessageRef = useRef<((...args: Parameters<typeof sendMessage>) => void) | null>(null);
+  const sendPlanFeedbackRef = useRef<((text: string) => void) | null>(null);
   const mountedRef = useRef(true);
   const pendingPromptConsumedRef = useRef(false);
   const titleGeneratedRef = useRef(!!session?.hasTitleBeenGenerated);
@@ -285,6 +337,26 @@ const AgentChat = memo(function AgentChat({
     return resultMap;
   }, [allMessages, onOpenFile, session?.directory]);
 
+  const latestTodos = useMemo<TodoItem[] | null>(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.type !== "assistant") continue;
+      const blocks = Array.isArray(msg.content) ? msg.content : [];
+      for (let j = blocks.length - 1; j >= 0; j--) {
+        const block = blocks[j];
+        if (block.type === "tool_use" && block.name === "TodoWrite" && Array.isArray((block.input as { todos?: unknown })?.todos)) {
+          return (block.input as { todos: TodoItem[] }).todos;
+        }
+      }
+    }
+    return null;
+  }, [messages]);
+
+  const hasPendingTodos = useMemo(
+    () => latestTodos !== null && latestTodos.some((t) => t.status === "pending"),
+    [latestTodos]
+  );
+
   // Sentinel for load-more
   const sentinelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -454,6 +526,29 @@ const AgentChat = memo(function AgentChat({
     const activePastedFiles = overridePastedFiles ?? pastedFiles;
     const text = (overrideText ?? inputText).trim();
     if (!text && activeImages.length === 0 && activePastedFiles.length === 0) return;
+
+    // If plan is pending, route as plan feedback (deny + resend)
+    if (pendingPermission?.toolName === "ExitPlanMode" && text && !editingMessageId) {
+      setInputText("");
+      sendPlanFeedbackRef.current?.(text);
+      return;
+    }
+
+    // If a question is pending, treat this message as the answer
+    if (pendingQuestion && text) {
+      onQuestionChangeRef.current?.(false);
+      setPendingQuestion(null);
+      const answer: Record<string, string> = {};
+      for (const q of pendingQuestion.questions) {
+        answer[q.question] = text;
+      }
+      const msg = JSON.stringify({ type: "ask_user_answer", answer });
+      invoke("send_agent_message", { sessionId: targetSessionId, message: msg })
+        .catch(() => { setInputText(text); inputRef.current?.focus(); });
+      setMessages((prev) => [...prev, { id: `user-${Date.now()}`, type: "user", content: [{ type: "text", text }], timestamp: Date.now() }]);
+      setInputText("");
+      return;
+    }
 
     if (text && !titleGeneratedRef.current && messages.length === 0) {
       const title = text.slice(0, 50).trimEnd();
@@ -626,6 +721,7 @@ const AgentChat = memo(function AgentChat({
     respondPermission(false);
     setTimeout(() => sendMessage(text), 100);
   }, [respondPermission, sendMessage]);
+  sendPlanFeedbackRef.current = sendPlanFeedback;
 
   const allowInNewConversation = useCallback(async () => {
     if (!onForkWithPromptRef.current) return;
@@ -809,6 +905,14 @@ const AgentChat = memo(function AgentChat({
           </div>
         </div>
       </div>
+
+      {hasPendingTodos && latestTodos && (
+        <PendingTodosPanel
+          todos={latestTodos}
+          collapsed={todosPanelCollapsed}
+          onToggle={() => setTodosPanelCollapsed((c) => !c)}
+        />
+      )}
 
       {/* Input area */}
       <ChatInput

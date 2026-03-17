@@ -1,20 +1,20 @@
 import { useEffect, useState } from "react";
-import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { checkUpdate, relaunch } from "../lib/bridge";
 
 export type UpdateStatus = "idle" | "downloading" | "installing";
 
 export function useUpdater(onError?: (msg: string) => void) {
-  const [update, setUpdate] = useState<Update | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [update, setUpdate] = useState<any | null>(null);
   const [status, setStatus] = useState<UpdateStatus>("idle");
   const [progress, setProgress] = useState(0);
 
   useEffect(() => {
-    check()
-      .then((u) => {
+    checkUpdate()
+      .then((u: unknown) => {
         if (u) setUpdate(u);
       })
-      .catch((e) => {
+      .catch((e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e);
         console.error("Update check failed:", e);
         onError?.(`Update check failed: ${msg}`);
@@ -28,7 +28,8 @@ export function useUpdater(onError?: (msg: string) => void) {
     let downloaded = 0;
     let total = 0;
     try {
-      await update.downloadAndInstall((event) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await update.downloadAndInstall((event: any) => {
         switch (event.event) {
           case "Started":
             total = event.data.contentLength ?? 0;
@@ -44,7 +45,7 @@ export function useUpdater(onError?: (msg: string) => void) {
         }
       });
       await relaunch();
-    } catch (e) {
+    } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("Update install failed:", e);
       onError?.(`Update install failed: ${msg}`);

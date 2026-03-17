@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { invoke } from "../lib/bridge";
+import { openUrl } from "../lib/bridge";
 import type { PullRequest, PullRequestsResult, GitStatusResult } from "../types";
 import { useSessionContext } from "../contexts/SessionContext";
 import PRReviewView from "./PRReviewView";

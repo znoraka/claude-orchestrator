@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "../lib/bridge";
+import { getVersion } from "../lib/bridge";
 import type { Session, Workspace } from "../types";
 import SessionTab, { repoColor } from "./SessionTab";
 import { useSessionLive } from "../contexts/SessionContext";

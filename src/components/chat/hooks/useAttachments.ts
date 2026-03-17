@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke } from "../../../lib/bridge";
+import { listen } from "../../../lib/bridge";
 
 export type ImageAttachment = { id: string; data: string; mediaType: string; name: string };
 export type PastedFile = { id: string; name: string; content: string; mimeType: string };

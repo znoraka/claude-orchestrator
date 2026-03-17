@@ -120,7 +120,7 @@ export default function NewSessionPanel({
 
   const handleSend = useCallback(async () => {
     const text = draftText.trim();
-    if (!text || sending) return;
+    if ((!text && images.length === 0 && pastedFiles.length === 0) || sending) return;
     setSending(true);
     try {
       await onSend(text, provider, model, permissionMode, images, pastedFiles);

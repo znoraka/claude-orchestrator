@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { sendNotification } from "@tauri-apps/plugin-notification";
+import { invoke } from "../../../lib/bridge";
+import { listen } from "../../../lib/bridge";
+import { sendNotification } from "../../../lib/bridge";
 import type { ChatMessage, ContentBlock, AskQuestion } from "../types";
 import type { SessionUsage } from "../../../types";
 import { normalizeContent } from "../constants";

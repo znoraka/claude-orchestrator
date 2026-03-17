@@ -2,8 +2,8 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke } from "../lib/bridge";
+import { listen } from "../lib/bridge";
 import { useToast } from "./Toast";
 
 interface TerminalProps {

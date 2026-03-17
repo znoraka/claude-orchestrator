@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../../lib/bridge";
 import { AGENT_PROVIDERS } from "../../../types";
 import type { AgentProvider, ModelOption } from "../../../types";
 

@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../../lib/bridge";
 
 export function useInputAutocomplete(
   inputText: string,

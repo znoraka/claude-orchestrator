@@ -3,7 +3,7 @@ import {
   isPermissionGranted,
   requestPermission,
   sendNotification,
-} from "@tauri-apps/plugin-notification";
+} from "../lib/bridge";
 import type { Session, SessionUsage } from "../types";
 import { playDoneSound, playQuestionSound } from "../utils/notificationSound";
 import { useAppVisible } from "./useAppVisible";

@@ -14,7 +14,8 @@
     "build:title-server": "esbuild src-tauri/resources/title-server.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/title-server.bundle.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json"
+    "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
+    "dev:browser": "concurrently --names \"server,vite\" -c \"cyan,green\" \"cargo run -p orchestrator-server\" \"vite\""
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -69,6 +70,7 @@
     "@types/react-dom": "^19.1.6",
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^4.6.0",
+    "concurrently": "^9.2.1",
     "esbuild": "^0.25.0",
     "tailwindcss": "^4.1.0",
     "typescript": "~5.8.3",

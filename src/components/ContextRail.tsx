@@ -1,5 +1,5 @@
 import { memo, useState, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/bridge";
 import type { SessionUsage } from "../types";
 import { NewFileViewer, PierreDiff, type DiffMode } from "./DiffViewer";
 

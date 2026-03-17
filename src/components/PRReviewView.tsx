@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { invoke } from "../lib/bridge";
+import { openUrl } from "../lib/bridge";
 import DiffViewer from "./DiffViewer";
 import type { DiffMode } from "./DiffViewer";
 import FileIcon from "./FileIcon";

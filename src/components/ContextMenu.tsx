@@ -1,4 +1,4 @@
-import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
+import { isTauri, showBrowserContextMenu } from "../lib/bridge";
 
 export interface ContextMenuItem {
   label: string;
@@ -15,6 +15,14 @@ export async function showContextMenu(
   _y: number,
   items: (ContextMenuItem | null)[]
 ) {
+  if (!isTauri) {
+    return showBrowserContextMenu(items);
+  }
+
+  const { Menu, MenuItem, PredefinedMenuItem } = await import(
+    "@tauri-apps/api/menu"
+  );
+
   const menuItems = await Promise.all(
     items.map(async (item) => {
       if (item === null) {
@@ -42,7 +50,9 @@ export async function showContextMenu(
  * to initialise the Tauri IPC channel.
  */
 export async function prewarmContextMenu(): Promise<void> {
+  if (!isTauri) return;
   try {
+    const { Menu } = await import("@tauri-apps/api/menu");
     await Menu.new({ items: [] });
   } catch {
     // best-effort — failure here must not affect app startup

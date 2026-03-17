@@ -1,5 +1,5 @@
 import { useEffect, useRef, useMemo } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../../../lib/bridge";
 import { jsonlDirectory } from "../../../types";
 import type { ChatMessage, ContentBlock } from "../types";
 import { parseHistoryLines } from "../constants";

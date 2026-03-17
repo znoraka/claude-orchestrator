@@ -1,5 +1,5 @@
 import { memo, useState, useEffect, useCallback } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "../lib/bridge";
 
 interface TitleBarProps {
   workspaceName?: string;

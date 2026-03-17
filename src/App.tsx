@@ -1,6 +1,6 @@
 // Plan mode test comment
 import { useRef, useState, useEffect, useMemo, useCallback, memo, startTransition } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./lib/bridge";
 import { useSessionContext } from "./contexts/SessionContext";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
@@ -576,6 +576,15 @@ export default function App() {
       // Don't fire app shortcuts when a modal is already open
       const anyModalOpen = showDirDialog || showCommandPalette;
 
+      if (e.key === "Escape") {
+        if (activeVirtualDir) {
+          e.preventDefault();
+          setActiveVirtualDir(null);
+          return;
+        }
+        return;
+      }
+
       if (e.metaKey && e.key === "n") {
         e.preventDefault();
         if (anyModalOpen) return;
@@ -668,7 +677,7 @@ export default function App() {
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [activePanel, panelDirectory, showDirDialog, showCommandPalette, shellTabs, activeShellId, activeSessionId, sessions, virtualSessions, selectedModel, permissionMode]);
+  }, [activePanel, panelDirectory, showDirDialog, showCommandPalette, shellTabs, activeShellId, activeSessionId, sessions, virtualSessions, selectedModel, permissionMode, activeVirtualDir]);
 
   // Wrap deleteSession to handle shell PTY lifecycle
   const handleDeleteSession = async (id: string) => {

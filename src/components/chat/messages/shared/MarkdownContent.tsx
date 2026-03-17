@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "../../../../lib/bridge";
 
 // Configure marked once
 marked.setOptions({ breaks: true, gfm: true });

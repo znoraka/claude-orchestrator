@@ -125,13 +125,29 @@ export function ChatInput({
           </div>
         )}
 
-        {/* Question / Permission / Normal input */}
-        {pendingQuestion && !editingMessageId ? (
+        {/* Question banner — shown above input, not replacing it */}
+        {pendingQuestion && !editingMessageId && (
           <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-3">
             <div className="text-[10px] font-semibold text-[var(--accent)] uppercase tracking-wide mb-1.5">Agent is asking</div>
             <InlineQuestionComposer questions={pendingQuestion.questions} onAnswer={onAnswerQuestion} />
           </div>
-        ) : pendingPermission && !editingMessageId ? (
+        )}
+
+        {/* Plan banner — shown above input like question banner */}
+        {pendingPermission?.toolName === "ExitPlanMode" && !editingMessageId && (
+          <div className="rounded-lg border border-[var(--warning-border,var(--border-color))] bg-[var(--bg-secondary)] p-3">
+            <InlinePermissionComposer
+              permission={pendingPermission}
+              onAllow={onAllowPermission}
+              onDeny={onDenyPermission}
+              onAllowInNew={onAllowInNew}
+              onFeedback={onPlanFeedback}
+            />
+          </div>
+        )}
+
+        {/* Non-plan permission replaces input; plan mode keeps input visible */}
+        {pendingPermission && pendingPermission.toolName !== "ExitPlanMode" && !editingMessageId ? (
           <div className="rounded-lg border border-[var(--warning-border,var(--border-color))] bg-[var(--bg-secondary)] p-3">
             <InlinePermissionComposer
               permission={pendingPermission}
@@ -195,7 +211,7 @@ export function ChatInput({
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={handleKeyDown}
                   onPaste={onPaste}
-                  placeholder="Message…"
+                  placeholder={pendingQuestion ? "Reply to answer…" : pendingPermission?.toolName === "ExitPlanMode" ? "Suggest changes to the plan…" : "Message…"}
                   rows={1}
                   className="flex-1 resize-none bg-transparent border-none px-3 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none max-h-40 overflow-y-auto"
                   style={{ minHeight: "44px" }}

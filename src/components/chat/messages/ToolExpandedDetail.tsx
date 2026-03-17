@@ -108,7 +108,7 @@ function WriteContentView({ filePath, content, startLine }: { filePath: string; 
   );
 }
 
-function TodoListView({ todos }: { todos: TodoItem[] }) {
+export function TodoListView({ todos }: { todos: TodoItem[] }) {
   return (
     <div className="px-3 py-2 space-y-1">
       {todos.map((todo, i) => {

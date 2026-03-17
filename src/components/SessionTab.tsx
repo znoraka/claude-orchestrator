@@ -138,12 +138,7 @@ export default memo(function SessionTab({
 
   // Row-level background tints
   const rowBg = isActive
-    ? "bg-[var(--accent-muted)]"
-    : hasQuestion
-    ? "bg-amber-500/8"
-    : hasError
-    ? "bg-red-500/5"
-    : "";
+    ? "bg-[var(--accent-muted)]" : "";
 
   return (
     <div
