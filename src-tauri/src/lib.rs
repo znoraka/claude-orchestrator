@@ -4013,19 +4013,36 @@ pub fn run() {
 
                 eprintln!("[tauri] Starting embedded orchestrator-server on port {}", port);
 
-                // Use a channel to get the actual port back from the server thread
+                // Use a channel to get the actual port back from the server thread.
+                // The outer loop restarts the server if the thread panics.
                 let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
                 std::thread::spawn(move || {
-                    let rt = tokio::runtime::Builder::new_multi_thread()
-                        .enable_all()
-                        .build()
-                        .expect("Failed to create tokio runtime");
-                    rt.block_on(async move {
-                        let actual_port = orchestrator_server::start_server(config, port, static_dir).await;
-                        let _ = port_tx.send(actual_port);
-                        // Keep runtime alive — server runs in a spawned task
-                        std::future::pending::<()>().await;
-                    });
+                    let port_tx = std::sync::Mutex::new(Some(port_tx));
+                    loop {
+                        let config = config.clone();
+                        let static_dir = static_dir.clone();
+                        let port_tx_ref = &port_tx;
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let rt = tokio::runtime::Builder::new_multi_thread()
+                                .enable_all()
+                                .build()
+                                .expect("Failed to create tokio runtime");
+                            rt.block_on(async move {
+                                let actual_port = orchestrator_server::start_server(config, port, static_dir).await;
+                                if let Some(tx) = port_tx_ref.lock().unwrap().take() {
+                                    let _ = tx.send(actual_port);
+                                }
+                                // Keep runtime alive — server runs in a spawned task
+                                std::future::pending::<()>().await;
+                            });
+                        }));
+                        if let Err(e) = result {
+                            eprintln!("[tauri] Orchestrator server panicked: {:?}. Restarting in 1s...", e);
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                        } else {
+                            break; // normal exit (shouldn't happen due to pending())
+                        }
+                    }
                 });
 
                 // Wait for the server to bind (should be near-instant)

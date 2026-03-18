@@ -74,6 +74,7 @@ pub enum ServerEvent {
 
 /// Paths/config the server needs at startup, populated by the host
 /// (Tauri, standalone server, etc.).
+#[derive(Clone)]
 pub struct ServerConfig {
     pub data_dir: PathBuf,
     pub mcp_script_path: Option<String>,

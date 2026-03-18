@@ -153,7 +153,33 @@ export function useHistoryLoader({
             return true;
           });
           if (newMessages.length === 0) return [...finalParent, ...replayed];
-          return [...finalParent, ...replayed, ...newMessages];
+          // Insert each newMessage after its nearest preceding replayed anchor
+          // (the last replayed message that appears before it in existingOwn).
+          // This preserves ordering when a new claudeSessionId's JSONL only contains
+          // user messages as context but not the previous session's assistant responses.
+          const replayedIdSet = new Set(replayed.map(r => r.id));
+          const existingOwnIds = existingOwn.map(m => m.id);
+          const result = [...replayed];
+          const newMsgSet = new Set(newMessages.map(m => m.id));
+          for (const newMsg of newMessages) {
+            const newMsgIdx = existingOwnIds.indexOf(newMsg.id);
+            // Find the last replayed anchor before newMsg in existingOwn
+            let anchorId: string | null = null;
+            for (let i = newMsgIdx - 1; i >= 0; i--) {
+              if (replayedIdSet.has(existingOwnIds[i])) { anchorId = existingOwnIds[i]; break; }
+            }
+            if (anchorId === null) {
+              result.unshift(newMsg);
+            } else {
+              const anchorIdx = result.findIndex(m => m.id === anchorId);
+              if (anchorIdx === -1) { result.push(newMsg); continue; }
+              // Insert after anchor and any newMessages already placed there
+              let insertIdx = anchorIdx + 1;
+              while (insertIdx < result.length && newMsgSet.has(result[insertIdx].id)) insertIdx++;
+              result.splice(insertIdx, 0, newMsg);
+            }
+          }
+          return [...finalParent, ...result];
         });
       };
 

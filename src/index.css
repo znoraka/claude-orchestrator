@@ -314,7 +314,7 @@ textarea:focus-visible {
   background: none;
   border: none;
   border-radius: 999px 0 0 999px;
-  padding: 0 7px 0 10px;
+  padding: 0 5px 0 9px;
   font-size: 12px;
   font-family: inherit;
   color: var(--text-secondary);

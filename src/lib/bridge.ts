@@ -44,6 +44,15 @@ function getInjectedPort(): number | undefined {
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
+  method?: string;
+  params?: Record<string, unknown>;
+};
+
+type RetryEntry = {
+  method: string;
+  params: Record<string, unknown>;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
 };
 
 type EventHandler = (event: TauriEvent) => void;
@@ -60,6 +69,7 @@ class BrowserBridge {
   private _connectionState: ConnectionState = "connecting";
   private _connectionListeners = new Set<ConnectionStateHandler>();
   private _failCount = 0;
+  private retryQueue: RetryEntry[] = [];
 
   constructor() {
     this.connect();
@@ -105,6 +115,12 @@ class BrowserBridge {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
       }
+      // Flush any requests that were in-flight when the previous connection
+      // closed.  Re-send them on the new connection.
+      const queue = this.retryQueue.splice(0);
+      for (const entry of queue) {
+        this.invoke(entry.method, entry.params).then(entry.resolve, entry.reject);
+      }
     });
 
     ws.addEventListener("message", (ev) => {
@@ -116,13 +132,17 @@ class BrowserBridge {
     });
 
     ws.addEventListener("close", () => {
-      console.warn("[bridge] Connection closed, reconnecting in 1s...");
+      console.warn("[bridge] Connection closed, reconnecting...");
       this._failCount++;
       this.setConnectionState("disconnected");
-      for (const [, req] of this.pending) {
-        req.reject(new Error("WebSocket closed"));
+
+      // Re-queue in-flight requests so they are retried on reconnect
+      // instead of being lost.  Move them to the retry queue and clear
+      // pending so IDs don't collide.
+      for (const [id, req] of this.pending) {
+        this.retryQueue.push({ method: req.method!, params: req.params!, resolve: req.resolve, reject: req.reject });
+        this.pending.delete(id);
       }
-      this.pending.clear();
 
       // iOS standalone (home screen) PWA: WebSocket often fails on cold launch
       // but works after a page reload. Auto-reload once to work around this.
@@ -191,14 +211,14 @@ class BrowserBridge {
   invoke<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        const check = () => {
-          if (this.ws?.readyState === WebSocket.OPEN) {
-            this.invoke<T>(method, params).then(resolve, reject);
-          } else {
-            setTimeout(check, 50);
-          }
-        };
-        check();
+        // Queue for retry when the connection opens.  The "open" handler
+        // will flush this queue, so no polling needed.
+        this.retryQueue.push({
+          method,
+          params,
+          resolve: resolve as (value: unknown) => void,
+          reject,
+        });
         return;
       }
 
@@ -206,6 +226,8 @@ class BrowserBridge {
       this.pending.set(id, {
         resolve: resolve as (value: unknown) => void,
         reject,
+        method,
+        params,
       });
 
       this.ws.send(
