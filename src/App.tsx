@@ -259,6 +259,18 @@ export default function App() {
   // Directory dialog state
   const [showUsagePanel, setShowUsagePanel] = useState(false);
   const [showFileEditor, setShowFileEditor] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [externalAccess, setExternalAccess] = useState<boolean | null>(null);
+
+  // Load external access setting on mount
+  useEffect(() => {
+    invoke<boolean>("get_external_access", {}).then(setExternalAccess).catch(() => setExternalAccess(false));
+  }, []);
+
+  const handleToggleExternalAccess = useCallback(async (enabled: boolean) => {
+    await invoke("set_external_access", { enabled });
+    setExternalAccess(enabled);
+  }, []);
   const [editorFilePath, setEditorFilePath] = useState<string | undefined>();
   const [showDirDialog, setShowDirDialog] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -1054,6 +1066,14 @@ export default function App() {
             : "$0.00"}
         </button>
 
+        {/* Settings */}
+        <button className="tb-pill" onClick={() => setShowSettings(true)} data-no-drag title="Settings">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+
         {/* Context Rail toggle */}
         {activeSessionId && (
           <button
@@ -1076,6 +1096,46 @@ export default function App() {
           directory={panelDirectory}
           onClose={() => setShowCommitModal(false)}
         />
+      )}
+      {showSettings && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowSettings(false); }}>
+          <div
+            className="flex flex-col bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl shadow-2xl w-[380px]"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-[var(--border-color)]">
+              <div className="text-sm font-semibold text-[var(--text-primary)]">Settings</div>
+            </div>
+            <div className="px-5 py-4 flex flex-col gap-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex flex-col gap-0.5">
+                  <div className="text-sm text-[var(--text-primary)]">Allow external connections</div>
+                  <div className="text-xs text-[var(--text-secondary)]">
+                    Allow other devices on your local network to connect to this server.
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleToggleExternalAccess(!externalAccess)}
+                  className={`relative shrink-0 w-10 h-6 rounded-full transition-colors duration-200 focus:outline-none ${externalAccess ? "bg-[var(--accent)]" : "bg-[var(--bg-tertiary)]"}`}
+                  role="switch"
+                  aria-checked={externalAccess ?? false}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${externalAccess ? "translate-x-4" : "translate-x-0"}`}
+                  />
+                </button>
+              </div>
+            </div>
+            <div className="flex justify-end px-5 py-3 border-t border-[var(--border-color)]">
+              <button
+                onClick={() => setShowSettings(false)}
+                className="px-4 py-1.5 text-sm font-medium bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-lg transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       <div className="flex flex-1 min-h-0 relative">
         {/* Activity bar */}

@@ -3303,3 +3303,46 @@ pub async fn git_unstage_files(directory: String, files: Vec<String>) -> Result<
     .await
     .map_err(|e| format!("Task join error: {}", e))?
 }
+
+// ---------------------------------------------------------------------------
+// App config (external access toggle)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Default)]
+struct AppConfig {
+    #[serde(default)]
+    external_access: bool,
+}
+
+fn app_config_path(s: &Arc<ServerState>) -> PathBuf {
+    s.data_dir.join("app_config.json")
+}
+
+fn read_app_config(s: &Arc<ServerState>) -> AppConfig {
+    let path = app_config_path(s);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Read the external_access setting directly from data_dir (usable before ServerState is created).
+pub fn read_external_access(data_dir: &Path) -> bool {
+    let path = data_dir.join("app_config.json");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<AppConfig>(&text).ok())
+        .map(|c| c.external_access)
+        .unwrap_or(false)
+}
+
+pub fn get_external_access(s: &Arc<ServerState>) -> Result<bool, String> {
+    Ok(read_app_config(s).external_access)
+}
+
+pub fn set_external_access(enabled: bool, s: &Arc<ServerState>) -> Result<(), String> {
+    let config = AppConfig { external_access: enabled };
+    let path = app_config_path(s);
+    let text = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| format!("Failed to write app config: {}", e))
+}

@@ -1,13 +1,15 @@
 pub mod ws_handler;
 
 use axum::{
-    extract::{State, WebSocketUpgrade},
+    extract::{ConnectInfo, State, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
     Router,
 };
-use orchestrator_core::{ServerConfig, ServerState};
+use orchestrator_core::{commands, ServerConfig, ServerState};
+use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
@@ -17,33 +19,46 @@ use tower_http::services::{ServeDir, ServeFile};
 pub struct AppState {
     pub server: Arc<ServerState>,
     pub event_tx: broadcast::Sender<orchestrator_core::ServerEvent>,
+    pub external_access: Arc<AtomicBool>,
 }
 
 async fn ws_route(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| ws_handler::handle_socket(socket, state))
+) -> Result<impl IntoResponse, axum::http::StatusCode> {
+    let is_local = addr.ip().is_loopback();
+    if !is_local && !state.external_access.load(Ordering::Relaxed) {
+        eprintln!("[server] Rejected external WS connection from {}", addr);
+        return Err(axum::http::StatusCode::FORBIDDEN);
+    }
+    Ok(ws.on_upgrade(move |socket| ws_handler::handle_socket(socket, state)))
 }
 
 /// Start the orchestrator HTTP/WS server.
 ///
-/// Tries to bind to `preferred_port` first; if that fails, binds to port 0
-/// (OS-assigned random port). Returns the actual port the server is listening on.
+/// Always binds to `0.0.0.0` so the port is reachable from both localhost and
+/// the network.  Non-localhost WebSocket connections are rejected at the handler
+/// level unless `external_access` is enabled (toggled at runtime, no restart).
 ///
-/// The returned future resolves only when the server shuts down; spawn it on
-/// a background task and use the returned port to connect.
+/// Returns the actual port the server is listening on.
 pub async fn start_server(
     config: ServerConfig,
     preferred_port: u16,
     static_dir: Option<PathBuf>,
 ) -> u16 {
+    // Read persisted external_access setting
+    let ext = commands::read_external_access(&config.data_dir);
+    let external_access = Arc::new(AtomicBool::new(ext));
+    eprintln!("[server] External access: {}", ext);
+
     let (server, event_rx) = ServerState::new(config).expect("Failed to initialize ServerState");
     let event_tx = server.event_tx.0.clone();
 
     let state = AppState {
         server,
         event_tx: event_tx.clone(),
+        external_access,
     };
 
     // Keep the initial event_rx alive so the broadcast channel stays open even
@@ -129,10 +144,13 @@ pub async fn start_server(
 
     // Spawn the server so we can return the port immediately
     tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal(state))
-            .await
-            .expect("Server error");
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal(state))
+        .await
+        .expect("Server error");
     });
 
     actual_port

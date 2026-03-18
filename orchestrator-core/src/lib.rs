@@ -192,6 +192,7 @@ pub struct ServerState {
     pub file_list_cache: Mutex<FileListCache>,
     pub db: Arc<Mutex<rusqlite::Connection>>,
     pub event_tx: EventSender,
+    pub data_dir: PathBuf,
 }
 
 impl ServerState {
@@ -249,6 +250,7 @@ impl ServerState {
             file_list_cache: Mutex::new(FileListCache { entries: HashMap::new() }),
             db,
             event_tx,
+            data_dir: config.data_dir.clone(),
         });
 
         // Spawn title server

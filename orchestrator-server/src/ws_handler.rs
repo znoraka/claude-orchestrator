@@ -4,6 +4,7 @@ use orchestrator_core::{commands, ServerEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tokio::sync::broadcast;
 
 use crate::AppState;
@@ -687,6 +688,19 @@ async fn dispatch(text: &str, state: &AppState) -> String {
             let label = opt_str!(p, "label");
             commands::set_dock_badge(label);
             ok_response(&id, Value::Null)
+        }
+
+        // ── App config ────────────────────────────────────────────────────
+        "get_external_access" => {
+            respond(&id, commands::get_external_access(s))
+        }
+        "set_external_access" => {
+            let enabled = p.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let result = commands::set_external_access(enabled, s);
+            if result.is_ok() {
+                state.external_access.store(enabled, Ordering::Relaxed);
+            }
+            respond(&id, result)
         }
 
         _ => err_response(&id, format!("Unknown method: {}", req.method)),
