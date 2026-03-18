@@ -184,6 +184,12 @@ fn server_event_to_notification(event: ServerEvent) -> String {
                 Value::String(path),
             )
         }
+        ServerEvent::MessagesIngested { claude_session_id } => {
+            event_notification(
+                "messages-ingested".to_string(),
+                Value::String(claude_session_id),
+            )
+        }
         ServerEvent::OrchestratorSignal { signal } => {
             event_notification(
                 "orchestrator-signal".to_string(),
@@ -192,6 +198,12 @@ fn server_event_to_notification(event: ServerEvent) -> String {
         }
         ServerEvent::SessionsChanged => {
             event_notification("sessions-changed".to_string(), Value::Null)
+        }
+        ServerEvent::SessionBusyChanged { session_id, is_busy } => {
+            event_notification(
+                "session-busy-changed".to_string(),
+                serde_json::json!({ "sessionId": session_id, "isBusy": is_busy }),
+            )
         }
     }
 }
@@ -310,6 +322,9 @@ async fn dispatch(text: &str, state: &AppState) -> String {
         }
         "get_agent_history" => {
             respond(&id, commands::get_agent_history(str_field!(p, "sessionId"), s))
+        }
+        "get_busy_sessions" => {
+            respond(&id, commands::get_busy_sessions(s))
         }
         "fetch_opencode_models" => {
             let state_clone = Arc::clone(s);
@@ -439,6 +454,22 @@ async fn dispatch(text: &str, state: &AppState) -> String {
                 str_field!(p, "claudeSessionId"),
                 str_field!(p, "directory"),
                 max_lines,
+                s,
+            ))
+        }
+        "get_conversation_messages" => {
+            respond(&id, commands::get_conversation_messages(
+                str_field!(p, "claudeSessionId"),
+                str_field!(p, "directory"),
+                s,
+            ))
+        }
+        "get_conversation_messages_tail" => {
+            let max_messages = p.get("maxMessages").and_then(|v| v.as_u64()).unwrap_or(300) as usize;
+            respond(&id, commands::get_conversation_messages_tail(
+                str_field!(p, "claudeSessionId"),
+                str_field!(p, "directory"),
+                max_messages,
                 s,
             ))
         }

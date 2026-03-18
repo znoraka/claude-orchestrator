@@ -2,13 +2,16 @@ pub mod agent_manager;
 pub mod commands;
 pub mod db;
 pub mod file_watcher;
+pub mod ingest;
 pub mod pty_manager;
 pub mod signal_watcher;
 pub mod utils;
 
 pub use agent_manager::AgentManager;
-pub use db::{db_get_usage_cache, db_load_sessions, db_migrate_from_json, db_save_sessions,
-             db_set_usage_cache, open_db};
+pub use db::{db_get_conversation_messages, db_get_conversation_messages_tail,
+             db_get_usage_cache, db_load_sessions, db_migrate_from_json, db_save_sessions,
+             db_set_usage_cache, open_db, ChatMessageRow};
+pub use ingest::{ingest_all_sessions, ingest_jsonl_to_db, spawn_ingest_listener, LiveIngestor};
 pub use file_watcher::JsonlWatcher;
 pub use pty_manager::PtyManager;
 pub use signal_watcher::{OrchestratorSignal, SignalWatcher};
@@ -64,10 +67,20 @@ pub enum ServerEvent {
     JsonlChanged {
         path: String,
     },
+    MessagesIngested {
+        #[serde(rename = "claudeSessionId")]
+        claude_session_id: String,
+    },
     OrchestratorSignal {
         signal: OrchestratorSignal,
     },
     SessionsChanged,
+    SessionBusyChanged {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "isBusy")]
+        is_busy: bool,
+    },
 }
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -253,6 +266,20 @@ impl ServerState {
             event_tx,
             data_dir: config.data_dir.clone(),
         });
+
+        // Spawn background ingest listener
+        {
+            let ingest_rx = state.event_tx.0.subscribe();
+            spawn_ingest_listener(state.db.clone(), state.event_tx.clone(), ingest_rx);
+        }
+
+        // Spawn startup ingest on a background thread
+        {
+            let db_clone = state.db.clone();
+            std::thread::spawn(move || {
+                ingest_all_sessions(&db_clone);
+            });
+        }
 
         // Spawn title server
         if let Some(title_script) = config.title_script_path {

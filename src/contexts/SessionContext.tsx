@@ -204,6 +204,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           dispatch({ type: "SET_ALL", sessions: saved.map(toSession) });
         }
         loadedRef.current = true;
+        // Restore busy state from backend (shared across frontends, persists through reconnect)
+        invoke<string[]>("get_busy_sessions").then((ids) => {
+          for (const id of ids) setAgentBusyMap((prev) => { const n = new Map(prev); n.set(id, true); return n; });
+        }).catch(() => {});
 
         // If first page was full, there may be more — load the rest in the background
         if (saved.length === INITIAL_LIMIT) {
@@ -331,6 +335,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // When another frontend saves sessions, reload from the DB.
   // Use a timestamp guard to avoid reloading right after we saved.
   const lastSaveTs = useRef(0);
+
+  // ── Sync session busy state from backend ─────────────────────────
+  // Shared across all frontends; backend tracks busy sessions from bridge stdout.
+  useEffect(() => {
+    const unlisten = listen<{ sessionId: string; isBusy: boolean }>("session-busy-changed", (event) => {
+      const { sessionId, isBusy } = event.payload;
+      setAgentBusyMap((prev) => {
+        if (prev.get(sessionId) === isBusy) return prev;
+        const next = new Map(prev);
+        if (isBusy) next.set(sessionId, true);
+        else next.delete(sessionId);
+        return next;
+      });
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
 
   useEffect(() => {
     const unlisten = listen("sessions-changed", () => {
@@ -1014,9 +1034,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }
       }
     }
-    // Force stopped sessions to never appear busy
+    // Force stopped sessions to never appear busy — unless backend says they're still active
     for (const s of sessions) {
-      if (s.status === "stopped") {
+      if (s.status === "stopped" && !agentBusyMap.get(s.id)) {
         const existing = merged.get(s.id);
         if (existing?.isBusy) {
           merged.set(s.id, { ...existing, isBusy: false });

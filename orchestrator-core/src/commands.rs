@@ -318,7 +318,7 @@ impl PullRequest {
 // ---------------------------------------------------------------------------
 
 /// Resolve a JSONL path from session ID and directory.
-fn jsonl_path_for(claude_session_id: &str, directory: &str) -> Result<PathBuf, String> {
+pub(crate) fn jsonl_path_for(claude_session_id: &str, directory: &str) -> Result<PathBuf, String> {
     let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
     let expanded_dir = expand_tilde(directory);
     let trimmed_dir = expanded_dir.trim_end_matches('/');
@@ -427,7 +427,21 @@ fn is_session_busy(jsonl_path: &Path) -> bool {
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
             match parsed.get("type").and_then(|t| t.as_str()) {
                 Some("user") => return true,
-                Some("assistant") => return false,
+                Some("assistant") => {
+                    // If the assistant message contains tool_use blocks, the agent is
+                    // waiting for tool results → still busy
+                    let has_tool_use = parsed
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                        .map(|arr| {
+                            arr.iter().any(|b| {
+                                b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                            })
+                        })
+                        .unwrap_or(false);
+                    return has_tool_use;
+                }
                 _ => continue,
             }
         }
@@ -795,7 +809,7 @@ fn extract_first_user_message(claude_session_id: &str, directory: &str) -> Resul
     Ok(None)
 }
 
-fn truncate_content_blocks(val: &mut serde_json::Value) {
+pub(crate) fn truncate_content_blocks(val: &mut serde_json::Value) {
     const MAX_TEXT: usize = 20_000;
 
     let content = val
@@ -1676,6 +1690,7 @@ pub async fn create_agent_session(
     let mcp_script = state.mcp_script_path.clone();
     let agent_manager = state.agent_manager.clone();
     let event_tx = state.event_tx.clone();
+    let db = state.db.clone();
 
     tokio::task::spawn_blocking(move || {
         let provider = provider.unwrap_or_else(|| "claude-code".to_string());
@@ -1766,7 +1781,15 @@ pub async fn create_agent_session(
         let config_json = config.to_string();
 
         let manager = agent_manager.lock().map_err(|e| e.to_string())?;
-        manager.create_session(&session_id, event_tx, &agent_script, &config_json)
+        manager.create_session(
+            &session_id,
+            event_tx,
+            &agent_script,
+            &config_json,
+            Some(db),
+            claude_session_id.clone(),
+            Some(directory.clone()),
+        )
     }).await.map_err(|e| e.to_string())?
 }
 
@@ -1821,6 +1844,11 @@ pub fn destroy_agent_session(session_id: String, state: &Arc<ServerState>) -> Re
 pub fn get_agent_history(session_id: String, state: &Arc<ServerState>) -> Result<Vec<String>, String> {
     let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
     manager.get_history(&session_id)
+}
+
+pub fn get_busy_sessions(state: &Arc<ServerState>) -> Result<Vec<String>, String> {
+    let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
+    Ok(manager.get_busy_sessions())
 }
 
 /// Spawn the opencode bridge in list-models mode and return the JSON array of models.
@@ -2315,6 +2343,89 @@ pub fn get_conversation_jsonl_tail(
     };
 
     Ok(ConversationTailResult { lines: tail, total })
+}
+
+// ── DB-backed conversation message commands ───────────────────────────────
+
+#[derive(Serialize)]
+pub struct ConversationMessagesResult {
+    pub messages: Vec<crate::db::ChatMessageRow>,
+    pub total: usize,
+}
+
+/// Get all conversation messages from the DB (with lazy ingest fallback).
+pub fn get_conversation_messages(
+    claude_session_id: String,
+    directory: String,
+    state: &Arc<ServerState>,
+) -> Result<Vec<crate::db::ChatMessageRow>, String> {
+    let conn = state.db.lock().map_err(|e| format!("DB lock error: {}", e))?;
+
+    // Try DB first
+    let messages = crate::db::db_get_conversation_messages(&conn, &claude_session_id)
+        .map_err(|e| format!("DB query error: {}", e))?;
+
+    if !messages.is_empty() {
+        return Ok(messages);
+    }
+
+    // Lazy ingest: if DB is empty but JSONL exists, ingest now
+    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+    if jsonl_path.exists() {
+        let n = crate::ingest::ingest_jsonl_to_db(&conn, &claude_session_id, &directory)?;
+        if n > 0 {
+            return crate::db::db_get_conversation_messages(&conn, &claude_session_id)
+                .map_err(|e| format!("DB query error: {}", e));
+        }
+    }
+
+    Ok(vec![])
+}
+
+/// Get the last N messages + total from the DB (with lazy ingest fallback).
+pub fn get_conversation_messages_tail(
+    claude_session_id: String,
+    directory: String,
+    max_messages: usize,
+    state: &Arc<ServerState>,
+) -> Result<ConversationMessagesResult, String> {
+    let conn = state.db.lock().map_err(|e| format!("DB lock error: {}", e))?;
+
+    // Check total count first
+    let total: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM conversation_messages WHERE claude_session_id = ?1",
+            rusqlite::params![claude_session_id],
+            |row| row.get::<_, usize>(0),
+        )
+        .unwrap_or(0);
+
+    if total > 0 {
+        let (messages, total) =
+            crate::db::db_get_conversation_messages_tail(&conn, &claude_session_id, max_messages)
+                .map_err(|e| format!("DB query error: {}", e))?;
+        return Ok(ConversationMessagesResult { messages, total });
+    }
+
+    // Lazy ingest fallback
+    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+    if jsonl_path.exists() {
+        let n = crate::ingest::ingest_jsonl_to_db(&conn, &claude_session_id, &directory)?;
+        if n > 0 {
+            let (messages, total) = crate::db::db_get_conversation_messages_tail(
+                &conn,
+                &claude_session_id,
+                max_messages,
+            )
+            .map_err(|e| format!("DB query error: {}", e))?;
+            return Ok(ConversationMessagesResult { messages, total });
+        }
+    }
+
+    Ok(ConversationMessagesResult {
+        messages: vec![],
+        total: 0,
+    })
 }
 
 pub fn search_session_content(

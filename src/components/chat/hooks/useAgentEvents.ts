@@ -11,7 +11,7 @@ interface AgentEventsProps {
   sessionId: string;
   childSessions?: Array<{ id: string; status: string }>;
   childSessionsKey: string;
-  session?: { provider?: string; pendingPrompt?: string; planContent?: string; permissionMode?: string; name?: string; pendingImages?: Array<{ id: string; data: string; mediaType: string; name: string }>; pendingFiles?: Array<{ id: string; name: string; content: string; mimeType: string }> };
+  session?: { provider?: string; pendingPrompt?: string; planContent?: string; permissionMode?: string; name?: string; status?: string; pendingImages?: Array<{ id: string; data: string; mediaType: string; name: string }>; pendingFiles?: Array<{ id: string; name: string; content: string; mimeType: string }> };
   mountedRef: React.MutableRefObject<boolean>;
   isGeneratingRef: React.MutableRefObject<boolean>;
   setIsGenerating: (v: boolean) => void;
@@ -42,6 +42,7 @@ interface AgentEventsProps {
   onClearPendingPromptRef: React.MutableRefObject<(() => void) | undefined>;
   onRenameRef: React.MutableRefObject<((name: string) => void) | undefined>;
   onMarkTitleGeneratedRef: React.MutableRefObject<(() => void) | undefined>;
+  queuedQuestionAnswerRef: React.MutableRefObject<Record<string, string> | null>;
   sdkMessageToChatMessage: (msg: Record<string, unknown>, isHistoryReplay?: boolean) => ChatMessage | null;
   parseContentWithImages: (raw: string) => ContentBlock[];
   looksLikeTaskPrompt: (text: string) => boolean;
@@ -60,6 +61,7 @@ export function useAgentEvents(props: AgentEventsProps) {
     streamAccumulator,
     onExitRef, onQuestionChangeRef, onClaudeSessionIdRef, onAvailableModelsRef,
     onUsageUpdateRef, onClearPendingPromptRef, onRenameRef, onMarkTitleGeneratedRef,
+    queuedQuestionAnswerRef,
     sdkMessageToChatMessage,
   } = props;
 
@@ -325,7 +327,18 @@ export function useAgentEvents(props: AgentEventsProps) {
 
     if (msgType === "ask_user_question") {
       const questions = (msg.questions as AskQuestion[]) || [];
-      if (questions.length > 0) { setPendingQuestion({ blockId: `ask-${Date.now()}`, questions }); onQuestionChangeRef.current?.(true); }
+      if (questions.length > 0) {
+        // If there's a queued answer (from a recovered question answered before bridge booted),
+        // send it immediately instead of showing the question again.
+        const queued = queuedQuestionAnswerRef.current;
+        if (queued) {
+          queuedQuestionAnswerRef.current = null;
+          const answerMsg = JSON.stringify({ type: "ask_user_answer", answer: queued });
+          invoke("send_agent_message", { sessionId, message: answerMsg }).catch(() => {});
+          return;
+        }
+        setPendingQuestion({ blockId: `ask-${Date.now()}`, questions }); onQuestionChangeRef.current?.(true);
+      }
       return;
     }
 
@@ -377,12 +390,19 @@ export function useAgentEvents(props: AgentEventsProps) {
       if (cancelled || !mountedRef.current) return;
       try { const msg = JSON.parse(event.payload); handleAgentMessage(msg); } catch { }
     }), () => {
-      // Recovery: if bridge_ready fired before our listener registered, it won't arrive
-      // via the live channel but IS stored in agent history — check for it now.
-      if (sessionRef.current?.pendingPrompt && !pendingPromptConsumedRef.current) {
-        invoke<string[]>("get_agent_history", { sessionId })
-          .then((lines) => {
-            if (cancelled || pendingPromptConsumedRef.current) return;
+      // Recovery: scan agent history to restore any state missed before our listener
+      // registered — bridge_ready for pending prompts, and is-generating for sessions
+      // that were already mid-generation when this frontend connected.
+      const needsBridgeReady = !!sessionRef.current?.pendingPrompt && !pendingPromptConsumedRef.current;
+      const needsBusyCheck = !isGeneratingRef.current && sessionRef.current?.status !== "stopped";
+      if (!needsBridgeReady && !needsBusyCheck) return;
+
+      invoke<string[]>("get_agent_history", { sessionId })
+        .then((lines) => {
+          if (cancelled) return;
+
+          // Restore bridge_ready if we have a pending prompt that hasn't fired yet.
+          if (needsBridgeReady && !pendingPromptConsumedRef.current) {
             for (const line of lines) {
               try {
                 const msg = JSON.parse(line) as Record<string, unknown>;
@@ -392,9 +412,28 @@ export function useAgentEvents(props: AgentEventsProps) {
                 }
               } catch { /* ignore */ }
             }
-          })
-          .catch(() => { /* ignore */ });
-      }
+          }
+
+          // Restore is-generating: scan history backward — if we find an `assistant`
+          // message before any terminal event, generation is still in progress.
+          if (needsBusyCheck && !isGeneratingRef.current) {
+            for (let i = lines.length - 1; i >= 0; i--) {
+              try {
+                const msg = JSON.parse(lines[i]) as Record<string, unknown>;
+                const t = msg.type as string;
+                if (t === "result" || t === "query_complete" || t === "error" || t === "aborted") {
+                  break; // session already finished
+                }
+                if (t === "assistant") {
+                  isGeneratingRef.current = true;
+                  setIsGenerating(true);
+                  break;
+                }
+              } catch { /* ignore */ }
+            }
+          }
+        })
+        .catch(() => { /* ignore */ });
     });
 
     registerListener(listen<string>(`agent-exit-${sessionId}`, (event) => {

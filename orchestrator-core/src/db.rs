@@ -1,6 +1,7 @@
-//! Persistent SQLite store for session metadata and usage cache.
+//! Persistent SQLite store for session metadata, usage cache, and conversation messages.
 
 use rusqlite::{params, Connection, OptionalExtension, Result};
+use serde::Serialize;
 use std::path::Path;
 
 use crate::{SessionMeta, SessionUsage};
@@ -39,6 +40,31 @@ pub fn open_db(data_dir: &Path) -> Result<Connection> {
              ON sessions(directory);
          CREATE INDEX IF NOT EXISTS sessions_last_active
              ON sessions(last_active_at DESC);
+
+         CREATE TABLE IF NOT EXISTS conversation_messages (
+             id                INTEGER PRIMARY KEY AUTOINCREMENT,
+             claude_session_id TEXT    NOT NULL,
+             message_id        TEXT    NOT NULL,
+             message_type      TEXT    NOT NULL,
+             content_json      TEXT    NOT NULL,
+             seq               INTEGER NOT NULL,
+             cost_usd          REAL,
+             input_tokens      INTEGER,
+             output_tokens     INTEGER,
+             api_message_id    TEXT,
+             UNIQUE(claude_session_id, message_id)
+         );
+
+         CREATE INDEX IF NOT EXISTS idx_conv_msgs_session
+             ON conversation_messages(claude_session_id, seq);
+
+         CREATE TABLE IF NOT EXISTS ingest_tracking (
+             claude_session_id TEXT PRIMARY KEY,
+             directory         TEXT    NOT NULL,
+             byte_offset       INTEGER NOT NULL DEFAULT 0,
+             jsonl_mtime       INTEGER NOT NULL DEFAULT 0,
+             next_seq          INTEGER NOT NULL DEFAULT 0
+         );
 
          CREATE TABLE IF NOT EXISTS usage_cache (
              jsonl_path                  TEXT    PRIMARY KEY,
@@ -186,6 +212,172 @@ pub fn db_get_usage_cache(
 
     Ok(row.map(|(offset, mtime, usage)| (offset, usage, mtime)))
 }
+
+// ── Conversation messages ──────────────────────────────────────────────────
+
+/// A structured conversation message row, ready for the frontend.
+#[derive(Serialize, Clone, Debug)]
+pub struct ChatMessageRow {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    pub content: serde_json::Value,
+    pub timestamp: f64,
+    #[serde(rename = "costUsd", skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<serde_json::Value>,
+}
+
+/// Load all conversation messages for a session, ordered by seq.
+pub fn db_get_conversation_messages(
+    conn: &Connection,
+    claude_session_id: &str,
+) -> Result<Vec<ChatMessageRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT message_id, message_type, content_json, seq, cost_usd, input_tokens, output_tokens
+         FROM conversation_messages
+         WHERE claude_session_id = ?1
+         ORDER BY seq",
+    )?;
+    let rows = stmt.query_map(params![claude_session_id], |row| {
+        let cost: Option<f64> = row.get(4)?;
+        let input_tokens: Option<i64> = row.get(5)?;
+        let output_tokens: Option<i64> = row.get(6)?;
+        let usage = if input_tokens.is_some() || output_tokens.is_some() {
+            Some(serde_json::json!({
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }))
+        } else {
+            None
+        };
+        let content_str: String = row.get(2)?;
+        let content = serde_json::from_str(&content_str).unwrap_or(serde_json::Value::Array(vec![]));
+        Ok(ChatMessageRow {
+            id: row.get(0)?,
+            msg_type: row.get(1)?,
+            content,
+            timestamp: row.get::<_, i64>(3)? as f64,
+            cost_usd: cost,
+            usage,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Load the last N messages + total count for a session.
+pub fn db_get_conversation_messages_tail(
+    conn: &Connection,
+    claude_session_id: &str,
+    max_messages: usize,
+) -> Result<(Vec<ChatMessageRow>, usize)> {
+    let total: usize = conn.query_row(
+        "SELECT COUNT(*) FROM conversation_messages WHERE claude_session_id = ?1",
+        params![claude_session_id],
+        |row| row.get::<_, usize>(0),
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT message_id, message_type, content_json, seq, cost_usd, input_tokens, output_tokens
+         FROM conversation_messages
+         WHERE claude_session_id = ?1
+         ORDER BY seq DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![claude_session_id, max_messages as i64], |row| {
+        let cost: Option<f64> = row.get(4)?;
+        let input_tokens: Option<i64> = row.get(5)?;
+        let output_tokens: Option<i64> = row.get(6)?;
+        let usage = if input_tokens.is_some() || output_tokens.is_some() {
+            Some(serde_json::json!({
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }))
+        } else {
+            None
+        };
+        let content_str: String = row.get(2)?;
+        let content = serde_json::from_str(&content_str).unwrap_or(serde_json::Value::Array(vec![]));
+        Ok(ChatMessageRow {
+            id: row.get(0)?,
+            msg_type: row.get(1)?,
+            content,
+            timestamp: row.get::<_, i64>(3)? as f64,
+            cost_usd: cost,
+            usage,
+        })
+    })?;
+    let mut messages: Vec<_> = rows.filter_map(|r| r.ok()).collect();
+    messages.reverse(); // Restore ascending order
+    Ok((messages, total))
+}
+
+// ── Ingest tracking ───────────────────────────────────────────────────────
+
+/// Ingest tracking state for a JSONL file.
+pub struct IngestState {
+    pub directory: String,
+    pub byte_offset: u64,
+    pub jsonl_mtime: u64,
+    pub next_seq: i64,
+}
+
+pub fn db_get_ingest_tracking(
+    conn: &Connection,
+    claude_session_id: &str,
+) -> Result<Option<IngestState>> {
+    conn.query_row(
+        "SELECT directory, byte_offset, jsonl_mtime, next_seq
+         FROM ingest_tracking WHERE claude_session_id = ?1",
+        params![claude_session_id],
+        |row| {
+            Ok(IngestState {
+                directory: row.get(0)?,
+                byte_offset: row.get::<_, i64>(1)? as u64,
+                jsonl_mtime: row.get::<_, i64>(2)? as u64,
+                next_seq: row.get(3)?,
+            })
+        },
+    )
+    .optional()
+}
+
+pub fn db_set_ingest_tracking(
+    conn: &Connection,
+    claude_session_id: &str,
+    directory: &str,
+    byte_offset: u64,
+    jsonl_mtime: u64,
+    next_seq: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO ingest_tracking (
+             claude_session_id, directory, byte_offset, jsonl_mtime, next_seq
+         ) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            claude_session_id,
+            directory,
+            byte_offset as i64,
+            jsonl_mtime as i64,
+            next_seq,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn db_delete_conversation_messages(
+    conn: &Connection,
+    claude_session_id: &str,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM conversation_messages WHERE claude_session_id = ?1",
+        params![claude_session_id],
+    )?;
+    Ok(())
+}
+
+// ── Usage cache ───────────────────────────────────────────────────────────
 
 pub fn db_set_usage_cache(
     conn: &Connection,

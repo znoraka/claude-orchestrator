@@ -131,6 +131,7 @@ const AgentChat = memo(function AgentChat({
   const sendPlanFeedbackRef = useRef<((text: string) => void) | null>(null);
   const mountedRef = useRef(true);
   const pendingPromptConsumedRef = useRef(false);
+  const queuedQuestionAnswerRef = useRef<Record<string, string> | null>(null);
   const titleGeneratedRef = useRef(!!session?.hasTitleBeenGenerated);
   const accumulatedUsageRef = useRef({ inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, costUsd: 0, contextTokens: 0 });
 
@@ -495,6 +496,81 @@ const AgentChat = memo(function AgentChat({
     setMessages, sdkMessageToChatMessage,
   });
 
+  // Recover ephemeral state from loaded messages (survives page refresh)
+  const hasRecoveredStateRef = useRef(false);
+  // Reset recovery flag when switching sessions
+  useEffect(() => { hasRecoveredStateRef.current = false; }, [sessionId]);
+  useEffect(() => {
+    if (hasRecoveredStateRef.current || messages.length === 0) return;
+    // Only run once per session after initial history load
+    hasRecoveredStateRef.current = true;
+
+    const ownMessages = messages.filter(m => !m.isParentMessage);
+    if (ownMessages.length === 0) return;
+
+    const lastMsg = ownMessages[ownMessages.length - 1];
+
+    // 1. Recover pendingQuestion: scan last assistant message for AskUserQuestion tool_use.
+    //    Run this BEFORE the isGenerating gate — there's a race with useAgentEvents'
+    //    history scan which may set isGeneratingRef=true before this effect fires,
+    //    causing question recovery to be skipped entirely.
+    if (lastMsg.type === "assistant") {
+      const blocks = Array.isArray(lastMsg.content) ? lastMsg.content : [];
+      for (let j = blocks.length - 1; j >= 0; j--) {
+        const block = blocks[j];
+        if (block.type === "tool_use" && block.name === "AskUserQuestion") {
+          const input = (block as { input?: { questions?: AskQuestion[] } }).input;
+          const questions = Array.isArray(input?.questions) ? input.questions : [];
+          if (questions.length > 0) {
+            setPendingQuestion({ blockId: (block as { id: string }).id, questions });
+            break;
+          }
+        }
+      }
+    }
+
+    // Skip remaining recovery if already generating (live session connected)
+    if (isGeneratingRef.current) return;
+
+    // Skip isGenerating/todo recovery for stopped sessions — they are not processing
+    // anything and marking them as generating would cause messages to be silently queued.
+    if (isReadOnly) return;
+
+    // 2. Recover isGenerating: if the last message is "user" type, Claude is processing;
+    //    also if the last message is "assistant" with tool_use blocks (tool execution in progress)
+    if (lastMsg.type === "user") {
+      setIsGenerating(true);
+      isGeneratingRef.current = true;
+    } else if (lastMsg.type === "assistant") {
+      const blocks = Array.isArray(lastMsg.content) ? lastMsg.content : [];
+      const hasToolUse = blocks.some((b: ContentBlock) => b.type === "tool_use");
+      if (hasToolUse) {
+        setIsGenerating(true);
+        isGeneratingRef.current = true;
+      }
+    }
+
+    // 3. Recover currentTodo: find last TodoWrite tool_use in messages
+    for (let i = ownMessages.length - 1; i >= 0; i--) {
+      const msg = ownMessages[i];
+      if (msg.type !== "assistant") continue;
+      const blocks = Array.isArray(msg.content) ? msg.content : [];
+      for (let j = blocks.length - 1; j >= 0; j--) {
+        const block = blocks[j];
+        if (block.type === "tool_use" && block.name === "TodoWrite" && block.input) {
+          const todos = (block.input as { todos?: Array<{ status: string; activeForm?: string; content: string }> }).todos;
+          if (todos) {
+            const inProgress = todos.find(t => t.status === "in_progress");
+            setCurrentTodo(inProgress?.activeForm || inProgress?.content || null);
+          }
+          // Found the latest TodoWrite, stop searching
+          i = -1; // break outer loop
+          break;
+        }
+      }
+    }
+  }, [messages]);
+
   // Agent events
   useAgentEvents({
     sessionId, childSessions, childSessionsKey, session,
@@ -507,6 +583,7 @@ const AgentChat = memo(function AgentChat({
     currentStreamIdRef,
     onExitRef, onQuestionChangeRef, onClaudeSessionIdRef, onAvailableModelsRef,
     onUsageUpdateRef, onClearPendingPromptRef, onRenameRef, onMarkTitleGeneratedRef,
+    queuedQuestionAnswerRef,
     sdkMessageToChatMessage,
     parseContentWithImages,
     looksLikeTaskPrompt,
@@ -696,13 +773,34 @@ const AgentChat = memo(function AgentChat({
     accumulatedBlocksRef.current.clear();
   }, [targetSessionId]);
 
-  const answerQuestion = useCallback((answer: Record<string, string>) => {
+  const answerQuestion = useCallback(async (answer: Record<string, string>) => {
     onQuestionChangeRef.current?.(false); setPendingQuestion(null);
-    const msg = JSON.stringify({ type: "ask_user_answer", answer });
-    invoke("send_agent_message", { sessionId: targetSessionId, message: msg }).catch(() => { setInputText(Object.values(answer).join(", ")); inputRef.current?.focus(); });
     const displayText = Object.values(answer).join("\n");
     setMessages((prev) => [...prev, { id: `user-${Date.now()}`, type: "user", content: [{ type: "text", text: displayText }], timestamp: Date.now() }]);
-  }, [targetSessionId]);
+
+    // If the bridge is alive, send immediately
+    if (sessionRef.current?.status === "running" || sessionRef.current?.status === "starting") {
+      const msg = JSON.stringify({ type: "ask_user_answer", answer });
+      invoke("send_agent_message", { sessionId: targetSessionId, message: msg }).catch(() => {
+        setInputText(displayText); inputRef.current?.focus();
+      });
+      return;
+    }
+
+    // Bridge is dead (e.g. question recovered after restart).
+    // Queue the answer — it will be sent when the bridge re-emits ask_user_question
+    // after resuming and replaying the conversation.
+    queuedQuestionAnswerRef.current = answer;
+    isGeneratingRef.current = true; setIsGenerating(true);
+    if (onResumeRef.current) {
+      try { await onResumeRef.current(); }
+      catch (err) {
+        queuedQuestionAnswerRef.current = null;
+        stopGenerating();
+        setMessages((prev) => [...prev, { id: `error-${Date.now()}`, type: "error", content: [{ type: "text", text: `Failed to resume session: ${err}` }], timestamp: Date.now() }]);
+      }
+    }
+  }, [targetSessionId, stopGenerating]);
 
   const respondPermission = useCallback((allowed: boolean) => {
     const isPlanDenial = !allowed && pendingPermissionRef.current?.toolName === "ExitPlanMode";

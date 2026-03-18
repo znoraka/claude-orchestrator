@@ -357,7 +357,7 @@ export async function getVersion(): Promise<string> {
     const { getVersion: tauriGetVersion } = await import("@tauri-apps/api/app");
     return tauriGetVersion();
   }
-  return "dev";
+  return typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev";
 }
 
 // ── openUrl ───────────────────────────────────────────────────────────────────

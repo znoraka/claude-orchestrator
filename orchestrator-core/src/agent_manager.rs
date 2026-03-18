@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -7,6 +7,7 @@ use std::thread;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+use crate::ingest::LiveIngestor;
 use crate::{EventSender, ServerEvent};
 
 /// Maximum stored messages per session for replay on component remount.
@@ -41,6 +42,7 @@ fn kill_process_group(pid: u32) {
 pub struct AgentManager {
     sessions: Arc<Mutex<HashMap<String, AgentSession>>>,
     history: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    busy_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
 impl AgentManager {
@@ -48,7 +50,12 @@ impl AgentManager {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             history: Arc::new(Mutex::new(HashMap::new())),
+            busy_sessions: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    pub fn get_busy_sessions(&self) -> Vec<String> {
+        self.busy_sessions.lock().map(|s| s.iter().cloned().collect()).unwrap_or_default()
     }
 
     /// Spawn the agent bridge process for a session.
@@ -58,6 +65,9 @@ impl AgentManager {
         event_tx: EventSender,
         bridge_script_path: &str,
         config_json: &str,
+        db: Option<Arc<Mutex<rusqlite::Connection>>>,
+        claude_session_id: Option<String>,
+        directory: Option<String>,
     ) -> Result<(), String> {
         {
             let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
@@ -68,6 +78,10 @@ impl AgentManager {
         {
             let mut history = self.history.lock().map_err(|e| e.to_string())?;
             history.remove(session_id);
+        }
+        {
+            let mut busy = self.busy_sessions.lock().map_err(|e| e.to_string())?;
+            busy.remove(session_id);
         }
 
         let hist_dir = history_dir();
@@ -133,6 +147,13 @@ impl AgentManager {
 
         let sid = session_id.to_string();
         let history_ref = Arc::clone(&self.history);
+        let busy_sessions_clone = Arc::clone(&self.busy_sessions);
+
+        // Build a LiveIngestor if we have DB + claude_session_id
+        let live_ingestor = match (db, claude_session_id, directory) {
+            (Some(db), Some(csid), Some(dir)) => Some(Mutex::new(LiveIngestor::new(db, csid, dir))),
+            _ => None,
+        };
 
         // Stdout reader thread: emit each JSON line as an event
         let event_tx_clone = event_tx.clone();
@@ -171,10 +192,58 @@ impl AgentManager {
                     let _ = f.flush();
                 }
 
+                // Ingest directly into DB (bypasses JSONL file watcher)
+                if let Some(ref ingestor) = live_ingestor {
+                    if let Ok(mut ing) = ingestor.lock() {
+                        if ing.ingest_line(&line) {
+                            // Don't emit MessagesIngested on every line — batch
+                            // notifications are handled below via AgentMessage
+                        }
+                    }
+                }
+
+                // Track busy state: assistant → busy, terminal events → not busy
+                if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if let Some(msg_type) = msg.get("type").and_then(|v| v.as_str()) {
+                        match msg_type {
+                            "assistant" => {
+                                let was_busy = busy_sessions_clone.lock()
+                                    .map(|mut s| { let added = s.insert(sid_clone.clone()); !added })
+                                    .unwrap_or(true);
+                                if !was_busy {
+                                    event_tx_clone.emit(ServerEvent::SessionBusyChanged {
+                                        session_id: sid_clone.clone(),
+                                        is_busy: true,
+                                    });
+                                }
+                            }
+                            "result" | "query_complete" | "error" | "aborted" => {
+                                let removed = busy_sessions_clone.lock()
+                                    .map(|mut s| s.remove(&sid_clone))
+                                    .unwrap_or(false);
+                                if removed {
+                                    event_tx_clone.emit(ServerEvent::SessionBusyChanged {
+                                        session_id: sid_clone.clone(),
+                                        is_busy: false,
+                                    });
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 event_tx_clone.emit(ServerEvent::AgentMessage {
                     session_id: sid_clone.clone(),
                     line: line.clone(),
                 });
+            }
+
+            // Finalize ingest tracking so the file watcher knows our seq
+            if let Some(ref ingestor) = live_ingestor {
+                if let Ok(ing) = ingestor.lock() {
+                    ing.finalize();
+                }
             }
 
             // Process exited — remove session and capture exit code
@@ -187,6 +256,16 @@ impl AgentManager {
                 }
             }
             let code = exit_code.unwrap_or(-1);
+            // Ensure busy state is cleared on exit (handles crashes/kills)
+            let was_busy = busy_sessions_clone.lock()
+                .map(|mut s| s.remove(&sid_clone))
+                .unwrap_or(false);
+            if was_busy {
+                event_tx_clone.emit(ServerEvent::SessionBusyChanged {
+                    session_id: sid_clone.clone(),
+                    is_busy: false,
+                });
+            }
             event_tx_clone.emit(ServerEvent::AgentExit {
                 session_id: sid_clone.clone(),
                 code,

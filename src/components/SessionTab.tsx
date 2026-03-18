@@ -125,7 +125,8 @@ export default memo(function SessionTab({
   };
 
   const isRunning = session.status === "running" || session.status === "starting";
-  const isBusy = session.status === "starting" || (usage?.isBusy && isRunning);
+  // usage.isBusy is backend-driven and shared across frontends — trust it regardless of local status
+  const isBusy = session.status === "starting" || usage?.isBusy;
   const hasQuestion = session.hasQuestion && isRunning;
   const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
   const hasDraft = session.hasDraft && isRunning;

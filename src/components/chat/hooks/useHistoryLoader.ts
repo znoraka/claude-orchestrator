@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo } from "react";
+import { useEffect, useRef, useMemo, useState } from "react";
 import { invoke } from "../../../lib/bridge";
 import { jsonlDirectory } from "../../../types";
 import type { ChatMessage, ContentBlock } from "../types";
@@ -41,11 +41,18 @@ export function parseContentWithImages(raw: string): ContentBlock[] {
   return blocks.length > 0 ? blocks : [{ type: "text", text: raw }];
 }
 
+/** Shape returned by the get_conversation_messages_tail command */
+interface MessagesResult {
+  messages: ChatMessage[];
+  total: number;
+}
+
 export function useHistoryLoader({
   sessionId, session, isActive, childSessions, parentSession,
   setMessages, sdkMessageToChatMessage,
 }: HistoryLoaderProps) {
   const lastLoadedClaudeSessionIdRef = useRef<string | null>(null);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
 
   const childSessionsKey = useMemo(
     () => childSessions?.map(c => `${c.id}:${c.claudeSessionId}`).join(",") ?? "",
@@ -66,6 +73,7 @@ export function useHistoryLoader({
 
     async function loadHistory() {
       if (cancelled) return;
+      setIsHistoryLoading(true);
 
       const claudeSessionId = session?.claudeSessionId;
       const dir = session ? jsonlDirectory(session as Parameters<typeof jsonlDirectory>[0]) : "";
@@ -80,17 +88,17 @@ export function useHistoryLoader({
           .replace(/^\/.*claude-orchestrator-images\/.*$/gm, "")
           .trim();
 
+      // Load parent session messages
       let parentMessages: ChatMessage[] = [];
       if (parentSession) {
         if (parentSession.claudeSessionId && parentSession.directory) {
           try {
-            const parentLines = await invoke<string[]>("get_conversation_jsonl", {
+            const msgs = await invoke<ChatMessage[]>("get_conversation_messages", {
               claudeSessionId: parentSession.claudeSessionId,
               directory: parentSession.directory,
             });
-            if (parentLines.length > 0) {
-              const parsed = await parseHistoryLines(parentLines, sdkMessageToChatMessage);
-              parentMessages = parsed.map(m => ({ ...m, id: `parent-${m.id}`, isParentMessage: true }));
+            if (msgs.length > 0) {
+              parentMessages = msgs.map(m => ({ ...m, id: `parent-${m.id}`, isParentMessage: true }));
             }
           } catch { }
         }
@@ -116,6 +124,7 @@ export function useHistoryLoader({
 
       const mergeMessages = (replayed: ChatMessage[]) => {
         if (cancelled) return;
+        setIsHistoryLoading(false);
         replayed = filterForkContext(replayed);
         if (replayed.length > 0) {
           console.log(`[loadHistory] ${sessionId}: ${replayed.length} messages, first=${replayed[0].type}:${replayed[0].id.substring(0, 20)}, last=${replayed[replayed.length - 1].type}:${replayed[replayed.length - 1].id.substring(0, 20)}`);
@@ -125,8 +134,6 @@ export function useHistoryLoader({
           const existingParent = prev.filter(m => m.isParentMessage);
           const existingOwn = prev.filter(m => !m.isParentMessage);
           const finalParent = existingParent.length > 0 ? existingParent : parentMessages;
-          // Remap replayed user messages to reuse optimistic IDs (user-<timestamp>) when
-          // text matches, so React keys stay stable and the message doesn't flicker.
           const replayedWithStableIds = replayed.map((r) => {
             if (r.type !== "user") return r;
             const rText = extractUserText(r.content);
@@ -153,24 +160,17 @@ export function useHistoryLoader({
             return true;
           });
           if (newMessages.length === 0) return [...finalParent, ...replayed];
-          // Insert each newMessage after its nearest preceding replayed anchor
-          // (the last replayed message that appears before it in existingOwn).
-          // This preserves ordering when a new claudeSessionId's JSONL only contains
-          // user messages as context but not the previous session's assistant responses.
           const replayedIdSet = new Set(replayed.map(r => r.id));
           const existingOwnIds = existingOwn.map(m => m.id);
           const result = [...replayed];
           const newMsgSet = new Set(newMessages.map(m => m.id));
           for (const newMsg of newMessages) {
             const newMsgIdx = existingOwnIds.indexOf(newMsg.id);
-            // Find the last replayed anchor before newMsg in existingOwn
             let anchorId: string | null = null;
             for (let i = newMsgIdx - 1; i >= 0; i--) {
               if (replayedIdSet.has(existingOwnIds[i])) { anchorId = existingOwnIds[i]; break; }
             }
             if (anchorId === null) {
-              // No replayed anchor before this message — find the first replayed message
-              // that comes AFTER it in existingOwn and insert before that, preserving order.
               let nextAnchorId: string | null = null;
               for (let i = newMsgIdx + 1; i < existingOwnIds.length; i++) {
                 if (replayedIdSet.has(existingOwnIds[i])) { nextAnchorId = existingOwnIds[i]; break; }
@@ -185,7 +185,6 @@ export function useHistoryLoader({
             } else {
               const anchorIdx = result.findIndex(m => m.id === anchorId);
               if (anchorIdx === -1) { result.push(newMsg); continue; }
-              // Insert after anchor and any newMessages already placed there
               let insertIdx = anchorIdx + 1;
               while (insertIdx < result.length && newMsgSet.has(result[insertIdx].id)) insertIdx++;
               result.splice(insertIdx, 0, newMsg);
@@ -195,23 +194,24 @@ export function useHistoryLoader({
         });
       };
 
+      // Fetch messages from DB
       let tailTotal = 0;
-      let tailLineCount = 0;
+      let tailCount = 0;
       if (claudeSessionId) {
         try {
-          const tail = await invoke<{ lines: string[]; total: number }>("get_conversation_jsonl_tail", {
-            claudeSessionId, directory: dir, maxLines: 300,
+          const result = await invoke<MessagesResult>("get_conversation_messages_tail", {
+            claudeSessionId, directory: dir, maxMessages: 300,
           });
-          tailTotal = tail.total;
-          tailLineCount = tail.lines.length;
-          if (tail.lines.length > 0) {
-            const replayed = await parseHistoryLines(tail.lines, sdkMessageToChatMessage);
-            mergeMessages(replayed);
+          tailTotal = result.total;
+          tailCount = result.messages.length;
+          if (result.messages.length > 0) {
+            mergeMessages(result.messages);
           }
         } catch { }
       }
 
-      if (tailLineCount === 0) {
+      // Fallback to agent history if no DB messages
+      if (tailCount === 0) {
         let lines: string[] = [];
         try { lines = await invoke<string[]>("get_agent_history", { sessionId }); } catch { }
         if (lines.length > 0) {
@@ -219,49 +219,59 @@ export function useHistoryLoader({
           mergeMessages(replayed);
         } else if (parentMessages.length > 0) {
           mergeMessages([]);
+        } else {
+          if (!cancelled) setIsHistoryLoading(false);
         }
         return;
       }
 
-      if (tailTotal > tailLineCount && claudeSessionId) {
+      // If tail was truncated, fetch all messages
+      if (tailTotal > tailCount && claudeSessionId) {
         try {
-          const allLines = await invoke<string[]>("get_conversation_jsonl", { claudeSessionId, directory: dir });
+          const allMessages = await invoke<ChatMessage[]>("get_conversation_messages", {
+            claudeSessionId, directory: dir,
+          });
           if (cancelled) return;
-          const replayed = await parseHistoryLines(allLines, sdkMessageToChatMessage);
-          mergeMessages(replayed);
+          mergeMessages(allMessages);
         } catch { }
       }
 
+      // Load child session messages
       if (childSessions && childSessions.length > 0) {
         for (const child of childSessions) {
           try {
-            let childLines: string[] = [];
+            let childMessages: ChatMessage[] = [];
             if (child.claudeSessionId && child.directory) {
               try {
-                childLines = await invoke<string[]>("get_conversation_jsonl", {
+                childMessages = await invoke<ChatMessage[]>("get_conversation_messages", {
                   claudeSessionId: child.claudeSessionId, directory: child.directory,
                 });
               } catch { }
             }
-            if (childLines.length === 0) {
-              try { childLines = await invoke<string[]>("get_agent_history", { sessionId: child.id }); } catch { }
+            // Fallback to agent history for child
+            if (childMessages.length === 0) {
+              try {
+                const childLines = await invoke<string[]>("get_agent_history", { sessionId: child.id });
+                if (childLines.length > 0) {
+                  childMessages = await parseHistoryLines(childLines, sdkMessageToChatMessage);
+                }
+              } catch { }
             }
             if (cancelled) return;
-            if (childLines.length > 0) {
-              const parsed = await parseHistoryLines(childLines, sdkMessageToChatMessage);
-              const filtered = parsed.filter(m => {
+            if (childMessages.length > 0) {
+              const filtered = childMessages.filter(m => {
                 if (m.type !== "user") return true;
                 const text = m.content.filter(b => b.type === "text").map(b => b.text).join("\n");
                 return !text.includes("<fork-context>");
               });
-              const childMessages = filtered.map(m => ({ ...m, id: `child-${child.id}-${m.id}` }));
+              const taggedChildren = filtered.map(m => ({ ...m, id: `child-${child.id}-${m.id}` }));
               const separator: ChatMessage = {
                 id: `child-separator-${child.id}`, type: "system",
                 content: [{ type: "text", text: `── Executing plan ──` }], timestamp: Date.now(),
               };
               setMessages((prev) => {
                 if (prev.some(m => m.id === separator.id)) return prev;
-                return [...prev, separator, ...childMessages];
+                return [...prev, separator, ...taggedChildren];
               });
             }
           } catch { }
@@ -273,5 +283,10 @@ export function useHistoryLoader({
     return () => { cancelled = true; };
   }, [sessionId, session?.claudeSessionId, isActive, childSessionsKey]);
 
-  return { childSessionsKey };
+  // Reset loading state when session changes
+  useEffect(() => {
+    setIsHistoryLoading(false);
+  }, [sessionId]);
+
+  return { childSessionsKey, isHistoryLoading };
 }
