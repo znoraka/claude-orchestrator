@@ -1,8 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { RouterProvider } from "@tanstack/react-router";
 import { SessionProvider } from "./contexts/SessionContext";
 import { ToastProvider } from "./components/Toast";
-import App from "./App";
+import { router } from "./router";
 import "./index.css";
 
 // Add dark class to html element for CSS variable system
@@ -12,7 +13,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ToastProvider>
       <SessionProvider>
-        <App />
+        <RouterProvider router={router} />
       </SessionProvider>
     </ToastProvider>
   </React.StrictMode>,

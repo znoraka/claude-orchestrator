@@ -29,6 +29,7 @@ import ContextRail from "./components/ContextRail";
 import { useSessionLive } from "./contexts/SessionContext";
 import { useBridgeConnection } from "./hooks/useBridgeConnection";
 import PullToRefresh from "./components/PullToRefresh";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 
 export interface OpenCodeModel {
   id: string;
@@ -310,12 +311,54 @@ export default function App() {
   const [virtualSessions, setVirtualSessions] = useState<Map<string, VirtualSessionState>>(new Map());
   const [activeVirtualDir, setActiveVirtualDir] = useState<string | null>(null);
 
-  // ── Panel state (replaces per-workspace tab state) ──────────────
-  const [activePanel, setActivePanel] = useState<"prs" | "shell" | null>(null);
   const [, setChatInputHeight] = useState(0);
 
   // ── Responsive layout ────────────────────────────────────────────
   const isMobile = useMobileLayout();
+
+  // ── Router-based navigation ──────────────────────────────────────
+  const navigate = useNavigate();
+  const { location } = useRouterState();
+  const activePanel: "prs" | "shell" | null = useMemo(() => {
+    const path = location.pathname;
+    if (path.endsWith("/prs")) return "prs";
+    if (path.endsWith("/shell")) return "shell";
+    return null;
+  }, [location.pathname]);
+
+  const navigateToPanel = useCallback(
+    (panel: "prs" | "shell" | null) => {
+      if (panel === null) {
+        if (activeSessionId) {
+          navigate({ to: "/session/$sessionId", params: { sessionId: activeSessionId } });
+        } else {
+          navigate({ to: "/" });
+        }
+      } else if (activeSessionId) {
+        if (panel === "prs") {
+          navigate({ to: "/session/$sessionId/prs", params: { sessionId: activeSessionId } });
+        } else {
+          navigate({ to: "/session/$sessionId/shell", params: { sessionId: activeSessionId } });
+        }
+      }
+    },
+    [navigate, activeSessionId]
+  );
+
+  // Sync URL → context for back/forward navigation
+  useEffect(() => {
+    const pathname = location.pathname;
+    const match = pathname.match(/^\/session\/([^/]+)/);
+    if (match) {
+      const routeSessionId = decodeURIComponent(match[1]);
+      if (routeSessionId !== activeSessionId) {
+        startTransition(() => selectSession(routeSessionId));
+      }
+    } else if (pathname === "/" && activeSessionId) {
+      startTransition(() => selectSession(null as unknown as string));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
 
   // ── New layout state ─────────────────────────────────────────────
   const [drawerOpen, setDrawerOpen] = useState<boolean>(() => {
@@ -560,7 +603,7 @@ export default function App() {
       if (panel === "prs") prPanelResetRef.current?.();
       return;
     }
-    setActivePanel(panel);
+    navigateToPanel(panel);
   };
 
   // Close shell picker when clicking outside
@@ -650,7 +693,7 @@ export default function App() {
             });
           }
           setActiveVirtualDir(dir);
-          setActivePanel(null);
+          navigateToPanel(null);
           return;
         }
         // No active session — show dir picker
@@ -684,7 +727,7 @@ export default function App() {
       }
       if (e.metaKey && e.key === "j") {
         e.preventDefault();
-        setActivePanel(null);
+        navigateToPanel(null);
       }
       if (e.metaKey && e.key === "k") {
         e.preventDefault();
@@ -752,7 +795,7 @@ export default function App() {
       localStorage.setItem("claude-orchestrator-last-session-dir", path);
       // Create a session in the new worktree
       await createSession(undefined, path, skipPermissions, undefined, undefined, undefined, undefined, permissionMode);
-      setActivePanel(null);
+      navigateToPanel(null);
     } catch (err) {
       console.error("Failed to create worktree:", err);
     } finally {
@@ -860,7 +903,7 @@ export default function App() {
       return next;
     });
     setActiveVirtualDir(normalized);
-    setActivePanel(null);
+    navigateToPanel(null);
     setCreating(false);
   };
 
@@ -916,13 +959,13 @@ export default function App() {
       return next;
     });
     setActiveVirtualDir(normalized);
-    setActivePanel(null);
+    navigateToPanel(null);
   };
 
   const handleSelectSession = (id: string) => {
+    navigate({ to: "/session/$sessionId", params: { sessionId: id } });
     startTransition(() => {
       selectSession(id);
-      setActivePanel(null);
       setActiveVirtualDir(null);
       if (isMobile) setDrawerOpen(false);
     });
@@ -941,7 +984,7 @@ export default function App() {
     await createSession(undefined, dir, skipPermissions, undefined, text, provider, model, pMode, undefined, undefined, images, files);
     setActiveVirtualDir(null);
     setVirtualSessions(prev => { const next = new Map(prev); next.delete(dir); return next; });
-    setActivePanel(null);
+    navigateToPanel(null);
   }, [activeVirtualDir, createSession, skipPermissions]);
 
   return (
@@ -1185,15 +1228,19 @@ export default function App() {
             activePanel={activePanel}
             unreadCount={unreadCount}
             onOverview={() => {
+              navigate({ to: "/" });
               startTransition(() => selectSession(null as unknown as string));
-              setActivePanel(null);
             }}
             onToggleSidebar={() => setDrawerOpen((v) => !v)}
             onSessionsClick={() => {
-              setActivePanel(null);
               if (activeSessionId === null) {
                 const last = sessions.slice().sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0))[0];
-                if (last) startTransition(() => selectSession(last.id));
+                if (last) {
+                  navigate({ to: "/session/$sessionId", params: { sessionId: last.id } });
+                  startTransition(() => selectSession(last.id));
+                }
+              } else {
+                navigate({ to: "/session/$sessionId", params: { sessionId: activeSessionId } });
               }
             }}
             onTogglePRs={() => togglePanel("prs")}
@@ -1379,7 +1426,7 @@ export default function App() {
                   directory={panelDirectory}
                   isActive={activePanel === "prs"}
                   onResetRef={prPanelResetRef}
-                  onSwitchToClaude={() => setActivePanel(null)}
+                  onSwitchToClaude={() => navigateToPanel(null)}
                   onAskClaude={(prompt) => {
                     if (!activeSessionId) return;
                     const jsonLine = JSON.stringify({
@@ -1387,7 +1434,7 @@ export default function App() {
                       message: { role: "user", content: prompt },
                     });
                     invoke("send_agent_message", { sessionId: activeSessionId, message: jsonLine }).catch(() => {});
-                    setActivePanel(null);
+                    navigateToPanel(null);
                   }}
                 />
               </div>
@@ -1472,7 +1519,7 @@ export default function App() {
                                       setActiveShellId(remaining[Math.min(i, remaining.length - 1)].id);
                                     } else {
                                       setActiveShellId(null);
-                                      setActivePanel(null);
+                                      navigateToPanel(null);
                                     }
                                   }
                                   return remaining;
@@ -1566,7 +1613,7 @@ export default function App() {
                                       setActiveShellId(remaining[0].id);
                                     } else {
                                       setActiveShellId(null);
-                                      setActivePanel(null);
+                                      navigateToPanel(null);
                                     }
                                   }
                                   return remaining;
@@ -1671,17 +1718,21 @@ export default function App() {
           activePanel={activePanel}
           unreadCount={unreadCount}
           onOverview={() => {
+            navigate({ to: "/" });
             startTransition(() => selectSession(null as unknown as string));
-            setActivePanel(null);
             setDrawerOpen(false);
           }}
           onToggleSidebar={() => setDrawerOpen((v) => !v)}
           onSessionsClick={() => {
-            setActivePanel(null);
             setDrawerOpen(false);
             if (activeSessionId === null) {
               const last = sessions.slice().sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0))[0];
-              if (last) startTransition(() => selectSession(last.id));
+              if (last) {
+                navigate({ to: "/session/$sessionId", params: { sessionId: last.id } });
+                startTransition(() => selectSession(last.id));
+              }
+            } else {
+              navigate({ to: "/session/$sessionId", params: { sessionId: activeSessionId } });
             }
           }}
           onTogglePRs={() => { togglePanel("prs"); setDrawerOpen(false); }}
