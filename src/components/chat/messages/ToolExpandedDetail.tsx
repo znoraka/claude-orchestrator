@@ -109,6 +109,7 @@ function WriteContentView({ filePath, content, startLine }: { filePath: string; 
 }
 
 export function TodoListView({ todos }: { todos: TodoItem[] }) {
+  if (!Array.isArray(todos)) return null;
   return (
     <div className="px-3 py-2 space-y-1">
       {todos.map((todo, i) => {
@@ -250,7 +251,7 @@ export function ToolExpandedDetail({ group, toolName, isError }: ToolExpandedDet
   if (toolName === "Read" && readContent && input.file_path) {
     return <div className="py-1"><WriteContentView filePath={input.file_path as string} content={readContent.content} startLine={readContent.startLine} /></div>;
   }
-  if (toolName === "TodoWrite" && input.todos) {
+  if (toolName === "TodoWrite" && Array.isArray(input.todos)) {
     return <TodoListView todos={input.todos as TodoItem[]} />;
   }
   if (toolName === "ExitPlanMode" && resultContent) {

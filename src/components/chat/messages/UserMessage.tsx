@@ -11,9 +11,10 @@ interface UserMessageProps {
   onRetry?: (messageId: string) => void;
   onCopy?: (messageId: string) => void;
   planContent?: string;
+  isNew?: boolean;
 }
 
-export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planContent }: UserMessageProps) {
+export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planContent, isNew }: UserMessageProps) {
   const [copied, setCopied] = useState(false);
 
   const content = Array.isArray(message.content)
@@ -37,7 +38,7 @@ export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planCont
   });
 
   return (
-    <div className="flex flex-col items-end gap-1 animate-message-enter">
+    <div className={`flex flex-col items-end gap-1${isNew ? " animate-message-enter" : ""}`}>
       <div className="group flex justify-end items-end gap-1 w-full">
         {/* Hover action buttons */}
         <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-0.5 mb-1">
