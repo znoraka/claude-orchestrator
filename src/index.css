@@ -71,22 +71,22 @@
   /* t3code semantic tokens — dark values */
   --background: #0c0c0c;
   --foreground: #f5f5f5;
-  --card: #0e0e0e;
+  --card: #111111;
   --card-foreground: #f5f5f5;
-  --popover: #141414;
+  --popover: #181818;
   --popover-foreground: #f5f5f5;
   --primary: oklch(0.588 0.217 264); /* purple #7c5bf0 */
   --primary-foreground: #ffffff;
-  --secondary: rgba(255, 255, 255, 0.04);
+  --secondary: rgba(255, 255, 255, 0.06);
   --secondary-foreground: #f5f5f5;
-  --muted: rgba(255, 255, 255, 0.04);
-  --muted-foreground: #a1a1aa;
-  --accent: rgba(255, 255, 255, 0.06);
+  --muted: rgba(255, 255, 255, 0.06);
+  --muted-foreground: #b0b0ba;
+  --accent: rgba(255, 255, 255, 0.13);
   --accent-foreground: #f5f5f5;
   --destructive: #f06060;
   --destructive-foreground: #fca5a5;
-  --border: rgba(255, 255, 255, 0.06);
-  --input: rgba(255, 255, 255, 0.08);
+  --border: rgba(255, 255, 255, 0.10);
+  --input: rgba(255, 255, 255, 0.11);
   --ring: oklch(0.588 0.217 264);
   --info: #3b82f6;
   --info-foreground: #93c5fd;
@@ -97,16 +97,16 @@
 
   /* Legacy app-specific variables (for components not yet migrated) */
   --bg-primary:     #0c0c0c;
-  --bg-secondary:   #0e0e0e;
-  --bg-tertiary:    #141414;
-  --bg-hover:       rgba(255,255,255,0.04);
-  --bg-elevated:    #101010;
-  --bg-surface:     #0e0e0e;
-  --border-color:   rgba(255,255,255,0.06);
-  --border-subtle:  rgba(255,255,255,0.04);
+  --bg-secondary:   #111111;
+  --bg-tertiary:    #181818;
+  --bg-hover:       rgba(255,255,255,0.07);
+  --bg-elevated:    #161616;
+  --bg-surface:     #111111;
+  --border-color:   rgba(255,255,255,0.10);
+  --border-subtle:  rgba(255,255,255,0.07);
   --text-primary:   #f5f5f5;
-  --text-secondary: #a1a1aa;
-  --text-tertiary:  #52525b;
+  --text-secondary: #b0b0ba;
+  --text-tertiary:  #71717a;
   --accent-color:   #7c5bf0;
   --accent-hover:   #9178f5;
   --accent-muted:   rgba(124, 91, 240, 0.18);
@@ -117,13 +117,13 @@
   --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
   --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
   --font-mono: "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  --activity-bar-bg: #090909;
-  --drawer-bg:       #0b0b0b;
+  --activity-bar-bg: #0a0a0a;
+  --drawer-bg:       #0e0e0e;
   --titlebar-height: 36px;
   --traffic-light-width: 72px;
-  --rail-bg:         #0b0b0b;
-  --card-bg:         #0e0e0e;
-  --card-border:     rgba(255,255,255,0.06);
+  --rail-bg:         #0e0e0e;
+  --card-bg:         #111111;
+  --card-border:     rgba(255,255,255,0.10);
   --status-running:  #36e399;
   --status-waiting:  #f0684e;
   --status-stopped:  #3ca052;
@@ -222,11 +222,11 @@ input {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.15);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .turn-chip-strip {
@@ -275,7 +275,7 @@ textarea:focus-visible {
 /* ── Title bar pill buttons ─────────────────────────────────────────── */
 
 .tb-pill {
-  background: rgba(255,255,255,0.07);
+  background: rgba(255,255,255,0.09);
   border: none;
   border-radius: 999px;
   padding: 0 10px;
@@ -291,18 +291,18 @@ textarea:focus-visible {
   white-space: nowrap;
   transition: background 100ms, color 100ms;
 }
-.tb-pill:hover { background: rgba(255,255,255,0.13); color: var(--text-primary); }
+.tb-pill:hover { background: rgba(255,255,255,0.16); color: var(--text-primary); }
 
 .tb-split {
   display: inline-flex;
   align-items: stretch;
-  background: rgba(255,255,255,0.07);
+  background: rgba(255,255,255,0.09);
   border-radius: 999px;
   flex-shrink: 0;
   height: 22px;
   transition: background 100ms;
 }
-.tb-split:hover { background: rgba(255,255,255,0.13); }
+.tb-split:hover { background: rgba(255,255,255,0.16); }
 
 .tb-split-main {
   background: none;
@@ -370,7 +370,7 @@ textarea:focus-visible {
   transition: background 80ms, color 80ms;
   white-space: nowrap;
 }
-.tb-dropdown-item:hover { background: rgba(255,255,255,0.07); color: var(--text-primary); }
+.tb-dropdown-item:hover { background: rgba(255,255,255,0.10); color: var(--text-primary); }
 
 /* ── Chat surface ───────────────────────────────────────────────────── */
 
@@ -693,11 +693,11 @@ textarea:focus-visible {
 .prose-agent strong { font-weight: 600; }
 .prose-agent a { color: var(--accent-color); text-decoration: underline; }
 .prose-agent blockquote {
-  border-left: 2px solid rgba(255,255,255,0.08);
+  border-left: 2px solid rgba(255,255,255,0.14);
   padding: 0.25rem 0.75rem;
   margin: 0.75rem 0;
   color: var(--text-secondary);
-  background: rgba(255,255,255,0.03);
+  background: rgba(255,255,255,0.05);
   border-radius: 0.5rem;
 }
 .prose-agent pre {

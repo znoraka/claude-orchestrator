@@ -1,8 +1,12 @@
 /**
  * Bridge between the frontend and backend.
  *
- * In Tauri: delegates to `@tauri-apps/api` + plugins (unchanged behaviour).
- * In browser: uses JSON-RPC 2.0 over WebSocket (:2420/ws, proxied through Vite at /ws).
+ * All data commands (invoke/listen) go through JSON-RPC 2.0 over WebSocket
+ * to the orchestrator-server (:2420/ws).  This ensures a single backend
+ * regardless of whether the UI is rendered inside Tauri or a browser.
+ *
+ * Tauri-native APIs (window management, notifications, updater, etc.) still
+ * use @tauri-apps/api when available.
  */
 
 // ── Detection ────────────────────────────────────────────────────────────────
@@ -21,7 +25,21 @@ export interface TauriEvent<T = unknown> {
   id: number;
 }
 
-// ── WebSocket client (browser-only) ──────────────────────────────────────────
+// ── Server port ──────────────────────────────────────────────────────────────
+
+/** Returns the port injected by Tauri, falling back to localStorage. */
+function getInjectedPort(): number | undefined {
+  const win = window as unknown as Record<string, unknown>;
+  if (win.__ORCHESTRATOR_PORT__) return win.__ORCHESTRATOR_PORT__ as number;
+  const stored = localStorage.getItem("__ORCHESTRATOR_PORT__");
+  if (stored) {
+    const n = parseInt(stored, 10);
+    if (!isNaN(n)) return n;
+  }
+  return undefined;
+}
+
+// ── WebSocket client (used by ALL environments) ─────────────────────────────
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -42,7 +60,14 @@ class BrowserBridge {
   }
 
   private connect() {
-    const url = `ws://${window.location.host}/ws`;
+    // Inside Tauri the port is injected by the Rust setup as
+    // window.__ORCHESTRATOR_PORT__.  Falls back to localStorage so the port
+    // survives page reloads.  In a browser, use the current host (works for
+    // both Vite proxy in dev and orchestrator-server in prod).
+    const port = getInjectedPort();
+    const url = port
+      ? `ws://localhost:${port}/ws`
+      : `ws://${window.location.host}/ws`;
     console.log("[bridge] Connecting to", url);
     const ws = new WebSocket(url);
     this.ws = ws;
@@ -165,16 +190,26 @@ function getBridge(): BrowserBridge {
   return _bridge;
 }
 
+// ── Server port (continued) ───────────────────────────────────────────────────
+
+/** The port the orchestrator-server is listening on (if known). */
+export function getServerPort(): number | null {
+  const port = getInjectedPort();
+  if (port) return port;
+  // In browser mode, infer from the page URL
+  const loc = window.location;
+  if (loc.port) return parseInt(loc.port, 10);
+  return loc.protocol === "https:" ? 443 : 80;
+}
+
 // ── invoke ────────────────────────────────────────────────────────────────────
+// Always routes through the WebSocket bridge so that both Tauri and browser
+// UIs share a single orchestrator-server backend.
 
 export async function invoke<T>(
   cmd: string,
   args?: Record<string, unknown>
 ): Promise<T> {
-  if (isTauri) {
-    const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
-    return tauriInvoke<T>(cmd, args);
-  }
   return getBridge().invoke<T>(cmd, args ?? {});
 }
 
@@ -184,12 +219,6 @@ export function listen<T>(
   event: string,
   handler: (event: TauriEvent<T>) => void
 ): Promise<UnlistenFn> {
-  if (isTauri) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return import("@tauri-apps/api/event").then(({ listen: tauriListen }) =>
-      tauriListen<T>(event, handler as (e: any) => void)
-    );
-  }
   const unlisten = getBridge().listen(event, handler as EventHandler);
   return Promise.resolve(unlisten);
 }

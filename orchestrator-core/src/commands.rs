@@ -1596,12 +1596,19 @@ pub fn save_sessions(
     state: &Arc<ServerState>,
 ) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    db::db_save_sessions(&conn, &sessions).map_err(|e| format!("DB write error: {}", e))
+    db::db_save_sessions(&conn, &sessions).map_err(|e| format!("DB write error: {}", e))?;
+    state.event_tx.emit(crate::ServerEvent::SessionsChanged);
+    Ok(())
 }
 
 pub fn load_sessions(state: &Arc<ServerState>) -> Result<Vec<SessionMeta>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     db::db_load_sessions(&conn).map_err(|e| format!("DB read error: {}", e))
+}
+
+pub fn load_sessions_paged(limit: usize, offset: usize, state: &Arc<ServerState>) -> Result<Vec<SessionMeta>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::db_load_sessions_paged(&conn, limit, offset).map_err(|e| format!("DB read error: {}", e))
 }
 
 pub fn write_to_pty(session_id: String, data: String, state: &Arc<ServerState>) -> Result<(), String> {
@@ -1764,6 +1771,23 @@ pub async fn create_agent_session(
 }
 
 pub fn send_agent_message(session_id: String, message: String, state: &Arc<ServerState>) -> Result<(), String> {
+    // Broadcast user messages to all connected frontends so multi-client UIs stay in sync.
+    // The sending frontend already has the message optimistically; the user_history handler
+    // in useAgentEvents deduplicates by text content.
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&message) {
+        if parsed.get("type").and_then(|t| t.as_str()) == Some("user") {
+            if let Some(msg_obj) = parsed.get("message") {
+                let history_line = serde_json::json!({
+                    "type": "user_history",
+                    "message": msg_obj,
+                }).to_string();
+                state.event_tx.emit(crate::ServerEvent::AgentMessage {
+                    session_id: session_id.clone(),
+                    line: history_line,
+                });
+            }
+        }
+    }
     let manager = state.agent_manager.lock().map_err(|e| e.to_string())?;
     manager.send_message(&session_id, &message)
 }

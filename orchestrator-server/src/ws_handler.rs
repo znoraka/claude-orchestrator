@@ -85,7 +85,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-    // Task A: read incoming messages → dispatch → send response via tx
+    // Task A: read incoming messages → dispatch concurrently → send response via tx
     let state_clone = state.clone();
     let tx_clone = tx.clone();
     let read_task = tokio::spawn(async move {
@@ -99,8 +99,13 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
                 Message::Close(_) => break,
                 _ => continue,
             };
-            let response = dispatch(&text, &state_clone).await;
-            let _ = tx_clone.send(response);
+            // Spawn each command concurrently so slow commands don't block fast ones
+            let s = state_clone.clone();
+            let tx = tx_clone.clone();
+            tokio::spawn(async move {
+                let response = dispatch(&text, &s).await;
+                let _ = tx.send(response);
+            });
         }
     });
 
@@ -184,6 +189,9 @@ fn server_event_to_notification(event: ServerEvent) -> String {
                 serde_json::to_value(signal).unwrap_or(Value::Null),
             )
         }
+        ServerEvent::SessionsChanged => {
+            event_notification("sessions-changed".to_string(), Value::Null)
+        }
     }
 }
 
@@ -230,6 +238,11 @@ async fn dispatch(text: &str, state: &AppState) -> String {
         // ── Sessions ──────────────────────────────────────────────────────
         "load_sessions" => {
             respond(&id, commands::load_sessions(s))
+        }
+        "load_sessions_paged" => {
+            let limit = p.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let offset = p.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            respond(&id, commands::load_sessions_paged(limit, offset, s))
         }
         "save_sessions" => {
             let sessions: Vec<orchestrator_core::SessionMeta> =

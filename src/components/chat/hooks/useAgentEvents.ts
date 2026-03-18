@@ -334,10 +334,12 @@ export function useAgentEvents(props: AgentEventsProps) {
       const content = normalizeContent(messageObj?.content);
       if (content) {
         const histText = content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+        const histImageCount = content.filter((b) => b.type === "image").length;
         setMessages((prev) => {
-          // Skip if a user message with the same text already exists (replay dedup)
-          if (histText && prev.some((m) => m.type === "user" &&
-            m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim() === histText
+          // Skip if a user message with matching text and image count already exists (dedup)
+          if (prev.some((m) => m.type === "user" &&
+            m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim() === histText &&
+            m.content.filter((b) => b.type === "image").length === histImageCount
           )) {
             return prev;
           }

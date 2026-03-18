@@ -132,7 +132,7 @@ export function InlineQuestionComposer({ questions, onAnswer }: InlineQuestionCo
                       <div className="min-w-0 flex-1">
                         <span className="text-sm font-medium">{opt.label}</span>
                         {opt.description && opt.description !== opt.label && (
-                          <span className="ml-3 text-xs text-muted-foreground/50">
+                          <span className="pl-2 ml-3 text-xs text-muted-foreground/50">
                             {opt.description}
                           </span>
                         )}

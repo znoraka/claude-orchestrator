@@ -317,7 +317,7 @@ function MarkdownContentInner({ text, isStreaming = false }: { text: string; isS
   }, [text]);
 
   return (
-    <div className="chat-markdown text-sm text-[var(--text-primary)] max-w-[680px]">
+    <div className="chat-markdown text-sm text-[var(--text-primary)">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
         {processedText}
       </ReactMarkdown>

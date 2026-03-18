@@ -55,6 +55,29 @@ pub fn open_db(data_dir: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+fn map_session_row(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
+    Ok(SessionMeta {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        created_at: row.get(2)?,
+        last_active_at: row.get(3)?,
+        last_message_at: row.get(4)?,
+        directory: row.get(5)?,
+        home_directory: row.get(6)?,
+        claude_session_id: row.get(7)?,
+        dangerously_skip_permissions: row.get::<_, bool>(8)?,
+        permission_mode: row.get(9)?,
+        active_time: row.get(10)?,
+        has_title_been_generated: row.get::<_, bool>(11)?,
+        provider: row.get(12)?,
+        model: row.get(13)?,
+        plan_content: row.get(14)?,
+        parent_session_id: row.get(15)?,
+        archived: row.get::<_, Option<bool>>(16)?,
+        archived_at: row.get(17)?,
+    })
+}
+
 pub fn db_load_sessions(conn: &Connection) -> Result<Vec<SessionMeta>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, created_at, last_active_at, last_message_at, directory,
@@ -64,30 +87,21 @@ pub fn db_load_sessions(conn: &Connection) -> Result<Vec<SessionMeta>> {
          FROM sessions
          ORDER BY last_active_at DESC",
     )?;
+    let rows = stmt.query_map([], map_session_row)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
 
-    let rows = stmt.query_map([], |row| {
-        Ok(SessionMeta {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            created_at: row.get(2)?,
-            last_active_at: row.get(3)?,
-            last_message_at: row.get(4)?,
-            directory: row.get(5)?,
-            home_directory: row.get(6)?,
-            claude_session_id: row.get(7)?,
-            dangerously_skip_permissions: row.get::<_, bool>(8)?,
-            permission_mode: row.get(9)?,
-            active_time: row.get(10)?,
-            has_title_been_generated: row.get::<_, bool>(11)?,
-            provider: row.get(12)?,
-            model: row.get(13)?,
-            plan_content: row.get(14)?,
-            parent_session_id: row.get(15)?,
-            archived: row.get::<_, Option<bool>>(16)?,
-            archived_at: row.get(17)?,
-        })
-    })?;
-
+pub fn db_load_sessions_paged(conn: &Connection, limit: usize, offset: usize) -> Result<Vec<SessionMeta>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, created_at, last_active_at, last_message_at, directory,
+                home_directory, claude_session_id, dangerously_skip_permissions,
+                permission_mode, active_time, has_title_been_generated,
+                provider, model, plan_content, parent_session_id, archived, archived_at
+         FROM sessions
+         ORDER BY last_active_at DESC
+         LIMIT ?1 OFFSET ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![limit as i64, offset as i64], map_session_row)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 

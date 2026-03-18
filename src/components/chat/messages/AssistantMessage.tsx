@@ -52,13 +52,9 @@ export function AssistantMessage({ message, toolStates, onToggleTool, isLastMess
     for (let i = 0; i < grouped.items.length; i++) {
       const item = grouped.items[i];
       if (item.type === "toolGroup") {
-        // Find the last tools segment (may not be the immediately preceding segment)
-        // This ensures all tool calls in a message are grouped together even when
-        // text blocks appear between them (e.g. opencode/codex intermediate reasoning).
-        let lastToolsSeg: ToolsSegment | undefined;
-        for (let k = result.length - 1; k >= 0; k--) {
-          if (result[k].type === "tools") { lastToolsSeg = result[k] as ToolsSegment; break; }
-        }
+        // Only merge into the immediately preceding tools segment — don't skip over text blocks.
+        const prev = result[result.length - 1];
+        const lastToolsSeg = prev?.type === "tools" ? prev as ToolsSegment : undefined;
         if (lastToolsSeg) {
           lastToolsSeg.items.push({ type: "tool", group: item.group });
         } else {
@@ -67,9 +63,15 @@ export function AssistantMessage({ message, toolStates, onToggleTool, isLastMess
       } else {
         const block = item.block;
         if (block.type === "thinking") {
-          const last = result[result.length - 1];
-          if (last?.type === "tools") {
-            last.items.push({ type: "thinking", block });
+          // Merge into the nearest preceding tools segment, as long as no text content separates them.
+          let targetToolsSeg: ToolsSegment | undefined;
+          for (let k = result.length - 1; k >= 0; k--) {
+            if (result[k].type === "tools") { targetToolsSeg = result[k] as ToolsSegment; break; }
+            // Stop scanning if we hit a text content block (not thinking)
+            if (result[k].type === "content" && (result[k] as ContentSegment).block.type !== "thinking") break;
+          }
+          if (targetToolsSeg) {
+            targetToolsSeg.items.push({ type: "thinking", block });
           } else {
             const hasToolsAhead = grouped.items.slice(i + 1).some((ni) => ni.type === "toolGroup");
             if (hasToolsAhead) {

@@ -413,7 +413,7 @@ export default function CommandPalette({
     const session = item.session!;
     const usage = item.usage;
     const isRunning = session.status === "running" || session.status === "starting";
-    const isBusy = usage?.isBusy && isRunning;
+    const isBusy = session.status === "starting" || (usage?.isBusy && isRunning);
     const hasQuestion = session.hasQuestion && isRunning;
     const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
     const hasDraft = session.hasDraft && isRunning;

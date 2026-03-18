@@ -25,6 +25,7 @@ import { getYoungestDescendant, getRootSession } from "../utils/sessionLineage";
 
 type SessionAction =
   | { type: "SET_ALL"; sessions: Session[] }
+  | { type: "APPEND_MANY"; sessions: Session[] }
   | { type: "ADD"; session: Session }
   | { type: "REMOVE"; id: string }
   | { type: "UPDATE"; id: string; patch: Partial<Session> }
@@ -34,6 +35,11 @@ function sessionReducer(state: Session[], action: SessionAction): Session[] {
   switch (action.type) {
     case "SET_ALL":
       return action.sessions;
+    case "APPEND_MANY": {
+      const existingIds = new Set(state.map((s) => s.id));
+      const newSessions = action.sessions.filter((s) => !existingIds.has(s.id));
+      return newSessions.length > 0 ? [...state, ...newSessions] : state;
+    }
     case "ADD":
       return [...state, action.session];
     case "REMOVE":
@@ -145,54 +151,80 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   // ── Load persisted sessions on mount ─────────────────────────────
   useEffect(() => {
-    invoke<
-      Array<{
-        id: string;
-        name: string;
-        createdAt: number;
-        lastActiveAt: number;
-        lastMessageAt?: number;
-        directory: string;
-        provider?: string;
-        model?: string;
-        homeDirectory?: string;
-        claudeSessionId?: string;
-        dangerouslySkipPermissions?: boolean;
-        permissionMode?: string;
-        activeTime?: number;
-        hasTitleBeenGenerated?: boolean;
-        planContent?: string;
-        parentSessionId?: string;
-        archived?: boolean;
-        archivedAt?: number;
-      }>
-    >("load_sessions")
+    type RawSession = {
+      id: string;
+      name: string;
+      createdAt: number;
+      lastActiveAt: number;
+      lastMessageAt?: number;
+      directory: string;
+      provider?: string;
+      model?: string;
+      homeDirectory?: string;
+      claudeSessionId?: string;
+      dangerouslySkipPermissions?: boolean;
+      permissionMode?: string;
+      activeTime?: number;
+      hasTitleBeenGenerated?: boolean;
+      planContent?: string;
+      parentSessionId?: string;
+      archived?: boolean;
+      archivedAt?: number;
+    };
+
+    const toSession = (s: RawSession): Session => ({
+      id: s.id,
+      name: s.name,
+      status: "stopped" as const,
+      createdAt: s.createdAt,
+      lastActiveAt: s.lastActiveAt,
+      lastMessageAt: s.lastMessageAt || s.lastActiveAt,
+      directory: normalizeDir(s.directory),
+      provider: (s.provider as Session["provider"]) || "claude-code",
+      model: s.model,
+      homeDirectory: s.homeDirectory ? normalizeDir(s.homeDirectory) : undefined,
+      claudeSessionId: s.claudeSessionId,
+      dangerouslySkipPermissions: s.dangerouslySkipPermissions,
+      permissionMode: s.permissionMode as Session["permissionMode"],
+      activeTime: s.activeTime || 0,
+      hasTitleBeenGenerated: s.hasTitleBeenGenerated,
+      planContent: s.planContent,
+      parentSessionId: s.parentSessionId,
+      archived: s.archived,
+      archivedAt: s.archivedAt,
+    });
+
+    const INITIAL_LIMIT = 10;
+    const PAGE_SIZE = 50;
+
+    // Load first page immediately to unblock the UI
+    invoke<Array<RawSession>>("load_sessions_paged", { limit: INITIAL_LIMIT, offset: 0 })
       .then((saved) => {
         if (saved.length > 0) {
-          const restored: Session[] = saved.map((s) => ({
-            id: s.id,
-            name: s.name,
-            status: "stopped" as const,
-            createdAt: s.createdAt,
-            lastActiveAt: s.lastActiveAt,
-            lastMessageAt: s.lastMessageAt || s.lastActiveAt,
-            directory: normalizeDir(s.directory),
-            provider: (s.provider as Session["provider"]) || "claude-code",
-            model: s.model,
-            homeDirectory: s.homeDirectory ? normalizeDir(s.homeDirectory) : undefined,
-            claudeSessionId: s.claudeSessionId,
-            dangerouslySkipPermissions: s.dangerouslySkipPermissions,
-            permissionMode: s.permissionMode as Session["permissionMode"],
-            activeTime: s.activeTime || 0,
-            hasTitleBeenGenerated: s.hasTitleBeenGenerated,
-            planContent: s.planContent,
-            parentSessionId: s.parentSessionId,
-            archived: s.archived,
-            archivedAt: s.archivedAt,
-          }));
-          dispatch({ type: "SET_ALL", sessions: restored });
+          dispatch({ type: "SET_ALL", sessions: saved.map(toSession) });
         }
         loadedRef.current = true;
+
+        // If first page was full, there may be more — load the rest in the background
+        if (saved.length === INITIAL_LIMIT) {
+          const loadRest = async (offset: number) => {
+            try {
+              const page = await invoke<Array<RawSession>>("load_sessions_paged", {
+                limit: PAGE_SIZE,
+                offset,
+              });
+              if (page.length > 0) {
+                dispatch({ type: "APPEND_MANY", sessions: page.map(toSession) });
+              }
+              if (page.length === PAGE_SIZE) {
+                loadRest(offset + PAGE_SIZE);
+              }
+            } catch (err) {
+              console.error("Failed to load sessions page:", err);
+            }
+          };
+          loadRest(INITIAL_LIMIT);
+        }
       })
       .catch((err) => {
         console.error("Failed to load sessions:", err);
@@ -248,6 +280,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       saveTimerRef.current = null;
     }
     try {
+      lastSaveTs.current = Date.now();
       await invoke("save_sessions", { sessions: buildSessionMetas() });
     } catch (err) {
       console.error("Failed to save sessions:", err);
@@ -268,6 +301,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (!loadedRef.current) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
+      lastSaveTs.current = Date.now();
       invoke("save_sessions", { sessions: buildSessionMetas() }).catch((err) => {
         console.error("Failed to save sessions:", err);
         showError(`Failed to save sessions: ${err}`);
@@ -285,12 +319,82 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (activeTimeSaveRef.current) clearInterval(activeTimeSaveRef.current);
     activeTimeSaveRef.current = setInterval(() => {
       if (!loadedRef.current) return;
+      lastSaveTs.current = Date.now();
       invoke("save_sessions", { sessions: buildSessionMetas() }).catch(() => {});
     }, 300_000);
     return () => {
       if (activeTimeSaveRef.current) clearInterval(activeTimeSaveRef.current);
     };
   }, [buildSessionMetas]);
+
+  // ── Sync sessions from other clients ────────────────────────────
+  // When another frontend saves sessions, reload from the DB.
+  // Use a timestamp guard to avoid reloading right after we saved.
+  const lastSaveTs = useRef(0);
+
+  useEffect(() => {
+    const unlisten = listen("sessions-changed", () => {
+      // Ignore if we just saved (within 3s) — it's our own echo
+      if (Date.now() - lastSaveTs.current < 3000) return;
+      if (!loadedRef.current) return;
+
+      invoke<
+        Array<{
+          id: string;
+          name: string;
+          createdAt: number;
+          lastActiveAt: number;
+          lastMessageAt?: number;
+          directory: string;
+          provider?: string;
+          model?: string;
+          homeDirectory?: string;
+          claudeSessionId?: string;
+          dangerouslySkipPermissions?: boolean;
+          permissionMode?: string;
+          activeTime?: number;
+          hasTitleBeenGenerated?: boolean;
+          planContent?: string;
+          parentSessionId?: string;
+          archived?: boolean;
+          archivedAt?: number;
+        }>
+      >("load_sessions")
+        .then((saved) => {
+          if (saved.length > 0) {
+            const restored: Session[] = saved.map((s) => ({
+              id: s.id,
+              name: s.name,
+              status: "stopped" as const,
+              createdAt: s.createdAt,
+              lastActiveAt: s.lastActiveAt,
+              lastMessageAt: s.lastMessageAt || s.lastActiveAt,
+              directory: normalizeDir(s.directory),
+              provider: (s.provider as Session["provider"]) || "claude-code",
+              model: s.model,
+              homeDirectory: s.homeDirectory ? normalizeDir(s.homeDirectory) : undefined,
+              claudeSessionId: s.claudeSessionId,
+              dangerouslySkipPermissions: s.dangerouslySkipPermissions,
+              permissionMode: s.permissionMode as Session["permissionMode"],
+              activeTime: s.activeTime || 0,
+              hasTitleBeenGenerated: s.hasTitleBeenGenerated,
+              planContent: s.planContent,
+              parentSessionId: s.parentSessionId,
+              archived: s.archived,
+              archivedAt: s.archivedAt,
+            }));
+            dispatch({ type: "SET_ALL", sessions: restored });
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to reload sessions from remote:", err);
+        });
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   // ── Flush pending saves before app close ──────────────────────────
   useEffect(() => {

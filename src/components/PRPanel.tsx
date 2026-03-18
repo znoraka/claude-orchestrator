@@ -175,7 +175,7 @@ function PRCard({
         {/* Title */}
         <div
           onClick={() => openUrl(pr.url)}
-          className="text-sm font-medium text-[var(--text-primary)] leading-snug mb-1.5 cursor-pointer hover:text-[var(--accent)] transition-colors"
+          className="text-sm font-medium text-[var(--text-primary)] leading-snug mb-1.5 cursor-pointer hover:text-[var(--text-secondary)] transition-colors"
         >
           {pr.title}
         </div>
@@ -275,7 +275,7 @@ function PRCard({
   );
 }
 
-export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, onSwitchToClaude }: PRPanelProps) {
+export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, onSwitchToClaude: _onSwitchToClaude }: PRPanelProps) {
   const { createSession, sessions } = useSessionContext();
   const [result, setResult] = useState<PullRequestsResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -318,8 +318,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
       `Do NOT skip this question even if you have dangerous permissions. ` +
       `If they say yes, use the checkout_pr_worktree MCP tool with directory="${sessionDir}", pr_number=${prNumber}, branch="${headRefName}", then cd into the resulting path.`;
     await createSession(`Review PR #${prNumber}`, sessionDir, skipPerms, prSystemPrompt, `Review PR #${prNumber}`);
-    onSwitchToClaude?.();
-  }, [createSession, directory, sessions, onSwitchToClaude]);
+  }, [createSession, directory, sessions]);
 
   const handleReviewPR = useCallback((pr: PullRequest) => {
     setReviewingPr(pr);

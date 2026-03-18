@@ -199,7 +199,9 @@ impl AgentManager {
                 }
             }
             let exit_event = format!("agent-exit-{}", sid_clone);
-            let code = exit_code.unwrap_or(-1);
+            // None means the session was already removed (intentional destroy_session kill)
+            // or the process was killed by a signal — treat both as clean exit (0).
+            let code = exit_code.unwrap_or(0);
             let _ = app_handle_clone.emit(&exit_event, code.to_string());
         });
 

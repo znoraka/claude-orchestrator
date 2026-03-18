@@ -3936,289 +3936,122 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let watcher = JsonlWatcher::new(app.handle().clone())
-                .expect("Failed to create file watcher");
+            // ── Start the embedded orchestrator-server ───────────────────────
+            // This WS server is the single backend for both the Tauri WebView
+            // and any browser clients connecting to http://localhost:2420.
+            {
+                let data_dir = app
+                    .path()
+                    .app_data_dir()
+                    .expect("Failed to get app data dir");
+                std::fs::create_dir_all(&data_dir).ok();
 
-            // Clean up stale signal files from previous runs
-            SignalWatcher::cleanup_stale();
+                // Resolve resource scripts (same logic as below for Tauri commands)
+                let resource_dir = app
+                    .handle()
+                    .path()
+                    .resource_dir()
+                    .ok();
+                let cargo_resources = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("resources");
 
-            let signal_watcher = SignalWatcher::new(app.handle().clone())
-                .expect("Failed to create signal watcher");
+                let find_resource = |filename: &str| -> Option<String> {
+                    let candidates = [
+                        resource_dir.as_ref().map(|d| d.join("resources").join(filename)),
+                        Some(cargo_resources.join(filename)),
+                    ];
+                    candidates
+                        .into_iter()
+                        .flatten()
+                        .find(|p| p.exists())
+                        .map(|p| p.to_string_lossy().to_string())
+                };
 
-            // Resolve MCP server script path.
-            // Try in order: bundled (production), dev bundle next to Cargo.toml
-            let mcp_script_path = {
-                let candidates = [
-                    // Production: Tauri resource bundle
-                    app.handle()
-                        .path()
-                        .resource_dir()
-                        .ok()
-                        .map(|dir| dir.join("resources").join("mcp-server.bundle.mjs")),
-                    // Dev: pre-built bundle in source tree (run `pnpm build:mcp`)
-                    Some(
-                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                            .join("resources")
-                            .join("mcp-server.bundle.mjs"),
-                    ),
-                ];
-                candidates.into_iter().flatten().find(|p| p.exists()).map(|p| {
-                    eprintln!("[setup] MCP script found at {:?}", p);
-                    p.to_string_lossy().to_string()
-                })
-            };
-            if mcp_script_path.is_none() {
-                eprintln!("[setup] MCP script not found, MCP injection disabled. Run `pnpm build:mcp` to build it.");
-            }
+                let mcp_script_path = find_resource("mcp-server.bundle.mjs");
+                let title_script_path = find_resource("title-server.bundle.mjs")
+                    .map(PathBuf::from);
 
-            // Resolve agent bridge scripts for each provider
-            let agent_script_paths = {
                 let bridges = [
                     ("claude-code", "agent-bridge.bundle.mjs"),
                     ("opencode", "agent-bridge-opencode.bundle.mjs"),
                     ("codex", "agent-bridge-codex.bundle.mjs"),
                 ];
-                let mut map = std::collections::HashMap::new();
+                let mut agent_script_paths = std::collections::HashMap::new();
                 for (provider, filename) in bridges {
+                    if let Some(path) = find_resource(filename) {
+                        agent_script_paths.insert(provider.to_string(), path);
+                    }
+                }
+
+                // Resolve the frontend dist dir for static file serving
+                let static_dir = {
                     let candidates = [
-                        app.handle()
-                            .path()
-                            .resource_dir()
-                            .ok()
-                            .map(|dir| dir.join("resources").join(filename)),
+                        // Production: bundled in app resources
+                        resource_dir.as_ref().map(|d| d.join("dist")),
+                        // Dev: project root dist/
                         Some(
                             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                                .join("resources")
-                                .join(filename),
+                                .parent()
+                                .unwrap()
+                                .join("dist"),
                         ),
                     ];
-                    if let Some(path) = candidates.into_iter().flatten().find(|p| p.exists()) {
-                        eprintln!("[setup] Agent bridge '{}' found at {:?}", provider, path);
-                        map.insert(provider.to_string(), path.to_string_lossy().to_string());
-                    } else {
-                        eprintln!("[setup] Agent bridge '{}' ({}) not found. Run `pnpm build` to build it.", provider, filename);
-                    }
-                }
-                map
-            };
+                    candidates.into_iter().flatten().find(|p| p.join("index.html").exists())
+                };
 
-            // Resolve title server script path (fast, no I/O beyond stat)
-            let title_script = {
-                let candidates = [
-                    app.handle()
-                        .path()
-                        .resource_dir()
-                        .ok()
-                        .map(|dir| dir.join("resources").join("title-server.bundle.mjs")),
-                    Some(
-                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                            .join("resources")
-                            .join("title-server.bundle.mjs"),
-                    ),
-                ];
-                candidates.into_iter().flatten().find(|p| p.exists())
-            };
+                let config = orchestrator_core::ServerConfig {
+                    data_dir,
+                    mcp_script_path,
+                    agent_script_paths,
+                    title_script_path,
+                };
 
-            // Open (or create) the SQLite database.
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-            std::fs::create_dir_all(&data_dir)
-                .map_err(|e| format!("Failed to create data dir: {}", e))?;
+                let port: u16 = std::env::var("ORCHESTRATOR_PORT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(2420);
 
-            let db_conn = db::open_db(&data_dir)
-                .map_err(|e| format!("Failed to open database: {}", e))?;
+                eprintln!("[tauri] Starting embedded orchestrator-server on port {}", port);
 
-            // One-time migration: if sessions.json exists and DB is empty, import it.
-            {
-                let count: i64 = db_conn
-                    .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
-                    .unwrap_or(0);
-                if count == 0 {
-                    let json_path = data_dir.join("sessions.json");
-                    if json_path.exists() {
-                        if let Ok(data) = std::fs::read_to_string(&json_path) {
-                            if let Ok(legacy) =
-                                serde_json::from_str::<Vec<SessionMeta>>(&data)
-                            {
-                                let n = legacy.len();
-                                if let Err(e) =
-                                    db::db_migrate_from_json(&db_conn, legacy)
-                                {
-                                    eprintln!("[db] Migration from sessions.json failed: {}", e);
-                                } else {
-                                    eprintln!("[db] Migrated {} sessions from sessions.json", n);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            let db = Arc::new(Mutex::new(db_conn));
-
-            app.manage(AppState {
-                pty_manager: Mutex::new(PtyManager::new()),
-                agent_manager: Arc::new(Mutex::new(AgentManager::new())),
-                jsonl_cache: Mutex::new(JsonlCache::new()),
-                pricing: PricingConfig::load(),
-                file_watcher: Mutex::new(watcher),
-                _signal_watcher: signal_watcher,
-                mcp_script_path,
-                agent_script_paths,
-                title_server_port: std::sync::atomic::AtomicU16::new(0),
-                _title_server_child: Mutex::new(None),
-                file_list_cache: Mutex::new(FileListCache { entries: HashMap::new() }),
-                db,
-            });
-
-            // Spawn the title generation server in a background thread so it
-            // doesn't block window creation (resolve_bin + node startup can
-            // take 500ms-2s).
-            if let Some(title_script) = title_script {
-                eprintln!("[setup] Title server script found at {:?}", title_script);
-                let handle = app.handle().clone();
+                // Use a channel to get the actual port back from the server thread
+                let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
                 std::thread::spawn(move || {
-                    let Some(node_bin) = resolve_bin("node") else {
-                        eprintln!("[setup] Cannot start title server: node binary not found");
-                        return;
-                    };
-                    let claude_cli = resolve_bin("claude");
-                    let opencode_cli = resolve_bin("opencode");
-                    let title_config = serde_json::json!({
-                        "claudeCliPath": claude_cli,
-                        "opencodeCliPath": opencode_cli,
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .build()
+                        .expect("Failed to create tokio runtime");
+                    rt.block_on(async move {
+                        let actual_port = orchestrator_server::start_server(config, port, static_dir).await;
+                        let _ = port_tx.send(actual_port);
+                        // Keep runtime alive — server runs in a spawned task
+                        std::future::pending::<()>().await;
                     });
-                    match std::process::Command::new(&node_bin)
-                        .arg(title_script.to_string_lossy().as_ref())
-                        .arg(title_config.to_string())
-                        .env("PATH", shell_path())
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::inherit())
-                        .spawn()
-                    {
-                        Ok(mut child) => {
-                            // Read the port from stdout
-                            if let Some(ref mut stdout) = child.stdout {
-                                use std::io::BufRead;
-                                let mut reader = std::io::BufReader::new(stdout);
-                                let mut line = String::new();
-                                if reader.read_line(&mut line).is_ok() {
-                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
-                                        if let Some(port) = parsed.get("port").and_then(|p| p.as_u64()) {
-                                            let state = handle.state::<AppState>();
-                                            state.title_server_port.store(port as u16, std::sync::atomic::Ordering::Relaxed);
-                                            eprintln!("[setup] Title server started on port {}", port);
-                                        }
-                                    }
-                                }
-                            }
-                            // Detach stdout so it doesn't block
-                            child.stdout.take();
-                            if let Ok(mut guard) = handle.state::<AppState>()._title_server_child.lock() {
-                                *guard = Some(child);
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("[setup] Failed to spawn title server: {}", e);
-                        }
-                    }
                 });
-            } else {
-                eprintln!("[setup] Title server script not found. Run `pnpm build:title-server` to build it.");
+
+                // Wait for the server to bind (should be near-instant)
+                let actual_port = port_rx.recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("Orchestrator server failed to start within 10s");
+                eprintln!("[tauri] Orchestrator server listening on port {}", actual_port);
+
+                // Inject the port into the WebView so bridge.ts can find it.
+                // Also persist to localStorage so it survives page reloads.
+                let webview = app.get_webview_window("main")
+                    .expect("Failed to get main webview window");
+                webview.eval(&format!(
+                    "window.__ORCHESTRATOR_PORT__ = {port}; localStorage.setItem('__ORCHESTRATOR_PORT__', '{port}');",
+                    port = actual_port
+                )).expect("Failed to inject port into webview");
             }
+
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                let state = window.app_handle().state::<AppState>();
-                if let Ok(mgr) = state.pty_manager.lock() {
-                    mgr.kill_all();
-                }
-                if let Ok(mgr) = state.agent_manager.lock() {
-                    mgr.kill_all();
-                }
-                if let Ok(mut child) = state._title_server_child.lock() {
-                    if let Some(mut c) = child.take() {
-                        let _ = c.kill();
-                    }
-                }
+                // The orchestrator-server thread will be killed when the
+                // process exits. Just exit cleanly.
                 window.app_handle().exit(0);
             }
         })
-        .invoke_handler(tauri::generate_handler![
-            create_shell_pty_session,
-            pty_has_child_process,
-            write_to_pty,
-            resize_pty,
-            directory_exists,
-            get_pty_scrollback,
-            create_agent_session,
-            send_agent_message,
-            abort_agent,
-            set_agent_cwd,
-            destroy_agent_session,
-            get_agent_history,
-            fetch_opencode_models,
-            fetch_codex_models,
-            check_providers,
-            save_clipboard_image,
-            get_clipboard_file_paths,
-            save_sessions,
-            load_sessions,
-            list_directories,
-            list_slash_commands,
-            list_worktrees,
-            create_worktree,
-            remove_worktree,
-            get_conversation_title,
-            get_opencode_session_title,
-            get_session_usage,
-            get_total_usage_today,
-            get_usage_dashboard,
-            get_message_count,
-            generate_smart_title,
-            generate_title_from_text,
-            classify_prompt,
-            get_conversation_jsonl,
-            get_conversation_jsonl_tail,
-            search_session_content,
-            watch_jsonl,
-            unwatch_jsonl,
-            get_git_status,
-            get_git_diff,
-            get_git_numstat,
-            read_file_content,
-            read_file,
-            read_file_base64,
-            write_file,
-            resolve_path,
-            list_files,
-            search_project_files,
-            get_pull_requests,
-            checkout_pr,
-            checkout_pr_worktree,
-            list_branches,
-            switch_branch,
-            get_branch_diff,
-            get_branch_file_diff,
-            get_branch_commits,
-            get_pr_diff,
-            get_pr_file_diff,
-            post_pr_comment,
-            get_pr_comments,
-            get_pr_viewed_files,
-            set_pr_file_viewed,
-            set_dock_badge,
-            open_in_editor,
-            generate_commit_message,
-            git_commit_and_push,
-            git_unstage_all,
-            git_unstage_files,
-            git_stage_files,
-        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

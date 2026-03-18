@@ -67,6 +67,7 @@ pub enum ServerEvent {
     OrchestratorSignal {
         signal: OrchestratorSignal,
     },
+    SessionsChanged,
 }
 
 // ── Config ─────────────────────────────────────────────────────────────────
