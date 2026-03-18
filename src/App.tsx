@@ -1,6 +1,6 @@
 // Plan mode test comment
 import { useRef, useState, useEffect, useMemo, useCallback, memo, startTransition } from "react";
-import { invoke } from "./lib/bridge";
+import { invoke, isTauri } from "./lib/bridge";
 import { useSessionContext } from "./contexts/SessionContext";
 import Terminal from "./components/Terminal";
 import Sidebar from "./components/Sidebar";
@@ -22,10 +22,13 @@ import { useUpdater } from "./hooks/useUpdater";
 import { useToast } from "./components/Toast";
 import ActivityBar from "./components/ActivityBar";
 import TitleBar from "./components/TitleBar";
+import { useMobileLayout } from "./hooks/useMobileLayout";
 import CommitModal from "./components/CommitModal";
 import OverviewDashboard from "./components/OverviewDashboard";
 import ContextRail from "./components/ContextRail";
 import { useSessionLive } from "./contexts/SessionContext";
+import { useBridgeConnection } from "./hooks/useBridgeConnection";
+import PullToRefresh from "./components/PullToRefresh";
 
 export interface OpenCodeModel {
   id: string;
@@ -200,6 +203,18 @@ export default function App() {
   const { showError } = useToast();
   const { sessionUsage, unreadSessions } = useSessionLive();
   const { update, status, progress, install, dismiss } = useUpdater(showError);
+  const bridgeState = useBridgeConnection();
+
+  // Show disconnected overlay after 5s of failed connection
+  const [showDisconnected, setShowDisconnected] = useState(false);
+  useEffect(() => {
+    if (bridgeState === "connected") {
+      setShowDisconnected(false);
+      return;
+    }
+    const t = setTimeout(() => setShowDisconnected(true), 5000);
+    return () => clearTimeout(t);
+  }, [bridgeState]);
 
   // Recent directories helpers
   const MAX_RECENT_DIRS = 8;
@@ -298,6 +313,9 @@ export default function App() {
   // ── Panel state (replaces per-workspace tab state) ──────────────
   const [activePanel, setActivePanel] = useState<"prs" | "shell" | null>(null);
   const [, setChatInputHeight] = useState(0);
+
+  // ── Responsive layout ────────────────────────────────────────────
+  const isMobile = useMobileLayout();
 
   // ── New layout state ─────────────────────────────────────────────
   const [drawerOpen, setDrawerOpen] = useState<boolean>(() => {
@@ -906,6 +924,7 @@ export default function App() {
       selectSession(id);
       setActivePanel(null);
       setActiveVirtualDir(null);
+      if (isMobile) setDrawerOpen(false);
     });
   };
 
@@ -926,11 +945,31 @@ export default function App() {
   }, [activeVirtualDir, createSession, skipPermissions]);
 
   return (
+    <PullToRefresh>
     <div className="flex flex-col h-screen w-screen bg-[var(--bg-primary)]">
+      {showDisconnected && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-4 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl shadow-2xl p-8 max-w-sm mx-4 text-center">
+            <div className="w-10 h-10 rounded-full border-2 border-[var(--text-tertiary)] border-t-[var(--text-primary)] animate-spin" />
+            <div className="text-sm font-medium text-[var(--text-primary)]">Cannot connect to server</div>
+            <div className="text-xs text-[var(--text-secondary)] leading-relaxed">
+              {!isTauri && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1"
+                ? "Make sure External Access is enabled in Settings on the host machine."
+                : "Make sure the orchestrator server is running."}
+            </div>
+            <button
+              className="text-xs px-3 py-1.5 rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+              onClick={() => window.location.reload()}
+            >
+              Reload page
+            </button>
+          </div>
+        </div>
+      )}
       {update && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onMouseDown={(e) => { if (e.target === e.currentTarget) dismiss(); }}>
           <div
-            className="flex flex-col bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl shadow-2xl w-[360px]"
+            className="flex flex-col bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl shadow-2xl w-[calc(100vw-2rem)] max-w-[360px]"
             onMouseDown={(e) => e.stopPropagation()}
           >
             <div className="px-5 py-4 border-b border-[var(--border-color)]">
@@ -979,8 +1018,8 @@ export default function App() {
           New session
         </button>
 
-        {/* Open in Editor — split button with editor picker */}
-        <div className="tb-split" data-no-drag style={{ position: "relative" }}>
+        {/* Open in Editor — split button with editor picker (desktop only) */}
+        {!isMobile && <div className="tb-split" data-no-drag style={{ position: "relative" }}>
           <button
             className="tb-split-main"
             onClick={() => {
@@ -1031,10 +1070,10 @@ export default function App() {
               ))}
             </div>
           )}
-        </div>
+        </div>}
 
-        {/* Commit, push & PR — split button */}
-        <div className="tb-split" data-no-drag>
+        {/* Commit, push & PR — split button (desktop only) */}
+        {!isMobile && <div className="tb-split" data-no-drag>
           <button
             className="tb-split-main"
             onClick={handleCommitClick}
@@ -1055,7 +1094,7 @@ export default function App() {
               <path d="M1 1l4 4 4-4" />
             </svg>
           </button>
-        </div>
+        </div>}
 
         {/* Usage / Cost */}
         <button className="tb-pill" onClick={() => setShowUsagePanel(true)} data-no-drag title="Usage stats">
@@ -1074,8 +1113,8 @@ export default function App() {
           </svg>
         </button>
 
-        {/* Context Rail toggle */}
-        {activeSessionId && (
+        {/* Context Rail toggle — desktop only */}
+        {!isMobile && activeSessionId && (
           <button
             className="tb-pill"
             onClick={() => setRailOpen((v) => !v)}
@@ -1100,7 +1139,7 @@ export default function App() {
       {showSettings && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowSettings(false); }}>
           <div
-            className="flex flex-col bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl shadow-2xl w-[380px]"
+            className="flex flex-col bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl shadow-2xl w-[calc(100vw-2rem)] max-w-[380px]"
             onMouseDown={(e) => e.stopPropagation()}
           >
             <div className="px-5 py-4 border-b border-[var(--border-color)]">
@@ -1138,38 +1177,59 @@ export default function App() {
         </div>
       )}
       <div className="flex flex-1 min-h-0 relative">
-        {/* Activity bar */}
-        <ActivityBar
-          activeView={activeSessionId === null ? "overview" : "session"}
-          drawerOpen={drawerOpen}
-          activePanel={activePanel}
-          unreadCount={unreadCount}
-          onOverview={() => {
-            startTransition(() => selectSession(null as unknown as string));
-            setActivePanel(null);
-          }}
-          onToggleSidebar={() => setDrawerOpen((v) => !v)}
-          onSessionsClick={() => {
-            setActivePanel(null);
-            if (activeSessionId === null) {
-              const last = sessions.slice().sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0))[0];
-              if (last) startTransition(() => selectSession(last.id));
-            }
-          }}
-          onTogglePRs={() => togglePanel("prs")}
-          onToggleShell={() => togglePanel("shell")}
-        />
+        {/* Activity bar — desktop only (mobile uses bottom nav below) */}
+        {!isMobile && (
+          <ActivityBar
+            activeView={activeSessionId === null ? "overview" : "session"}
+            drawerOpen={drawerOpen}
+            activePanel={activePanel}
+            unreadCount={unreadCount}
+            onOverview={() => {
+              startTransition(() => selectSession(null as unknown as string));
+              setActivePanel(null);
+            }}
+            onToggleSidebar={() => setDrawerOpen((v) => !v)}
+            onSessionsClick={() => {
+              setActivePanel(null);
+              if (activeSessionId === null) {
+                const last = sessions.slice().sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0))[0];
+                if (last) startTransition(() => selectSession(last.id));
+              }
+            }}
+            onTogglePRs={() => togglePanel("prs")}
+            onToggleShell={() => togglePanel("shell")}
+          />
+        )}
+
+        {/* Mobile drawer backdrop */}
+        {isMobile && drawerOpen && (
+          <div
+            className="fixed inset-0 z-40 bg-black/50"
+            onClick={() => setDrawerOpen(false)}
+          />
+        )}
 
         {/* Session drawer */}
         <div
           className="overflow-hidden shrink-0 transition-all duration-200 h-full"
-          style={{
+          style={isMobile ? {
+            position: "fixed",
+            left: 0,
+            top: 0,
+            bottom: 0,
+            zIndex: 50,
+            width: "min(320px, 85vw)",
+            transform: drawerOpen ? "translateX(0)" : "translateX(-100%)",
+            transition: "transform 200ms ease",
+            background: "var(--drawer-bg)",
+            borderRight: "1px solid var(--border-subtle)",
+          } : {
             width: drawerOpen ? 320 : 0,
             background: "var(--drawer-bg)",
             borderRight: drawerOpen ? "1px solid var(--border-subtle)" : "none",
           }}
         >
-          <div style={{ width: 320, height: "100%" }}>
+          <div style={{ width: "min(320px, 85vw)", height: "100%" }}>
             <Sidebar
               workspaces={sidebarWorkspaces}
               activeSessionId={activeSessionId}
@@ -1527,11 +1587,11 @@ export default function App() {
           </div>
         </div>
 
-        {/* Context rail */}
+        {/* Context rail — desktop only */}
         <div
           ref={railContainerRef}
           className="overflow-hidden shrink-0 relative"
-          style={{ width: railOpen && activeSessionId ? railWidth : 0, transition: "width 200ms ease" }}
+          style={{ width: railOpen && activeSessionId && !isMobile ? railWidth : 0, transition: "width 200ms ease" }}
         >
           {/* Drag handle */}
           {railOpen && activeSessionId && (
@@ -1602,6 +1662,33 @@ export default function App() {
         </div>
       </div>
 
+      {/* Mobile bottom navigation bar */}
+      {isMobile && (
+        <ActivityBar
+          isMobile
+          activeView={activeSessionId === null ? "overview" : "session"}
+          drawerOpen={drawerOpen}
+          activePanel={activePanel}
+          unreadCount={unreadCount}
+          onOverview={() => {
+            startTransition(() => selectSession(null as unknown as string));
+            setActivePanel(null);
+            setDrawerOpen(false);
+          }}
+          onToggleSidebar={() => setDrawerOpen((v) => !v)}
+          onSessionsClick={() => {
+            setActivePanel(null);
+            setDrawerOpen(false);
+            if (activeSessionId === null) {
+              const last = sessions.slice().sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0))[0];
+              if (last) startTransition(() => selectSession(last.id));
+            }
+          }}
+          onTogglePRs={() => { togglePanel("prs"); setDrawerOpen(false); }}
+          onToggleShell={() => { togglePanel("shell"); setDrawerOpen(false); }}
+        />
+      )}
+
       {/* Usage panel modal */}
       {showUsagePanel && (
         <UsagePanel onClose={() => setShowUsagePanel(false)} />
@@ -1619,7 +1706,7 @@ export default function App() {
       {/* Directory picker dialog */}
       {showDirDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dialog-backdrop animate-backdrop" onMouseDown={handleDirCancel}>
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-2xl w-[420px] shadow-[0_16px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.04] flex flex-col overflow-hidden animate-scale-in" onMouseDown={(e) => e.stopPropagation()}>
+          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-2xl w-[calc(100vw-2rem)] max-w-[420px] shadow-[0_16px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.04] flex flex-col overflow-hidden animate-scale-in" onMouseDown={(e) => e.stopPropagation()}>
             {/* Search / path-entry input */}
             <div className="px-4 pt-4 pb-3">
               {!addDirMode ? (
@@ -1935,7 +2022,7 @@ export default function App() {
       {/* Worktree creation dialog */}
       {showWorktreeDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dialog-backdrop animate-backdrop" onMouseDown={() => setShowWorktreeDialog(false)}>
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-2xl w-[380px] shadow-[0_16px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.04] flex flex-col overflow-hidden animate-scale-in" onMouseDown={(e) => e.stopPropagation()}>
+          <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-2xl w-[calc(100vw-2rem)] max-w-[380px] shadow-[0_16px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.04] flex flex-col overflow-hidden animate-scale-in" onMouseDown={(e) => e.stopPropagation()}>
             <div className="px-4 pt-4 pb-2">
               <div className="text-sm font-medium text-[var(--text-primary)] mb-1">New Worktree</div>
               <div className="text-[11px] text-[var(--text-tertiary)] font-mono truncate mb-3">
@@ -1972,5 +2059,6 @@ export default function App() {
         </div>
       )}
     </div>
+    </PullToRefresh>
   );
 }

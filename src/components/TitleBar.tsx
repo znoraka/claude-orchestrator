@@ -1,5 +1,6 @@
 import { memo, useState, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "../lib/bridge";
+import { useMobileLayout } from "../hooks/useMobileLayout";
 
 interface TitleBarProps {
   workspaceName?: string;
@@ -9,6 +10,7 @@ interface TitleBarProps {
 
 function TitleBar({ workspaceName, sessionTitle, children }: TitleBarProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const isMobile = useMobileLayout();
 
   useEffect(() => {
     const win = getCurrentWindow();
@@ -44,8 +46,8 @@ function TitleBar({ workspaceName, sessionTitle, children }: TitleBarProps) {
         cursor: "default",
       }}
     >
-      {/* Left spacer behind traffic lights */}
-      <div style={{ width: "var(--traffic-light-width)", flexShrink: 0 }} />
+      {/* Left spacer behind traffic lights — only needed in Tauri desktop */}
+      {!isMobile && <div style={{ width: "var(--traffic-light-width)", flexShrink: 0 }} />}
       {/* Right content */}
       <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 5, padding: "0 10px", minWidth: 0 }}>
         {workspaceName && (
@@ -61,7 +63,7 @@ function TitleBar({ workspaceName, sessionTitle, children }: TitleBarProps) {
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
-            maxWidth: 130,
+            maxWidth: isMobile ? 160 : 130,
             flexShrink: 1,
           }}>
             {workspaceName}

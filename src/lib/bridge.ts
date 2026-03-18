@@ -48,18 +48,43 @@ type PendingRequest = {
 
 type EventHandler = (event: TauriEvent) => void;
 
+type ConnectionState = "connecting" | "connected" | "disconnected";
+type ConnectionStateHandler = (state: ConnectionState) => void;
+
 class BrowserBridge {
   private ws: WebSocket | null = null;
   private pending = new Map<string, PendingRequest>();
   private listeners = new Map<string, Set<EventHandler>>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private seq = 0;
+  private _connectionState: ConnectionState = "connecting";
+  private _connectionListeners = new Set<ConnectionStateHandler>();
+  private _failCount = 0;
 
   constructor() {
     this.connect();
   }
 
+  get connectionState(): ConnectionState {
+    return this._connectionState;
+  }
+
+  onConnectionStateChange(handler: ConnectionStateHandler): () => void {
+    this._connectionListeners.add(handler);
+    return () => this._connectionListeners.delete(handler);
+  }
+
+  private setConnectionState(state: ConnectionState) {
+    if (this._connectionState === state) return;
+    this._connectionState = state;
+    for (const h of this._connectionListeners) {
+      try { h(state); } catch {}
+    }
+  }
+
   private connect() {
+    this.setConnectionState("connecting");
+
     // Inside Tauri the port is injected by the Rust setup as
     // window.__ORCHESTRATOR_PORT__.  Falls back to localStorage so the port
     // survives page reloads.  In a browser, use the current host (works for
@@ -74,6 +99,8 @@ class BrowserBridge {
 
     ws.addEventListener("open", () => {
       console.log("[bridge] Connected");
+      this._failCount = 0;
+      this.setConnectionState("connected");
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
@@ -90,10 +117,24 @@ class BrowserBridge {
 
     ws.addEventListener("close", () => {
       console.warn("[bridge] Connection closed, reconnecting in 1s...");
+      this._failCount++;
+      this.setConnectionState("disconnected");
       for (const [, req] of this.pending) {
         req.reject(new Error("WebSocket closed"));
       }
       this.pending.clear();
+
+      // iOS standalone (home screen) PWA: WebSocket often fails on cold launch
+      // but works after a page reload. Auto-reload once to work around this.
+      const isStandalone = (window.navigator as unknown as Record<string, unknown>).standalone === true
+        || window.matchMedia("(display-mode: standalone)").matches;
+      if (isStandalone && this._failCount >= 3 && !sessionStorage.getItem("__ws_reloaded__")) {
+        console.log("[bridge] Standalone mode WS failed, reloading page...");
+        sessionStorage.setItem("__ws_reloaded__", "1");
+        window.location.reload();
+        return;
+      }
+
       this.reconnectTimer = setTimeout(() => this.connect(), 1000);
     });
 
@@ -188,6 +229,18 @@ let _bridge: BrowserBridge | null = null;
 function getBridge(): BrowserBridge {
   if (!_bridge) _bridge = new BrowserBridge();
   return _bridge;
+}
+
+// ── Connection state ─────────────────────────────────────────────────────────
+
+export type { ConnectionState };
+
+export function getConnectionState(): ConnectionState {
+  return getBridge().connectionState;
+}
+
+export function onConnectionStateChange(handler: ConnectionStateHandler): () => void {
+  return getBridge().onConnectionStateChange(handler);
 }
 
 // ── Server port (continued) ───────────────────────────────────────────────────

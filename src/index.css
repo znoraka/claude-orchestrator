@@ -1,4 +1,9 @@
 @import "tailwindcss";
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 @import "@xterm/xterm/css/xterm.css";
 @import "@fontsource-variable/dm-sans";
 
@@ -121,6 +126,7 @@
   --drawer-bg:       #0e0e0e;
   --titlebar-height: 36px;
   --traffic-light-width: 72px;
+  --mobile-nav-height: 56px;
   --rail-bg:         #0e0e0e;
   --card-bg:         #111111;
   --card-border:     rgba(255,255,255,0.10);
