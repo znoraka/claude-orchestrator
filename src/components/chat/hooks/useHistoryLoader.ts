@@ -169,7 +169,19 @@ export function useHistoryLoader({
               if (replayedIdSet.has(existingOwnIds[i])) { anchorId = existingOwnIds[i]; break; }
             }
             if (anchorId === null) {
-              result.unshift(newMsg);
+              // No replayed anchor before this message — find the first replayed message
+              // that comes AFTER it in existingOwn and insert before that, preserving order.
+              let nextAnchorId: string | null = null;
+              for (let i = newMsgIdx + 1; i < existingOwnIds.length; i++) {
+                if (replayedIdSet.has(existingOwnIds[i])) { nextAnchorId = existingOwnIds[i]; break; }
+              }
+              if (nextAnchorId === null) {
+                result.push(newMsg);
+              } else {
+                const nextIdx = result.findIndex(m => m.id === nextAnchorId);
+                if (nextIdx === -1) { result.push(newMsg); continue; }
+                result.splice(nextIdx, 0, newMsg);
+              }
             } else {
               const anchorIdx = result.findIndex(m => m.id === anchorId);
               if (anchorIdx === -1) { result.push(newMsg); continue; }

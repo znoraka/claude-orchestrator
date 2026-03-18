@@ -46,6 +46,12 @@ const ContextRail = memo(function ContextRail({
   );
   const [gitFiles, setGitFiles] = useState<GitFile[]>([]);
   const [gitBranch, setGitBranch] = useState<string>("");
+  const [branchPickerOpen, setBranchPickerOpen] = useState(false);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [branchSearch, setBranchSearch] = useState("");
+  const [branchSwitching, setBranchSwitching] = useState(false);
+  const branchPickerRef = useRef<HTMLDivElement>(null);
+  const branchSearchRef = useRef<HTMLInputElement>(null);
   const [gitLoading, setGitLoading] = useState(false);
 
   // Map of "path:staged" → diff content (cached after first load)
@@ -60,6 +66,52 @@ const ContextRail = memo(function ContextRail({
   const [providedDiffView, setProvidedDiffView] = useState<{ path: string; diff: string } | null>(null);
   // Track the last seq we've processed so we only act on each file-open request once
   const lastHandledSeqRef = useRef(-1);
+
+  // Open branch picker: fetch branches and focus search
+  const openBranchPicker = async () => {
+    setBranchSearch("");
+    setBranchPickerOpen(true);
+    try {
+      const result = await invoke<string[]>("list_branches", { directory });
+      setBranches(result);
+    } catch {
+      setBranches([]);
+    }
+    setTimeout(() => branchSearchRef.current?.focus(), 50);
+  };
+
+  const closeBranchPicker = () => {
+    setBranchPickerOpen(false);
+    setBranchSearch("");
+  };
+
+  const handleSwitchBranch = async (branch: string) => {
+    if (branch === gitBranch) { closeBranchPicker(); return; }
+    setBranchSwitching(true);
+    closeBranchPicker();
+    try {
+      await invoke("switch_branch", { directory, branch });
+      setGitBranch(branch);
+      // Refresh git status
+      const result = await invoke<GitStatusResult>("get_git_status", { directory });
+      setGitBranch(result.branch);
+      setGitFiles(result.files);
+    } catch { /* ignore */ } finally {
+      setBranchSwitching(false);
+    }
+  };
+
+  // Close on outside click
+  useEffect(() => {
+    if (!branchPickerOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (branchPickerRef.current && !branchPickerRef.current.contains(e.target as Node)) {
+        closeBranchPicker();
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [branchPickerOpen]);
 
   useEffect(() => {
     if (activeTab !== "git" || !directory) return;
@@ -249,13 +301,70 @@ const ContextRail = memo(function ContextRail({
       <div className={`flex-1 min-h-0 ${(expandedKey !== null || untrackedFile !== null || providedDiffView !== null) && activeTab === "git" ? "flex flex-col" : "overflow-y-auto"}`}>
         {activeTab === "git" && (
           <div className={`flex flex-col ${expandedKey !== null || untrackedFile !== null || providedDiffView !== null ? "flex-1 min-h-0" : ""}`}>
-            {/* Branch */}
+            {/* Branch picker */}
             {gitBranch && expandedKey === null && untrackedFile === null && providedDiffView === null && (
-              <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)] px-3 py-2 border-b border-[var(--border-subtle)]">
-                <svg className="w-3.5 h-3.5 shrink-0 text-[var(--text-tertiary)]" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
-                </svg>
-                <span className="font-mono truncate">{gitBranch}</span>
+              <div className="relative border-b border-[var(--border-subtle)]" ref={branchPickerRef}>
+                <button
+                  onClick={openBranchPicker}
+                  disabled={branchSwitching}
+                  className="w-full flex items-center gap-2 text-xs text-[var(--text-secondary)] px-3 py-2 hover:bg-[var(--bg-hover)] transition-colors text-left"
+                >
+                  <svg className="w-3.5 h-3.5 shrink-0 text-[var(--text-tertiary)]" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z" />
+                  </svg>
+                  <span className="font-mono truncate flex-1 min-w-0">
+                    {branchSwitching ? "Switching…" : gitBranch}
+                  </span>
+                  <svg className="w-3 h-3 shrink-0 text-[var(--text-tertiary)]" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 6l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+
+                {branchPickerOpen && (
+                  <div className="absolute top-full left-0 right-0 z-50 border border-[var(--border-subtle)] rounded-b-lg shadow-lg overflow-hidden" style={{ background: "var(--bg-primary)" }}>
+                    <div className="px-2 py-1.5 border-b border-[var(--border-subtle)]">
+                      <input
+                        ref={branchSearchRef}
+                        value={branchSearch}
+                        onChange={(e) => setBranchSearch(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") closeBranchPicker();
+                          if (e.key === "Enter") {
+                            const filtered = branches.filter((b) =>
+                              b.toLowerCase().includes(branchSearch.toLowerCase())
+                            );
+                            if (filtered.length === 1) handleSwitchBranch(filtered[0]);
+                          }
+                        }}
+                        placeholder="Search branches…"
+                        className="w-full bg-transparent text-xs text-[var(--text-primary)] placeholder-[var(--text-tertiary)] outline-none"
+                      />
+                    </div>
+                    <div className="max-h-48 overflow-y-auto">
+                      {branches
+                        .filter((b) => b.toLowerCase().includes(branchSearch.toLowerCase()))
+                        .map((b) => (
+                          <button
+                            key={b}
+                            onClick={() => handleSwitchBranch(b)}
+                            className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs font-mono transition-colors hover:bg-[var(--bg-hover)] ${
+                              b === gitBranch ? "text-[var(--accent)]" : "text-[var(--text-secondary)]"
+                            }`}
+                          >
+                            {b === gitBranch && (
+                              <svg className="w-3 h-3 shrink-0" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z" />
+                              </svg>
+                            )}
+                            <span className={`truncate ${b === gitBranch ? "" : "ml-5"}`}>{b}</span>
+                          </button>
+                        ))}
+                      {branches.filter((b) => b.toLowerCase().includes(branchSearch.toLowerCase())).length === 0 && (
+                        <div className="px-3 py-2 text-xs text-[var(--text-tertiary)]">No branches found</div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
