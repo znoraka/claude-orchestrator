@@ -52,9 +52,15 @@ export function AssistantMessage({ message, toolStates, onToggleTool, isLastMess
     for (let i = 0; i < grouped.items.length; i++) {
       const item = grouped.items[i];
       if (item.type === "toolGroup") {
-        const last = result[result.length - 1];
-        if (last?.type === "tools") {
-          last.items.push({ type: "tool", group: item.group });
+        // Find the last tools segment (may not be the immediately preceding segment)
+        // This ensures all tool calls in a message are grouped together even when
+        // text blocks appear between them (e.g. opencode/codex intermediate reasoning).
+        let lastToolsSeg: ToolsSegment | undefined;
+        for (let k = result.length - 1; k >= 0; k--) {
+          if (result[k].type === "tools") { lastToolsSeg = result[k] as ToolsSegment; break; }
+        }
+        if (lastToolsSeg) {
+          lastToolsSeg.items.push({ type: "tool", group: item.group });
         } else {
           result.push({ type: "tools", items: [{ type: "tool", group: item.group }], key: item.group.blockId });
         }

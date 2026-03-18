@@ -166,6 +166,16 @@ function hasToolUse(msg: ChatMessage): boolean {
   return blocks.some((b) => b.type === "tool_use");
 }
 
+/** Returns true if messages[startIdx..] has a tool-using assistant message
+ *  before any non-assistant message (skipping text-only assistant messages). */
+function hasToolUseAhead(messages: ChatMessage[], startIdx: number): boolean {
+  for (let k = startIdx; k < messages.length; k++) {
+    if (messages[k].type !== "assistant") return false;
+    if (hasToolUse(messages[k])) return true;
+  }
+  return false;
+}
+
 function isToolResultOnlyUser(msg: ChatMessage): boolean {
   if (msg.type !== "user") return false;
   const blocks = Array.isArray(msg.content) ? msg.content : [];
@@ -199,6 +209,15 @@ export function mergeToolOnlyMessages(messages: ChatMessage[]): ChatMessage[] {
           mergedContent.push(...(Array.isArray(messages[j + 1].content) ? messages[j + 1].content : []));
           lastAssistant = messages[j + 1] as ChatMessage;
           j += 2;
+        } else if (
+          next.type === "assistant" &&
+          !hasToolUse(next) &&
+          hasToolUseAhead(messages, j + 1)
+        ) {
+          // Text-only assistant message between tool-using ones (e.g. opencode/codex
+          // intermediate reasoning between tool calls) — merge into the group.
+          mergedContent.push(...(Array.isArray(next.content) ? next.content : []));
+          j++;
         } else {
           break;
         }
