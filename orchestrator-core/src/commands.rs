@@ -1739,8 +1739,8 @@ pub async fn create_agent_session(
             .clone();
 
         let config = if provider == "claude-code" {
-            // Build MCP servers config for the agent SDK
-            let mcp_servers = if let Some(ref mcp_path) = mcp_script {
+            // Build MCP servers config: start with the orchestrator's own MCP server
+            let mut mcp_servers = if let Some(ref mcp_path) = mcp_script {
                 serde_json::json!({
                     "orchestrator": {
                         "command": "node",
@@ -1754,6 +1754,43 @@ pub async fn create_agent_session(
             } else {
                 serde_json::json!({})
             };
+
+            // Merge project-level MCP servers from .claude/mcp.json
+            let mcp_json_path = Path::new(&directory).join(".claude/mcp.json");
+            if mcp_json_path.exists() {
+                if let Ok(contents) = std::fs::read_to_string(&mcp_json_path) {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&contents) {
+                        if let Some(servers) = parsed.get("mcpServers").and_then(|v| v.as_object()) {
+                            if let Some(obj) = mcp_servers.as_object_mut() {
+                                for (name, server_config) in servers {
+                                    obj.insert(name.clone(), server_config.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Also check ~/.claude/mcp.json for user-global MCP servers
+            if let Ok(home) = std::env::var("HOME") {
+                let global_mcp_path = Path::new(&home).join(".claude/mcp.json");
+                if global_mcp_path.exists() {
+                    if let Ok(contents) = std::fs::read_to_string(&global_mcp_path) {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&contents) {
+                            if let Some(servers) = parsed.get("mcpServers").and_then(|v| v.as_object()) {
+                                if let Some(obj) = mcp_servers.as_object_mut() {
+                                    for (name, server_config) in servers {
+                                        // Project-level takes precedence; don't overwrite
+                                        if !obj.contains_key(name) {
+                                            obj.insert(name.clone(), server_config.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // Resolve the `claude` CLI so the Agent SDK can find it inside the app bundle
             let claude_cli = resolve_bin("claude");

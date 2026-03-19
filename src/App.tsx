@@ -608,8 +608,27 @@ export default function App() {
     return () => document.removeEventListener("click", close);
   }, [showShellPicker]);
 
+  // Branch info for all worktrees across all workspaces (shared hook, polls every 10s)
+  const { branches: dialogBranches, byRepo: gitWorktreesByRepo } = useWorktreeBranches(workspaces);
+
   // Ctrl+N/P navigation for shell worktree pickers
-  const allWorktrees = workspaces.flatMap((ws) => ws.worktrees);
+  // Merge workspace worktrees with git worktrees that have no sessions
+  const allWorktrees = useMemo(() => {
+    const items: { path: string; label: string }[] = [];
+    for (const ws of workspaces) {
+      const existingPaths = new Set(ws.worktrees.map((wt) => wt.path));
+      for (const wt of ws.worktrees) {
+        items.push({ path: wt.path, label: worktreeName(wt.path) });
+      }
+      const gitWts = gitWorktreesByRepo.get(ws.directory) || [];
+      for (const gwt of gitWts) {
+        if (!existingPaths.has(gwt.path)) {
+          items.push({ path: gwt.path, label: worktreeName(gwt.path) });
+        }
+      }
+    }
+    return items;
+  }, [workspaces, gitWorktreesByRepo]);
   const shellPickerVisible = activePanel === "shell" && (shellTabs.length === 0 || showShellPicker);
 
   useEffect(() => {
@@ -797,8 +816,6 @@ export default function App() {
     }
   };
 
-  // Branch info for all worktrees across all workspaces (shared hook, polls every 10s)
-  const { branches: dialogBranches, byRepo: gitWorktreesByRepo } = useWorktreeBranches(workspaces);
 
   // Sidebar uses workspaces directly — each workspace is one directory
   const sidebarWorkspaces = workspaces;
@@ -1448,6 +1465,8 @@ export default function App() {
                         let flatIdx = -1;
                         return workspaces.map((ws) => {
                           const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
+                          const existingPaths = new Set(ws.worktrees.map((wt) => wt.path));
+                          const gitWts = (gitWorktreesByRepo.get(ws.directory) || []).filter((gwt) => !existingPaths.has(gwt.path));
                           return (
                             <div key={ws.id}>
                               <div className="px-3 py-1.5 text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider border-b border-[var(--border-subtle)]">{repoName}</div>
@@ -1466,6 +1485,24 @@ export default function App() {
                                     }`}
                                   >
                                     {wtName}
+                                  </button>
+                                );
+                              })}
+                              {gitWts.map((gwt) => {
+                                flatIdx++;
+                                const idx = flatIdx;
+                                const wtName = worktreeName(gwt.path);
+                                return (
+                                  <button
+                                    key={gwt.path}
+                                    onClick={() => addShellTab(gwt.path)}
+                                    className={`w-full text-left px-4 py-2 text-sm transition-colors ${
+                                      idx === shellPickerIndex
+                                        ? "bg-[var(--bg-hover)] text-[var(--text-primary)]"
+                                        : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                                    }`}
+                                  >
+                                    {wtName} <span className="text-[var(--text-muted)] text-xs ml-1">{gwt.branch}</span>
                                   </button>
                                 );
                               })}
@@ -1547,6 +1584,8 @@ export default function App() {
                               let flatIdx = -1;
                               return workspaces.map((ws) => {
                                 const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
+                                const existingPaths = new Set(ws.worktrees.map((wt) => wt.path));
+                                const gitWts = (gitWorktreesByRepo.get(ws.directory) || []).filter((gwt) => !existingPaths.has(gwt.path));
                                 return (
                                   <div key={ws.id}>
                                     <div className="px-3 py-1 text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">{repoName}</div>
@@ -1568,6 +1607,27 @@ export default function App() {
                                           }`}
                                         >
                                           {wtName}
+                                        </button>
+                                      );
+                                    })}
+                                    {gitWts.map((gwt) => {
+                                      flatIdx++;
+                                      const idx = flatIdx;
+                                      const wtName = worktreeName(gwt.path);
+                                      return (
+                                        <button
+                                          key={gwt.path}
+                                          onClick={() => {
+                                            setShowShellPicker(false);
+                                            addShellTab(gwt.path);
+                                          }}
+                                          className={`w-full text-left px-4 py-1.5 text-sm transition-colors ${
+                                            idx === shellPickerIndex
+                                              ? "bg-[var(--bg-hover)] text-[var(--text-primary)]"
+                                              : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                                          }`}
+                                        >
+                                          {wtName} <span className="text-[var(--text-muted)] text-xs ml-1">{gwt.branch}</span>
                                         </button>
                                       );
                                     })}

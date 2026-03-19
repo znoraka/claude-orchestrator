@@ -11,10 +11,11 @@ interface UserMessageProps {
   onRetry?: (messageId: string) => void;
   onCopy?: (messageId: string) => void;
   planContent?: string;
+  skillName?: string;
   isNew?: boolean;
 }
 
-export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planContent, isNew }: UserMessageProps) {
+export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planContent, skillName, isNew }: UserMessageProps) {
   const [copied, setCopied] = useState(false);
 
   const content = Array.isArray(message.content)
@@ -25,6 +26,17 @@ export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planCont
 
   const visible = content.filter((b) => b.type !== "tool_result");
   if (visible.length === 0) return null;
+
+  if (skillName) {
+    return (
+      <div className="flex justify-end">
+        <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs text-[var(--text-tertiary)] bg-[var(--bg-tertiary)] border border-[var(--border-color)]">
+          <svg className="w-3 h-3 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+          <span className="font-medium">{`/${skillName}`}</span>
+        </div>
+      </div>
+    );
+  }
 
   const hasPlan = planContent && visible.some(b => {
     if (b.type !== "text" || !b.text) return false;

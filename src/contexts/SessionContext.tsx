@@ -416,6 +416,72 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // After a WebSocket reconnect, re-sync all state that may have been
+  // missed while disconnected (sessions + busy map).
+  useEffect(() => {
+    const unlisten = listen("bridge-reconnected", () => {
+      console.log("[session] Bridge reconnected, re-syncing state...");
+      // Re-fetch sessions
+      invoke<
+        Array<{
+          id: string;
+          name: string;
+          createdAt: number;
+          lastActiveAt: number;
+          lastMessageAt?: number;
+          directory: string;
+          provider?: string;
+          model?: string;
+          homeDirectory?: string;
+          claudeSessionId?: string;
+          dangerouslySkipPermissions?: boolean;
+          permissionMode?: string;
+          activeTime?: number;
+          hasTitleBeenGenerated?: boolean;
+          planContent?: string;
+          parentSessionId?: string;
+          archived?: boolean;
+          archivedAt?: number;
+        }>
+      >("load_sessions")
+        .then((saved) => {
+          if (saved.length > 0) {
+            const restored: Session[] = saved.map((s) => ({
+              id: s.id,
+              name: s.name,
+              status: "stopped" as const,
+              createdAt: s.createdAt,
+              lastActiveAt: s.lastActiveAt,
+              lastMessageAt: s.lastMessageAt || s.lastActiveAt,
+              directory: normalizeDir(s.directory),
+              provider: (s.provider as Session["provider"]) || "claude-code",
+              model: s.model,
+              homeDirectory: s.homeDirectory ? normalizeDir(s.homeDirectory) : undefined,
+              claudeSessionId: s.claudeSessionId,
+              dangerouslySkipPermissions: s.dangerouslySkipPermissions,
+              permissionMode: s.permissionMode as Session["permissionMode"],
+              activeTime: s.activeTime || 0,
+              hasTitleBeenGenerated: s.hasTitleBeenGenerated,
+              planContent: s.planContent,
+              parentSessionId: s.parentSessionId,
+              archived: s.archived,
+              archivedAt: s.archivedAt,
+            }));
+            dispatch({ type: "SET_ALL", sessions: restored });
+          }
+        })
+        .catch((err) => console.error("Failed to re-sync sessions after reconnect:", err));
+
+      // Re-fetch busy sessions
+      invoke<string[]>("get_busy_sessions")
+        .then((ids) => {
+          setAgentBusyMap(new Map(ids.map((id) => [id, true])));
+        })
+        .catch((err) => console.error("Failed to re-sync busy sessions:", err));
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
   // ── Flush pending saves before app close ──────────────────────────
   useEffect(() => {
     const unlisten = getCurrentWindow().onCloseRequested(async () => {

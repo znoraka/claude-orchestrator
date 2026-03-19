@@ -266,11 +266,18 @@ const AgentChat = memo(function AgentChat({
   // Attachments
   const { images, setImages, pastedFiles, setPastedFiles, isDragging, handlePaste, removeImage, removePastedFile } = useAttachments(isActive, inputRef);
 
+  // When editing, hide messages after the edit point (they'll be removed on submit)
+  const displayMessages = useMemo(() => {
+    if (!editingMessageId) return messages;
+    const idx = messages.findIndex((m) => m.id === editingMessageId);
+    return idx >= 0 ? messages.slice(0, idx) : messages;
+  }, [messages, editingMessageId]);
+
   // Virtual messages
   const {
     allMessages, hasMore, loadMore, useVirtualRendering, isLayoutReady,
     rowVirtualizer, virtualizerTotalSize, virtualItems, deferredMessages, trailingMessages,
-  } = useVirtualMessages(messages, isActive, sessionId, scrollRef, isGenerating);
+  } = useVirtualMessages(displayMessages, isActive, sessionId, scrollRef, isGenerating);
 
   // Modified files (for "Changed files" panel), scoped per run
   const modifiedFilesByResult = useMemo(() => {
@@ -646,7 +653,25 @@ const AgentChat = memo(function AgentChat({
     isAtBottomRef.current = true;
     requestAnimationFrame(() => scrollToBottom());
 
+    // When editing, build a system prompt from the conversation context up to the edit point
+    // so we can start a fresh LLM session without the old history.
+    let editSystemPrompt: string | null = null;
     if (editingMessageId) {
+      const editIdx = messages.findIndex((m) => m.id === editingMessageId);
+      if (editIdx > 0) {
+        const transcript = messages.slice(0, editIdx).filter((m) => !m.isParentMessage);
+        const lines = transcript.map((m) => {
+          const mText = Array.isArray(m.content)
+            ? m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")
+            : "";
+          if (m.type === "user") return `Human: ${mText}`;
+          if (m.type === "assistant") return `Assistant: ${mText}`;
+          return "";
+        }).filter(Boolean);
+        if (lines.length > 0) {
+          editSystemPrompt = `This conversation was edited. Here is the conversation context before the edited message:\n\n<edit-context>\n${lines.join("\n\n")}\n</edit-context>\n\nContinue from this context. The user will now send their edited message.`;
+        }
+      }
       setMessages((prev) => { const idx = prev.findIndex((m) => m.id === editingMessageId); return idx >= 0 ? prev.slice(0, idx) : prev; });
       setEditingMessageId(null);
       if (pendingQuestion) { setPendingQuestion(null); onQuestionChangeRef.current?.(false); }
@@ -740,6 +765,30 @@ const AgentChat = memo(function AgentChat({
     }
 
     const jsonLine = JSON.stringify({ type: "user", message: { role: "user", content } });
+
+    // Edit flow: destroy old session and start fresh with conversation context as system prompt
+    if (editSystemPrompt !== null) {
+      try {
+        await invoke("destroy_agent_session", { sessionId: targetSessionId }).catch(() => {});
+        const dir = sessionRef.current?.directory || "";
+        await invoke("create_agent_session", {
+          sessionId: targetSessionId,
+          directory: dir,
+          claudeSessionId: null,
+          resume: false,
+          systemPrompt: editSystemPrompt,
+          provider: sessionRef.current?.provider || "claude-code",
+          model: currentModelRef.current || null,
+          permissionMode: sessionRef.current?.permissionMode || null,
+        });
+        await invoke("send_agent_message", { sessionId: targetSessionId, message: jsonLine });
+      } catch (err) {
+        stopGenerating();
+        setMessages((prev) => [...prev, { id: `error-${Date.now()}`, type: "error", content: [{ type: "text", text: `Failed to send edited message: ${err}` }], timestamp: Date.now() }]);
+      }
+      return;
+    }
+
     const trySend = async (attempt: number) => {
       try {
         await invoke("send_agent_message", { sessionId: targetSessionId, message: jsonLine });
@@ -947,7 +996,7 @@ const AgentChat = memo(function AgentChat({
                         return (
                           <div key={msg.id} data-index={virtualItem.index} ref={rowVirtualizer.measureElement} style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${virtualItem.start}px)`, paddingBottom: "20px" }}>
                             <MessageBubble
-                              message={msg} toolStates={toolStates} onToggleTool={toggleTool} isLastMessage={isLast}
+                              message={msg} prevMessage={allMessages[virtualItem.index - 1]} toolStates={toolStates} onToggleTool={toggleTool} isLastMessage={isLast}
                               planContent={session?.planContent}
                               onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
                               onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}
@@ -966,7 +1015,7 @@ const AgentChat = memo(function AgentChat({
                         return (
                           <div key={msg.id} style={{ paddingBottom: "20px" }}>
                             <MessageBubble
-                              message={msg} toolStates={toolStates} onToggleTool={toggleTool} isLastMessage={isLast}
+                              message={msg} prevMessage={allMessages[index - 1]} toolStates={toolStates} onToggleTool={toggleTool} isLastMessage={isLast}
                               planContent={session?.planContent}
                               onEdit={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : editMessage}
                               onFork={msg.isParentMessage || msg.id.startsWith("child-") ? undefined : forkFromMessage}

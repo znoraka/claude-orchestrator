@@ -80,23 +80,49 @@ fn event_notification(event_name: String, payload: Value) -> String {
 
 // ── Socket handler ──────────────────────────────────────────────────────────
 
+/// How often the server sends a WebSocket Ping frame.
+const PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+/// If no Pong (or any message) arrives within this window, assume dead.
+const PONG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sink, mut stream) = socket.split();
     let event_rx = state.event_tx.subscribe();
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // Channel for outbound messages (responses + events + pings)
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+
+    // Track when we last received any data from the client
+    let last_recv = Arc::new(std::sync::atomic::AtomicU64::new(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    ));
 
     // Task A: read incoming messages → dispatch concurrently → send response via tx
     let state_clone = state.clone();
     let tx_clone = tx.clone();
+    let last_recv_clone = last_recv.clone();
     let read_task = tokio::spawn(async move {
         while let Some(msg) = stream.next().await {
             let msg = match msg {
                 Ok(m) => m,
                 Err(_) => break,
             };
+
+            // Any incoming frame counts as "alive"
+            last_recv_clone.store(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+
             let text = match msg {
                 Message::Text(t) => t.to_string(),
+                Message::Pong(_) => continue, // keep-alive response, already tracked above
                 Message::Close(_) => break,
                 _ => continue,
             };
@@ -105,7 +131,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             let tx = tx_clone.clone();
             tokio::spawn(async move {
                 let response = dispatch(&text, &s).await;
-                let _ = tx.send(response);
+                let _ = tx.send(Message::Text(response.into()));
             });
         }
     });
@@ -118,7 +144,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             match rx.recv().await {
                 Ok(event) => {
                     let msg = server_event_to_notification(event);
-                    if tx_clone.send(msg).is_err() {
+                    if tx_clone.send(Message::Text(msg.into())).is_err() {
                         break;
                     }
                 }
@@ -130,10 +156,37 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     });
 
+    // Task C: periodic ping + pong timeout detection
+    let tx_clone = tx.clone();
+    let last_recv_clone = last_recv.clone();
+    let ping_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(PING_INTERVAL);
+        loop {
+            interval.tick().await;
+
+            // Check if client has gone silent
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let last = last_recv_clone.load(std::sync::atomic::Ordering::Relaxed);
+            if now.saturating_sub(last) > PONG_TIMEOUT.as_secs() {
+                eprintln!("[ws] Client pong timeout, closing connection");
+                let _ = tx_clone.send(Message::Close(None));
+                break;
+            }
+
+            // Send ping
+            if tx_clone.send(Message::Ping(vec![].into())).is_err() {
+                break;
+            }
+        }
+    });
+
     // Drain tx → sink
     let write_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if sink.send(Message::Text(msg.into())).await.is_err() {
+            if sink.send(msg).await.is_err() {
                 break;
             }
         }
@@ -142,6 +195,7 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
     tokio::select! {
         _ = read_task => {}
         _ = event_task => {}
+        _ = ping_task => {}
         _ = write_task => {}
     }
 }

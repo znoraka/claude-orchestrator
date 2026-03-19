@@ -144,8 +144,20 @@ export function useHistoryLoader({
           });
           replayed = replayedWithStableIds;
           if (existingOwn.length === 0) return [...finalParent, ...replayed];
-          const newMessages = existingOwn.filter((m) => {
+          // Build set of user-turn counts before each result in replayed, for positional dedup
+          const replayedResultPositions = new Set<number>();
+          let rUserCount = 0;
+          for (const r of replayed) {
+            if (r.type === "user") rUserCount++;
+            if (r.type === "result") replayedResultPositions.add(rUserCount);
+          }
+          const newMessages = existingOwn.filter((m, idx) => {
             if (replayed.some((r) => r.id === m.id)) return false;
+            if (m.type === "result") {
+              // Drop live result messages that correspond to a DB result at the same position
+              const userCountBefore = existingOwn.slice(0, idx).filter(x => x.type === "user").length;
+              if (replayedResultPositions.has(userCountBefore)) return false;
+            }
             if (m.type === "user") {
               const mText = extractUserText(m.content);
               if (mText === "Execute the plan." && session?.planContent) {

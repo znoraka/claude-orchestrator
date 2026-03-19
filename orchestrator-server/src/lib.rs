@@ -4,7 +4,7 @@ use axum::{
     extract::{ConnectInfo, State, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
-    Router,
+    Json, Router,
 };
 use orchestrator_core::{commands, ServerConfig, ServerState};
 use std::net::SocketAddr;
@@ -20,6 +20,10 @@ pub struct AppState {
     pub server: Arc<ServerState>,
     pub event_tx: broadcast::Sender<orchestrator_core::ServerEvent>,
     pub external_access: Arc<AtomicBool>,
+}
+
+async fn health_route() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "status": "ok" }))
 }
 
 async fn ws_route(
@@ -100,12 +104,14 @@ pub async fn start_server(
         let serve = ServeDir::new(dir).fallback(ServeFile::new(&index));
         Router::new()
             .route("/ws", get(ws_route))
+            .route("/health", get(health_route))
             .fallback_service(serve)
             .layer(cors)
             .with_state(state.clone())
     } else {
         Router::new()
             .route("/ws", get(ws_route))
+            .route("/health", get(health_route))
             .layer(cors)
             .with_state(state.clone())
     };

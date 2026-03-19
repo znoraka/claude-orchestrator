@@ -246,13 +246,17 @@ impl AgentManager {
                 }
             }
 
-            // Process exited — remove session and capture exit code
+            // Process exited — remove session and capture exit code.
+            // IMPORTANT: take the session out of the map quickly and drop the
+            // lock BEFORE calling child.wait().  wait() can block if the process
+            // group hasn't fully exited yet, and holding the lock during that
+            // time prevents send_message / other operations from proceeding.
+            let removed = sessions_clone.lock().ok()
+                .and_then(|mut s| s.remove(&sid_clone));
             let mut exit_code: Option<i32> = None;
-            if let Ok(mut sessions) = sessions_clone.lock() {
-                if let Some(mut session) = sessions.remove(&sid_clone) {
-                    if let Ok(status) = session.child.wait() {
-                        exit_code = status.code();
-                    }
+            if let Some(mut session) = removed {
+                if let Ok(status) = session.child.wait() {
+                    exit_code = status.code();
                 }
             }
             let code = exit_code.unwrap_or(-1);

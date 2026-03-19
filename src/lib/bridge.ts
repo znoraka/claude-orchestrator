@@ -60,16 +60,30 @@ type EventHandler = (event: TauriEvent) => void;
 type ConnectionState = "connecting" | "connected" | "disconnected";
 type ConnectionStateHandler = (state: ConnectionState) => void;
 
+/** Default timeout for RPC requests (ms). */
+const RPC_TIMEOUT_MS = 30_000;
+
+/** Max backoff delay between reconnect attempts (ms). */
+const MAX_BACKOFF_MS = 10_000;
+
+/** How often to ping the server to detect dead connections (ms). */
+const HEARTBEAT_INTERVAL_MS = 20_000;
+
+/** Timeout for health-check pings (ms). */
+const HEARTBEAT_TIMEOUT_MS = 5_000;
+
 class BrowserBridge {
   private ws: WebSocket | null = null;
   private pending = new Map<string, PendingRequest>();
   private listeners = new Map<string, Set<EventHandler>>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private seq = 0;
   private _connectionState: ConnectionState = "connecting";
   private _connectionListeners = new Set<ConnectionStateHandler>();
   private _failCount = 0;
   private retryQueue: RetryEntry[] = [];
+  private _wasConnected = false;
 
   constructor() {
     this.connect();
@@ -109,8 +123,14 @@ class BrowserBridge {
 
     ws.addEventListener("open", () => {
       console.log("[bridge] Connected");
+      const wasReconnect = this._wasConnected;
+      this._wasConnected = true;
       this._failCount = 0;
       this.setConnectionState("connected");
+      // Start a periodic health-check so we detect a crashed server even when
+      // the UI is idle (TCP keepalive can take minutes to surface a dead conn).
+      if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = setInterval(() => this.heartbeat(), HEARTBEAT_INTERVAL_MS);
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
@@ -120,6 +140,17 @@ class BrowserBridge {
       const queue = this.retryQueue.splice(0);
       for (const entry of queue) {
         this.invoke(entry.method, entry.params).then(entry.resolve, entry.reject);
+      }
+      // On reconnect, emit a synthetic event so components can re-sync state
+      // they may have missed while disconnected.
+      if (wasReconnect) {
+        const handlers = this.listeners.get("bridge-reconnected");
+        if (handlers) {
+          const evt: TauriEvent = { payload: null, event: "bridge-reconnected", id: 0 };
+          for (const h of handlers) {
+            try { h(evt); } catch {}
+          }
+        }
       }
     });
 
@@ -133,6 +164,7 @@ class BrowserBridge {
 
     ws.addEventListener("close", () => {
       console.warn("[bridge] Connection closed, reconnecting...");
+      if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
       this._failCount++;
       this.setConnectionState("disconnected");
 
@@ -155,12 +187,34 @@ class BrowserBridge {
         return;
       }
 
-      this.reconnectTimer = setTimeout(() => this.connect(), 1000);
+      // Exponential backoff with jitter: 500ms, 1s, 2s, 4s … capped at MAX_BACKOFF_MS
+      const base = Math.min(500 * Math.pow(2, this._failCount - 1), MAX_BACKOFF_MS);
+      const jitter = base * 0.3 * Math.random(); // up to 30% jitter
+      const delay = Math.round(base + jitter);
+      console.log(`[bridge] Reconnecting in ${delay}ms (attempt ${this._failCount})`);
+      this.reconnectTimer = setTimeout(() => this.connect(), delay);
     });
 
     ws.addEventListener("error", (e) => {
       console.error("[bridge] WebSocket error:", e);
     });
+  }
+
+  private heartbeat() {
+    if (this._connectionState !== "connected") return;
+    const port = getInjectedPort();
+    const url = port
+      ? `http://localhost:${port}/health`
+      : `${window.location.protocol}//${window.location.host}/health`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HEARTBEAT_TIMEOUT_MS);
+    fetch(url, { signal: controller.signal })
+      .then((r) => { clearTimeout(timer); if (!r.ok) throw new Error("health"); })
+      .catch(() => {
+        clearTimeout(timer);
+        console.warn("[bridge] Heartbeat failed, closing connection");
+        this.ws?.close();
+      });
   }
 
   private handleMessage(msg: Record<string, unknown>) {
@@ -208,7 +262,7 @@ class BrowserBridge {
     }
   }
 
-  invoke<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  invoke<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         // Queue for retry when the connection opens.  The "open" handler
@@ -223,9 +277,26 @@ class BrowserBridge {
       }
 
       const id = String(++this.seq);
+
+      // Timeout: if the server doesn't respond in time, assume the connection is
+      // dead (e.g. server crashed).  Close the socket so the reconnect loop
+      // kicks in, and move the request to the retry queue so it is replayed
+      // once the connection is re-established.
+      const timeout = timeoutMs ?? RPC_TIMEOUT_MS;
+      const timer = setTimeout(() => {
+        if (this.pending.has(id)) {
+          const req = this.pending.get(id)!;
+          this.pending.delete(id);
+          // Re-queue for retry on reconnect rather than rejecting immediately.
+          this.retryQueue.push({ method: req.method!, params: req.params!, resolve: req.resolve, reject: req.reject });
+          // Force-close the socket so the reconnect loop fires.
+          this.ws?.close();
+        }
+      }, timeout);
+
       this.pending.set(id, {
-        resolve: resolve as (value: unknown) => void,
-        reject,
+        resolve: (value: unknown) => { clearTimeout(timer); resolve(value as T); },
+        reject: (reason: unknown) => { clearTimeout(timer); reject(reason); },
         method,
         params,
       });
