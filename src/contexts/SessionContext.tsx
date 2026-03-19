@@ -695,9 +695,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // If no claudeSessionId exists (e.g. cleared after worktree deletion),
-      // generate a fresh one so this new session can be resumed later.
-      const claudeSessionId = session.claudeSessionId ?? uuidv4();
       const isResume = !!session.claudeSessionId;
 
       dispatch({
@@ -708,7 +705,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           lastActiveAt: Date.now(),
           lastMessageAt: Date.now(),
           exitCode: undefined,
-          ...(!session.claudeSessionId ? { claudeSessionId } : {}),
         },
       });
       // Always resolve to root so sidebar never shows a child as top-level
@@ -723,7 +719,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         await invoke("create_agent_session", {
           sessionId: id,
           directory: spawnDir,
-          claudeSessionId,
+          claudeSessionId: session.claudeSessionId || null,
           resume: isResume,
           systemPrompt: null,
           provider: session.provider || "claude-code",
@@ -747,7 +743,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const updateClaudeSessionId = useCallback((id: string, claudeSessionId: string) => {
     dispatch({ type: "UPDATE", id, patch: { claudeSessionId } });
-  }, []);
+    // Save immediately so the real Claude session ID persists even if the app
+    // restarts within the normal 2-second debounce window.
+    setTimeout(() => saveSessionsImmediately(), 0);
+  }, [saveSessionsImmediately]);
 
   const createWorktree = useCallback(
     async (repoDir: string, branchName: string, wtName?: string) => {

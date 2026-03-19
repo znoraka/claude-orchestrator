@@ -3930,6 +3930,29 @@ fn set_dock_badge(label: Option<String>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Write panics to ~/.claude/orchestrator-crash.log so crashes are visible
+    // even when the app is launched from Finder (where stderr is not visible).
+    let crash_log = std::env::var("HOME").ok()
+        .map(|h| std::path::PathBuf::from(h).join(".claude").join("orchestrator-crash.log"));
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info.to_string();
+        eprintln!("[PANIC] {}", msg);
+        if let Some(ref path) = crash_log {
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    writeln!(f, "=== PANIC at unix:{ts} ===\n{msg}\n")
+                });
+        }
+    }));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -4037,7 +4060,24 @@ pub fn run() {
                             });
                         }));
                         if let Err(e) = result {
-                            eprintln!("[tauri] Orchestrator server panicked: {:?}. Restarting in 1s...", e);
+                            let msg = format!("[tauri] Orchestrator server panicked: {:?}. Restarting in 1s...", e);
+                            eprintln!("{}", msg);
+                            // Also append to crash log
+                            if let Ok(home) = std::env::var("HOME") {
+                                let path = std::path::PathBuf::from(home).join(".claude").join("orchestrator-crash.log");
+                                let _ = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(path)
+                                    .and_then(|mut f| {
+                                        use std::io::Write;
+                                        let ts = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_secs();
+                                        writeln!(f, "=== SERVER CRASH at unix:{ts} ===\n{msg}\n")
+                                    });
+                            }
                             std::thread::sleep(std::time::Duration::from_secs(1));
                         } else {
                             break; // normal exit (shouldn't happen due to pending())

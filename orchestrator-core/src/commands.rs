@@ -898,7 +898,7 @@ fn get_cached_conversation_lines(
         .map_err(|e| format!("Failed to get mtime: {}", e))?;
 
     {
-        let guard = cache.lock().unwrap();
+        let guard = cache.lock().map_err(|e| format!("Cache lock error: {}", e))?;
         if let Some(entry) = guard.conversation.get(jsonl_path) {
             if entry.mtime == mtime {
                 return Ok(entry.lines.clone());
@@ -906,7 +906,7 @@ fn get_cached_conversation_lines(
         }
     }
 
-    let guard = cache.lock().unwrap();
+    let guard = cache.lock().map_err(|e| format!("Cache lock error: {}", e))?;
     let existing_offset = guard.conversation.get(jsonl_path)
         .filter(|e| e.mtime == mtime)
         .map(|e| e.byte_offset);
@@ -936,7 +936,7 @@ fn get_cached_conversation_lines(
 
     let result = existing_lines.clone();
 
-    let mut guard = cache.lock().unwrap();
+    let mut guard = cache.lock().map_err(|e| format!("Cache lock error: {}", e))?;
     guard.conversation.insert(jsonl_path.to_path_buf(), ConversationCacheEntry {
         byte_offset: new_offset,
         mtime,
@@ -2128,22 +2128,24 @@ pub fn get_session_usage(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // Check in-memory cache first; fall back to SQLite cache on a cache miss
-    let (byte_offset, base_usage) = {
+    // Check in-memory cache first (acquire + release before touching any other lock)
+    let cache_hit = {
         let cache = state.jsonl_cache.lock().map_err(|e| e.to_string())?;
-        match cache.usage.get(&jsonl_path) {
-            Some(entry) => (entry.byte_offset, entry.value.clone()),
-            None => {
-                // Try loading from SQLite so we don't re-scan from byte 0
-                let db_conn = state.db.lock().map_err(|e| e.to_string())?;
-                match db::db_get_usage_cache(&db_conn, &jsonl_path_str) {
-                    Ok(Some((offset, usage, stored_mtime)))
-                        if stored_mtime == current_mtime || offset > 0 =>
-                    {
-                        (offset, usage)
-                    }
-                    _ => (0, SessionUsage::default()),
+        cache.usage.get(&jsonl_path).map(|entry| (entry.byte_offset, entry.value.clone()))
+    };
+
+    // Fall back to SQLite cache on a cache miss (no nested lock now)
+    let (byte_offset, base_usage) = match cache_hit {
+        Some(hit) => hit,
+        None => {
+            let db_conn = state.db.lock().map_err(|e| e.to_string())?;
+            match db::db_get_usage_cache(&db_conn, &jsonl_path_str) {
+                Ok(Some((offset, usage, stored_mtime)))
+                    if stored_mtime == current_mtime || offset > 0 =>
+                {
+                    (offset, usage)
                 }
+                _ => (0, SessionUsage::default()),
             }
         }
     };
@@ -2618,16 +2620,19 @@ pub async fn search_project_files(directory: String, query: String, state: Arc<S
 
     const CACHE_TTL_SECS: u64 = 30;
 
-    let cached = {
-        let cache = state.file_list_cache.lock().map_err(|e| e.to_string())?;
-        cache.entries.get(&directory).and_then(|(cached_at, cached_files)| {
+    // Check cache on the blocking pool to avoid holding std::sync::Mutex on async runtime
+    let state_c = state.clone();
+    let dir_c = directory.clone();
+    let cached = tokio::task::spawn_blocking(move || {
+        let cache = state_c.file_list_cache.lock().map_err(|e| e.to_string())?;
+        Ok::<_, String>(cache.entries.get(&dir_c).and_then(|(cached_at, cached_files)| {
             if cached_at.elapsed().as_secs() < CACHE_TTL_SECS {
                 Some(cached_files.clone())
             } else {
                 None
             }
-        })
-    };
+        }))
+    }).await.map_err(|e| e.to_string())??;
 
     let files: Vec<String> = if let Some(files) = cached {
         files
@@ -2636,8 +2641,15 @@ pub async fn search_project_files(directory: String, query: String, state: Arc<S
         let files = tokio::task::spawn_blocking(move || list_project_files(&dir))
             .await
             .map_err(|e| e.to_string())?;
-        let mut cache = state.file_list_cache.lock().map_err(|e| e.to_string())?;
-        cache.entries.insert(directory.clone(), (Instant::now(), files.clone()));
+        // Update cache on the blocking pool
+        let state_c = state.clone();
+        let dir_c = directory.clone();
+        let files_c = files.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Ok(mut cache) = state_c.file_list_cache.lock() {
+                cache.entries.insert(dir_c, (Instant::now(), files_c));
+            }
+        }).await.map_err(|e| e.to_string())?;
         files
     };
 

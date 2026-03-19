@@ -247,15 +247,28 @@ async fn dispatch(text: &str, state: &AppState) -> String {
         };
     }
 
+    // Run a sync command on the blocking thread pool so std::sync::Mutex locks
+    // and file I/O don't starve the tokio async runtime.
+    macro_rules! blocking {
+        ($id:expr, $s:expr, |$state:ident| $body:expr) => {{
+            let $state = Arc::clone($s);
+            let id_owned = $id.clone();
+            match tokio::task::spawn_blocking(move || $body).await {
+                Ok(result) => respond(&id_owned, result),
+                Err(e) => err_response(&id_owned, format!("Task panicked: {}", e)),
+            }
+        }};
+    }
+
     match req.method.as_str() {
         // ── Sessions ──────────────────────────────────────────────────────
         "load_sessions" => {
-            respond(&id, commands::load_sessions(s))
+            blocking!(&id, s, |s| commands::load_sessions(&s))
         }
         "load_sessions_paged" => {
             let limit = p.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let offset = p.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            respond(&id, commands::load_sessions_paged(limit, offset, s))
+            blocking!(&id, s, |s| commands::load_sessions_paged(limit, offset, &s))
         }
         "save_sessions" => {
             let sessions: Vec<orchestrator_core::SessionMeta> =
@@ -263,30 +276,33 @@ async fn dispatch(text: &str, state: &AppState) -> String {
                     Ok(v) => v,
                     Err(e) => return err_response(&id, e.to_string()),
                 };
-            respond(&id, commands::save_sessions(sessions, s))
+            blocking!(&id, s, |s| commands::save_sessions(sessions, &s))
         }
 
         // ── PTY ───────────────────────────────────────────────────────────
         "write_to_pty" => {
-            respond(&id, commands::write_to_pty(str_field!(p, "sessionId"), str_field!(p, "data"), s))
+            let session_id = str_field!(p, "sessionId");
+            let data = str_field!(p, "data");
+            blocking!(&id, s, |s| commands::write_to_pty(session_id, data, &s))
         }
         "resize_pty" => {
+            let session_id = str_field!(p, "sessionId");
             let cols = p.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
             let rows = p.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
-            respond(&id, commands::resize_pty(str_field!(p, "sessionId"), cols, rows, s))
+            blocking!(&id, s, |s| commands::resize_pty(session_id, cols, rows, &s))
         }
         "create_shell_pty_session" => {
-            respond(&id, commands::create_shell_pty_session(
-                str_field!(p, "sessionId"),
-                str_field!(p, "directory"),
-                s,
-            ))
+            let session_id = str_field!(p, "sessionId");
+            let directory = str_field!(p, "directory");
+            blocking!(&id, s, |s| commands::create_shell_pty_session(session_id, directory, &s))
         }
         "pty_has_child_process" => {
-            respond(&id, commands::pty_has_child_process(str_field!(p, "sessionId"), s))
+            let session_id = str_field!(p, "sessionId");
+            blocking!(&id, s, |s| commands::pty_has_child_process(session_id, &s))
         }
         "get_pty_scrollback" => {
-            respond(&id, commands::get_pty_scrollback(str_field!(p, "sessionId"), s))
+            let session_id = str_field!(p, "sessionId");
+            blocking!(&id, s, |s| commands::get_pty_scrollback(session_id, &s))
         }
 
         // ── Agent ─────────────────────────────────────────────────────────
@@ -309,22 +325,29 @@ async fn dispatch(text: &str, state: &AppState) -> String {
             }
         }
         "send_agent_message" => {
-            respond(&id, commands::send_agent_message(str_field!(p, "sessionId"), str_field!(p, "message"), s))
+            let session_id = str_field!(p, "sessionId");
+            let message = str_field!(p, "message");
+            blocking!(&id, s, |s| commands::send_agent_message(session_id, message, &s))
         }
         "abort_agent" => {
-            respond(&id, commands::abort_agent(str_field!(p, "sessionId"), s))
+            let session_id = str_field!(p, "sessionId");
+            blocking!(&id, s, |s| commands::abort_agent(session_id, &s))
         }
         "set_agent_cwd" => {
-            respond(&id, commands::set_agent_cwd(str_field!(p, "sessionId"), str_field!(p, "cwd"), s))
+            let session_id = str_field!(p, "sessionId");
+            let cwd = str_field!(p, "cwd");
+            blocking!(&id, s, |s| commands::set_agent_cwd(session_id, cwd, &s))
         }
         "destroy_agent_session" => {
-            respond(&id, commands::destroy_agent_session(str_field!(p, "sessionId"), s))
+            let session_id = str_field!(p, "sessionId");
+            blocking!(&id, s, |s| commands::destroy_agent_session(session_id, &s))
         }
         "get_agent_history" => {
-            respond(&id, commands::get_agent_history(str_field!(p, "sessionId"), s))
+            let session_id = str_field!(p, "sessionId");
+            blocking!(&id, s, |s| commands::get_agent_history(session_id, &s))
         }
         "get_busy_sessions" => {
-            respond(&id, commands::get_busy_sessions(s))
+            blocking!(&id, s, |s| commands::get_busy_sessions(&s))
         }
         "fetch_opencode_models" => {
             let state_clone = Arc::clone(s);
@@ -380,24 +403,20 @@ async fn dispatch(text: &str, state: &AppState) -> String {
 
         // ── Conversation / usage ──────────────────────────────────────────
         "get_conversation_title" => {
-            respond(&id, commands::get_conversation_title(
-                str_field!(p, "claudeSessionId"),
-                str_field!(p, "directory"),
-                s,
-            ))
+            let csid = str_field!(p, "claudeSessionId");
+            let dir = str_field!(p, "directory");
+            blocking!(&id, s, |s| commands::get_conversation_title(csid, dir, &s))
         }
         "get_opencode_session_title" => {
             respond(&id, commands::get_opencode_session_title(str_field!(p, "directory")))
         }
         "get_session_usage" => {
-            respond(&id, commands::get_session_usage(
-                str_field!(p, "claudeSessionId"),
-                str_field!(p, "directory"),
-                s,
-            ))
+            let csid = str_field!(p, "claudeSessionId");
+            let dir = str_field!(p, "directory");
+            blocking!(&id, s, |s| commands::get_session_usage(csid, dir, &s))
         }
         "get_total_usage_today" => {
-            respond(&id, commands::get_total_usage_today(s))
+            blocking!(&id, s, |s| commands::get_total_usage_today(&s))
         }
         "get_usage_dashboard" => {
             let days = p.get("days").and_then(|v| v.as_u64()).unwrap_or(30) as u32;
@@ -442,36 +461,26 @@ async fn dispatch(text: &str, state: &AppState) -> String {
             }
         }
         "get_conversation_jsonl" => {
-            respond(&id, commands::get_conversation_jsonl(
-                str_field!(p, "claudeSessionId"),
-                str_field!(p, "directory"),
-                s,
-            ))
+            let csid = str_field!(p, "claudeSessionId");
+            let dir = str_field!(p, "directory");
+            blocking!(&id, s, |s| commands::get_conversation_jsonl(csid, dir, &s))
         }
         "get_conversation_jsonl_tail" => {
+            let csid = str_field!(p, "claudeSessionId");
+            let dir = str_field!(p, "directory");
             let max_lines = p.get("maxLines").and_then(|v| v.as_u64()).unwrap_or(200) as usize;
-            respond(&id, commands::get_conversation_jsonl_tail(
-                str_field!(p, "claudeSessionId"),
-                str_field!(p, "directory"),
-                max_lines,
-                s,
-            ))
+            blocking!(&id, s, |s| commands::get_conversation_jsonl_tail(csid, dir, max_lines, &s))
         }
         "get_conversation_messages" => {
-            respond(&id, commands::get_conversation_messages(
-                str_field!(p, "claudeSessionId"),
-                str_field!(p, "directory"),
-                s,
-            ))
+            let csid = str_field!(p, "claudeSessionId");
+            let dir = str_field!(p, "directory");
+            blocking!(&id, s, |s| commands::get_conversation_messages(csid, dir, &s))
         }
         "get_conversation_messages_tail" => {
+            let csid = str_field!(p, "claudeSessionId");
+            let dir = str_field!(p, "directory");
             let max_messages = p.get("maxMessages").and_then(|v| v.as_u64()).unwrap_or(300) as usize;
-            respond(&id, commands::get_conversation_messages_tail(
-                str_field!(p, "claudeSessionId"),
-                str_field!(p, "directory"),
-                max_messages,
-                s,
-            ))
+            blocking!(&id, s, |s| commands::get_conversation_messages_tail(csid, dir, max_messages, &s))
         }
         "search_session_content" => {
             let sessions: Vec<commands::SearchableSession> =
@@ -479,21 +488,22 @@ async fn dispatch(text: &str, state: &AppState) -> String {
                     Ok(v) => v,
                     Err(e) => return err_response(&id, e.to_string()),
                 };
-            respond(&id, commands::search_session_content(sessions, str_field!(p, "query")))
+            let query = str_field!(p, "query");
+            let id_owned = id.clone();
+            match tokio::task::spawn_blocking(move || commands::search_session_content(sessions, query)).await {
+                Ok(result) => respond(&id_owned, result),
+                Err(e) => err_response(&id_owned, format!("Task panicked: {}", e)),
+            }
         }
         "watch_jsonl" => {
-            respond(&id, commands::watch_jsonl(
-                str_field!(p, "claudeSessionId"),
-                str_field!(p, "directory"),
-                s,
-            ))
+            let csid = str_field!(p, "claudeSessionId");
+            let dir = str_field!(p, "directory");
+            blocking!(&id, s, |s| commands::watch_jsonl(csid, dir, &s))
         }
         "unwatch_jsonl" => {
-            respond(&id, commands::unwatch_jsonl(
-                str_field!(p, "claudeSessionId"),
-                str_field!(p, "directory"),
-                s,
-            ))
+            let csid = str_field!(p, "claudeSessionId");
+            let dir = str_field!(p, "directory");
+            blocking!(&id, s, |s| commands::unwatch_jsonl(csid, dir, &s))
         }
 
         // ── Git ───────────────────────────────────────────────────────────
