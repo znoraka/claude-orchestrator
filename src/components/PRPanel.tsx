@@ -314,10 +314,11 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
     );
     const prSystemPrompt =
       `You are reviewing PR #${prNumber} (branch: ${headRefName}). ` +
+      `IMPORTANT: Do NOT post any review comments, approvals, or change requests to GitHub without explicit user confirmation first. Always show the review content and ask for consent before submitting. ` +
       `If the user asks you to make changes or implement something, you MUST first ask if they want to continue in a new worktree for this PR branch. ` +
       `Do NOT skip this question even if you have dangerous permissions. ` +
       `If they say yes, use the checkout_pr_worktree MCP tool with directory="${sessionDir}", pr_number=${prNumber}, branch="${headRefName}", then cd into the resulting path.`;
-    await createSession(`Review PR #${prNumber}`, sessionDir, skipPerms, prSystemPrompt, `Review PR #${prNumber}`);
+    await createSession(`Review PR #${prNumber}`, sessionDir, skipPerms, prSystemPrompt, `/review ${prNumber}`);
   }, [createSession, directory, sessions]);
 
   const handleReviewPR = useCallback((pr: PullRequest) => {
