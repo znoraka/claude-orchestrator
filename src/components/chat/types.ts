@@ -59,6 +59,7 @@ export interface ChatMessage {
   forkSessionId?: string;
   forkSessionName?: string;
   isParentMessage?: boolean;
+  questionAnswer?: Record<string, string>;
 }
 
 export interface ToolGroup {

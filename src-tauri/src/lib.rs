@@ -3963,10 +3963,17 @@ pub fn run() {
             // This WS server is the single backend for both the Tauri WebView
             // and any browser clients connecting to http://localhost:2420.
             {
-                let data_dir = app
-                    .path()
-                    .app_data_dir()
-                    .expect("Failed to get app data dir");
+                let data_dir = {
+                    let base = app
+                        .path()
+                        .app_data_dir()
+                        .expect("Failed to get app data dir");
+                    if cfg!(debug_assertions) {
+                        base.join("dev")
+                    } else {
+                        base
+                    }
+                };
                 std::fs::create_dir_all(&data_dir).ok();
 
                 // Resolve resource scripts (same logic as below for Tauri commands)

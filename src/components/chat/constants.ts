@@ -4,7 +4,51 @@ export const TOOL_NAME_MAP: Record<string, string> = {
   read: "Read", write: "Write", edit: "Edit", bash: "Bash",
   glob: "Glob", grep: "Grep", websearch: "WebSearch", webfetch: "WebFetch",
   task: "Task", todowrite: "TodoWrite", lsp: "LSP", agent: "Agent",
+  skill: "Skill",
 };
+
+/** Parse an MCP tool name like "mcp__server__method" into parts */
+export function parseMcpToolName(raw: string): { server: string; method: string } | null {
+  if (!raw.startsWith("mcp__")) return null;
+  const rest = raw.slice(5);
+  const sep = rest.indexOf("__");
+  if (sep === -1) return null;
+  return { server: rest.slice(0, sep), method: rest.slice(sep + 2) };
+}
+
+/** Check if a tool_use block is a Skill invocation */
+export function isSkillTool(name: string): boolean {
+  return name === "Skill" || name === "skill";
+}
+
+/** Get display info for special tools (Skill, MCP) */
+export function getSpecialToolInfo(rawName: string, input?: Record<string, unknown>): {
+  kind: "skill" | "mcp" | null;
+  displayName: string;
+  detail: string;
+  color: string;
+} {
+  if (isSkillTool(rawName)) {
+    const skillName = (input?.skill as string) || "skill";
+    const args = input?.args as string | undefined;
+    return {
+      kind: "skill",
+      displayName: `/${skillName}`,
+      detail: args ? `/${skillName} ${args}` : `/${skillName}`,
+      color: "text-violet-400",
+    };
+  }
+  const mcp = parseMcpToolName(rawName);
+  if (mcp) {
+    return {
+      kind: "mcp",
+      displayName: mcp.method,
+      detail: `${mcp.server} → ${mcp.method}`,
+      color: "text-teal-400",
+    };
+  }
+  return { kind: null, displayName: rawName, detail: "", color: "" };
+}
 
 export const HIDDEN_TOOL_NAMES = new Set(["ToolSearch", "AskUserQuestion", "question"]);
 

@@ -7,6 +7,7 @@
  * Usage: node agent-bridge-codex.bundle.mjs '{"sessionId":"...","cwd":"..."}'
  */
 import { Codex } from "@openai/codex-sdk";
+import { execFileSync } from "node:child_process";
 import {
   emit,
   createLogger,
@@ -158,10 +159,22 @@ function getThreadOptions() {
   return opts;
 }
 
+function resolveCodexBinary() {
+  const cmd = process.platform === "win32" ? "where" : "which";
+  try {
+    const result = execFileSync(cmd, ["codex"], { encoding: "utf8" }).trim();
+    const first = result.split("\n")[0].trim();
+    if (first) return first;
+  } catch {}
+  return null;
+}
+
 function boot() {
   log(`Booting Codex SDK (cwd=${state.currentCwd})`);
   try {
-    codex = new Codex();
+    const codexBinaryPath = resolveCodexBinary();
+    if (codexBinaryPath) log(`Using codex binary: ${codexBinaryPath}`);
+    codex = new Codex(codexBinaryPath ? { codexPathOverride: codexBinaryPath } : {});
     log("Codex SDK initialized successfully");
   } catch (err) {
     log(`Failed to initialize Codex SDK: ${err.message}\n${err.stack}`);

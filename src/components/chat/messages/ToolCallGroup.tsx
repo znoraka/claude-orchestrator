@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import type { ToolsSegmentItem } from "../types";
 import { ToolRow } from "./ToolRow";
-import { canonicalToolName, getToolColor } from "../constants";
+import { canonicalToolName, getToolColor, getSpecialToolInfo } from "../constants";
 
 
 interface ToolCallGroupProps {
@@ -51,21 +51,31 @@ export function ToolCallGroup({ items, isLastMessage, toolStates, onToggle }: To
           </svg>
           <span className="text-xs flex-1 text-left flex items-center gap-1.5 flex-wrap">
             {(() => {
-              const counts: Record<string, number> = {};
+              const counts: Record<string, { n: number; color: string; displayName: string }> = {};
               for (const item of items) {
                 if (item.type === "tool") {
-                  const name = canonicalToolName(item.group.toolUse.name || "Unknown");
-                  counts[name] = (counts[name] ?? 0) + 1;
+                  const rawName = item.group.toolUse.name || "Unknown";
+                  const special = getSpecialToolInfo(rawName, item.group.toolUse.input as Record<string, unknown>);
+                  if (special.kind !== null) {
+                    const key = special.kind === "skill" ? special.displayName : `mcp:${special.displayName}`;
+                    if (!counts[key]) counts[key] = { n: 0, color: special.color, displayName: special.displayName };
+                    counts[key].n += 1;
+                  } else {
+                    const name = canonicalToolName(rawName);
+                    if (!counts[name]) counts[name] = { n: 0, color: getToolColor(name), displayName: name };
+                    counts[name].n += 1;
+                  }
                 } else if (item.type === "thinking") {
-                  counts["Thinking"] = (counts["Thinking"] ?? 0) + 1;
+                  if (!counts["Thinking"]) counts["Thinking"] = { n: 0, color: "text-[var(--text-secondary)]", displayName: "Thinking" };
+                  counts["Thinking"].n += 1;
                 }
               }
-              const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-              return entries.map(([name, n], i) => (
-                <span key={name} className="flex items-center gap-0.5">
+              const entries = Object.entries(counts).sort((a, b) => b[1].n - a[1].n);
+              return entries.map(([key, { n, color, displayName }], i) => (
+                <span key={key} className="flex items-center gap-0.5">
                   {i > 0 && <span className="text-[var(--text-tertiary)] mr-1">·</span>}
                   <span className="text-[var(--text-tertiary)]">{n}×</span>
-                  <span className={`${name === "Thinking" ? "text-[var(--text-secondary)]" : getToolColor(name)} font-medium`}>{name}</span>
+                  <span className={`${color} font-medium max-w-[8rem] truncate inline-block align-bottom`} title={displayName}>{displayName}</span>
                 </span>
               ));
             })()}

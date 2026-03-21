@@ -825,7 +825,7 @@ const AgentChat = memo(function AgentChat({
   const answerQuestion = useCallback(async (answer: Record<string, string>) => {
     onQuestionChangeRef.current?.(false); setPendingQuestion(null);
     const displayText = Object.values(answer).join("\n");
-    setMessages((prev) => [...prev, { id: `user-${Date.now()}`, type: "user", content: [{ type: "text", text: displayText }], timestamp: Date.now() }]);
+    setMessages((prev) => [...prev, { id: `user-${Date.now()}`, type: "user", content: [{ type: "text", text: displayText }], timestamp: Date.now(), questionAnswer: answer }]);
 
     // If the bridge is alive, send immediately
     if (sessionRef.current?.status === "running" || sessionRef.current?.status === "starting") {

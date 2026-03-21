@@ -104,6 +104,14 @@ export function ChatInput({
 
   const canSend = !!(inputText.trim() || images.length > 0 || fileReferences.length > 0 || pastedFiles.length > 0);
 
+  // Auto-resize textarea when inputText changes (handles paste, edit, programmatic changes)
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [inputText]);
+
   // Report height changes
   useEffect(() => {
     const el = inputAreaRef.current;

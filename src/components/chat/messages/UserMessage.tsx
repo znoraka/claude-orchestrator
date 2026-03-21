@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { CheckIcon } from "lucide-react";
 import type { ChatMessage, ContentBlock } from "../types";
 import { ContentBlockView } from "./shared/ContentBlockView";
 import { InlinePlanBlock } from "./shared/InlinePlanBlock";
@@ -12,10 +13,11 @@ interface UserMessageProps {
   onCopy?: (messageId: string) => void;
   planContent?: string;
   skillName?: string;
+  skillDetail?: string;
   isNew?: boolean;
 }
 
-export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planContent, skillName, isNew }: UserMessageProps) {
+export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planContent, skillName, skillDetail, isNew }: UserMessageProps) {
   const [copied, setCopied] = useState(false);
 
   const content = Array.isArray(message.content)
@@ -27,16 +29,10 @@ export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planCont
   const visible = content.filter((b) => b.type !== "tool_result");
   if (visible.length === 0) return null;
 
-  if (skillName) {
-    return (
-      <div className="flex justify-end">
-        <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs text-[var(--text-tertiary)] bg-[var(--bg-tertiary)] border border-[var(--border-color)]">
-          <svg className="w-3 h-3 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-          <span className="font-medium">{`/${skillName}`}</span>
-        </div>
-      </div>
-    );
-  }
+  // When the message is just a /command, only show the badge — no bubble
+  const isSlashOnly = skillName && visible.every(b =>
+    b.type !== "text" || (b.text?.match(/^\/[a-zA-Z][\w-]*(\s.*)?$/) != null)
+  ) && !visible.some(b => b.type === "image");
 
   const hasPlan = planContent && visible.some(b => {
     if (b.type !== "text" || !b.text) return false;
@@ -51,66 +47,88 @@ export function UserMessage({ message, onEdit, onFork, onRetry, onCopy, planCont
 
   return (
     <div className={`flex flex-col items-end gap-1${isNew ? " animate-message-enter" : ""}`}>
-      <div className="group flex justify-end items-end gap-1 w-full">
-        {/* Hover action buttons */}
-        <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-0.5 mb-1">
-          {onRetry && (
-            <button onClick={() => onRetry(message.id)} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]" title="Retry from here">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2v6h-6" /><path d="M3 12a9 9 0 0 1 15-6.7L21 8" /><path d="M3 22v-6h6" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" /></svg>
-            </button>
-          )}
-          {onFork && (
-            <button onClick={() => onFork(message.id)} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]" title="Fork conversation from here">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17L17 7" /><path d="M7 7h10v10" /></svg>
-            </button>
-          )}
-          {onEdit && (
-            <button onClick={() => onEdit(message.id)} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]" title="Edit & resend">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
-            </button>
-          )}
-          {onCopy && (
-            <button onClick={() => { onCopy(message.id); setCopied(true); setTimeout(() => setCopied(false), 1500); }} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]" title="Copy message">
-              {copied ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg> : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>}
-            </button>
-          )}
+      {skillName && (
+        <div className="flex justify-end">
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs text-[var(--text-tertiary)] bg-[var(--bg-tertiary)] border border-[var(--border-color)]">
+            <svg className="w-3 h-3 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+            <span className="font-medium">{skillDetail || `/${skillName}`}</span>
+          </div>
         </div>
+      )}
+      {!isSlashOnly && (
+        <div className="group flex justify-end items-end gap-1 w-full">
+          {/* Hover action buttons */}
+          <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-0.5 mb-1">
+            {onRetry && (
+              <button onClick={() => onRetry(message.id)} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]" title="Retry from here">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2v6h-6" /><path d="M3 12a9 9 0 0 1 15-6.7L21 8" /><path d="M3 22v-6h6" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" /></svg>
+              </button>
+            )}
+            {onFork && (
+              <button onClick={() => onFork(message.id)} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]" title="Fork conversation from here">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17L17 7" /><path d="M7 7h10v10" /></svg>
+              </button>
+            )}
+            {onEdit && (
+              <button onClick={() => onEdit(message.id)} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]" title="Edit & resend">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+              </button>
+            )}
+            {onCopy && (
+              <button onClick={() => { onCopy(message.id); setCopied(true); setTimeout(() => setCopied(false), 1500); }} className="p-1 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]" title="Copy message">
+                {copied ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg> : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>}
+              </button>
+            )}
+          </div>
 
-        {/* Right-aligned bubble */}
-        <div className="max-w-[85%] max-h-96 overflow-y-auto overflow-x-hidden break-words chat-bubble-user text-[var(--text-primary)] rounded-2xl rounded-br-sm px-4 py-3">
-          {(() => {
-            const imageBlocks = visible.filter(b => b.type === "image");
-            const nonImageBlocks = visible.filter(b => b.type !== "image");
-            return (
-              <>
-                {imageBlocks.length > 0 && (
-                  <div className="flex flex-wrap gap-2 mb-1">
-                    {imageBlocks.map((block, i) => <ContentBlockView key={`img-${i}`} block={block} />)}
+          {/* Right-aligned bubble */}
+          <div className="max-w-[85%] max-h-96 overflow-y-auto overflow-x-hidden break-words chat-bubble-user text-[var(--text-primary)] rounded-2xl rounded-br-sm px-4 py-3">
+            {message.questionAnswer ? (
+              <div className="space-y-2">
+                {Object.entries(message.questionAnswer).map(([question, answer], i) => (
+                  <div key={i}>
+                    <p className="text-[11px] font-medium text-[var(--text-tertiary)] mb-1">{question}</p>
+                    <span className="inline-flex items-center gap-1.5 text-sm font-medium">
+                      <CheckIcon className="size-3.5 text-[var(--accent)] shrink-0" />
+                      {answer}
+                    </span>
                   </div>
-                )}
-                {nonImageBlocks.map((block, i) => {
-                  if (hasPlan && block.type === "text" && block.text && block.text.length > 200) {
-                    return <ContentBlockView key={i} block={{ type: "text", text: "Execute the plan." }} />;
-                  }
-                  if (block.type === "text" && block.text?.startsWith("\u{1F4CE} ")) {
-                    return (
-                      <div key={i} className="flex flex-wrap gap-1.5 mb-2">
-                        {block.text.split("\n").map((line, j) => (
-                          <span key={j} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-[var(--accent)]/15 text-[var(--text-secondary)] border border-[var(--accent)]/20">
-                            <svg className="w-3 h-3 shrink-0 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" /></svg>
-                            {line.replace(/^\u{1F4CE}\s*/u, "")}
-                          </span>
-                        ))}
-                      </div>
-                    );
-                  }
-                  return <ContentBlockView key={i} block={block} />;
-                })}
-              </>
-            );
-          })()}
+                ))}
+              </div>
+            ) : (() => {
+              const imageBlocks = visible.filter(b => b.type === "image");
+              const nonImageBlocks = visible.filter(b => b.type !== "image");
+              return (
+                <>
+                  {imageBlocks.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-1">
+                      {imageBlocks.map((block, i) => <ContentBlockView key={`img-${i}`} block={block} />)}
+                    </div>
+                  )}
+                  {nonImageBlocks.map((block, i) => {
+                    if (hasPlan && block.type === "text" && block.text && block.text.length > 200) {
+                      return <ContentBlockView key={i} block={{ type: "text", text: "Execute the plan." }} />;
+                    }
+                    if (block.type === "text" && block.text?.startsWith("\u{1F4CE} ")) {
+                      return (
+                        <div key={i} className="flex flex-wrap gap-1.5 mb-2">
+                          {block.text.split("\n").map((line, j) => (
+                            <span key={j} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-[var(--accent)]/15 text-[var(--text-secondary)] border border-[var(--accent)]/20">
+                              <svg className="w-3 h-3 shrink-0 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" /></svg>
+                              {line.replace(/^\u{1F4CE}\s*/u, "")}
+                            </span>
+                          ))}
+                        </div>
+                      );
+                    }
+                    return <ContentBlockView key={i} block={block} />;
+                  })}
+                </>
+              );
+            })()}
+          </div>
         </div>
-      </div>
+      )}
       {hasPlan && planContent && <InlinePlanBlock planMarkdown={planContent} />}
     </div>
   );
