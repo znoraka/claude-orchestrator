@@ -259,7 +259,9 @@ impl AgentManager {
                     exit_code = status.code();
                 }
             }
-            let code = exit_code.unwrap_or(-1);
+            // None means the session was already removed (intentional destroy_session kill)
+            // or the process was killed by a signal — treat both as clean exit (0).
+            let code = exit_code.unwrap_or(0);
             // Ensure busy state is cleared on exit (handles crashes/kills)
             let was_busy = busy_sessions_clone.lock()
                 .map(|mut s| s.remove(&sid_clone))

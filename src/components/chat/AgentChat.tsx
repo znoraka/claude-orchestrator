@@ -137,6 +137,9 @@ const AgentChat = memo(function AgentChat({
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const inputAreaRef = useRef<HTMLDivElement>(null);
+  const inputHistoryRef = useRef<string[]>([]);
+  const historyIndexRef = useRef<number>(-1);
+  const savedInputRef = useRef<string>("");
   const pillRowRef = useRef<HTMLDivElement>(null);
   const modelSearchRef = useRef<HTMLInputElement>(null);
 
@@ -204,8 +207,9 @@ const AgentChat = memo(function AgentChat({
     if (!inputText && inputRef.current) inputRef.current.style.height = "auto";
   }, [inputText]);
 
-  // Auto-focus when typing anywhere
+  // Auto-focus when typing anywhere (only for the active session)
   useEffect(() => {
+    if (!isActive) return;
     const handler = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.key.length !== 1 || inputRef.current === document.activeElement ||
         (e.target instanceof HTMLElement && (e.target.isContentEditable || e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA"))) return;
@@ -213,7 +217,7 @@ const AgentChat = memo(function AgentChat({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [isActive]);
 
   // Cmd+O to open file picker
   useEffect(() => {
@@ -225,11 +229,20 @@ const AgentChat = memo(function AgentChat({
     return () => document.removeEventListener("keydown", handler);
   }, [isActive]);
 
-  // Focus on active
+  // Focus on active — retry briefly in case the input hasn't mounted yet
   useEffect(() => {
     if (!isActive) return;
-    const id = setTimeout(() => inputRef.current?.focus(), 50);
-    return () => clearTimeout(id);
+    let attempts = 0;
+    const tryFocus = () => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+      } else if (attempts < 10) {
+        attempts++;
+        id = requestAnimationFrame(tryFocus);
+      }
+    };
+    let id = requestAnimationFrame(tryFocus);
+    return () => cancelAnimationFrame(id);
   }, [isActive]);
 
   const addFileReference = useCallback((ref: FileReference) => {
@@ -610,6 +623,11 @@ const AgentChat = memo(function AgentChat({
     const activePastedFiles = overridePastedFiles ?? pastedFiles;
     const text = (overrideText ?? inputText).trim();
     if (!text && activeImages.length === 0 && activePastedFiles.length === 0) return;
+    if (text) {
+      inputHistoryRef.current.push(text);
+      historyIndexRef.current = -1;
+      savedInputRef.current = "";
+    }
 
     // If plan is pending, route as plan feedback (deny + resend)
     if (pendingPermission?.toolName === "ExitPlanMode" && text && !editingMessageId) {
@@ -949,7 +967,36 @@ const AgentChat = memo(function AgentChat({
     if (e.key === "Tab") { e.preventDefault(); return; }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
     if (e.key === "Escape" && isGenerating) { e.preventDefault(); handleAbort(); }
-  }, [sendMessage, isGenerating, handleAbort, showSlashMenu, filteredSlashCommands, slashMenuIndex, selectSlashCommand, showFileMenu, fileSuggestions, fileMenuIndex, selectFile, setFileSuggestions, setFileMenuIndex, setSlashMenuIndex, setInputText]);
+    if (e.key === "ArrowUp") {
+      const textarea = inputRef.current;
+      if (textarea) {
+        const beforeCursor = textarea.value.substring(0, textarea.selectionStart);
+        if (!beforeCursor.includes("\n")) {
+          const history = inputHistoryRef.current;
+          if (history.length === 0) return;
+          e.preventDefault();
+          if (historyIndexRef.current === -1) savedInputRef.current = inputText;
+          const newIndex = historyIndexRef.current === -1 ? history.length - 1 : Math.max(0, historyIndexRef.current - 1);
+          historyIndexRef.current = newIndex;
+          setInputText(history[newIndex]);
+          return;
+        }
+      }
+    }
+    if (e.key === "ArrowDown" && historyIndexRef.current !== -1) {
+      e.preventDefault();
+      const history = inputHistoryRef.current;
+      const newIndex = historyIndexRef.current + 1;
+      if (newIndex >= history.length) {
+        historyIndexRef.current = -1;
+        setInputText(savedInputRef.current);
+      } else {
+        historyIndexRef.current = newIndex;
+        setInputText(history[newIndex]);
+      }
+      return;
+    }
+  }, [sendMessage, isGenerating, handleAbort, showSlashMenu, filteredSlashCommands, slashMenuIndex, selectSlashCommand, showFileMenu, fileSuggestions, fileMenuIndex, selectFile, setFileSuggestions, setFileMenuIndex, setSlashMenuIndex, setInputText, inputText]);
 
   // Auto-scroll
   useEffect(() => {

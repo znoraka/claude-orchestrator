@@ -94,7 +94,7 @@ export function ToolRow({ group, isLastMessage, isLastTool: _isLastTool, toolSta
                 {specialInfo.kind === "mcp" && (
                   <div className="text-[var(--text-tertiary)] mt-0.5 font-mono text-[10px]">{rawToolName}</div>
                 )}
-                {specialInfo.kind === "skill" && (input as Record<string, unknown>).args && (
+                {specialInfo.kind === "skill" && !!(input as Record<string, unknown>).args && (
                   <div className="text-[var(--text-tertiary)] mt-0.5 font-mono text-[10px]">args: {String((input as Record<string, unknown>).args)}</div>
                 )}
               </div>

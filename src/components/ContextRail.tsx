@@ -113,6 +113,19 @@ const ContextRail = memo(function ContextRail({
     return () => document.removeEventListener("mousedown", handler);
   }, [branchPickerOpen]);
 
+  // Reset all git state when directory changes so we never show stale data from another workspace
+  useEffect(() => {
+    setGitFiles([]);
+    setGitBranch("");
+    setGitLoading(true);
+    setDiffCache(new Map());
+    setStatCache(new Map());
+    setExpandedKey(null);
+    setLoadingKey(null);
+    setUntrackedFile(null);
+    setProvidedDiffView(null);
+  }, [directory]);
+
   useEffect(() => {
     if (activeTab !== "git" || !directory) return;
     let cancelled = false;
@@ -124,8 +137,8 @@ const ContextRail = memo(function ContextRail({
         if (cancelled) return;
         setGitBranch(result.branch);
         setGitFiles(result.files);
-      } catch {
-        // ignore
+      } catch (e) {
+        console.warn("[ContextRail] git status failed for", directory, e);
       } finally {
         if (!cancelled) setGitLoading(false);
       }
