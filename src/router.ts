@@ -25,14 +25,9 @@ export const prsRoute = createRoute({
   path: "/prs",
 });
 
-export const shellRoute = createRoute({
-  getParentRoute: () => sessionRoute,
-  path: "/shell",
-});
-
 const routeTree = rootRoute.addChildren([
   indexRoute,
-  sessionRoute.addChildren([prsRoute, shellRoute]),
+  sessionRoute.addChildren([prsRoute]),
 ]);
 
 export const router = createRouter({

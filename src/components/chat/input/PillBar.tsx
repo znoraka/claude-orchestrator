@@ -27,6 +27,7 @@ interface PillBarProps {
   onAbort: () => void;
   canSend: boolean;
   onSend: () => void;
+  onCreateTerminal?: () => void;
 }
 
 export function PillBar({
@@ -36,7 +37,7 @@ export function PillBar({
   reasoningEffort, setReasoningEffort,
   onModelChange, onPermissionModeChange, onProviderChange, providerAvailability,
   targetSessionId, pillRowRef, modelSearchRef,
-  isGenerating, onAbort, canSend, onSend,
+  isGenerating, onAbort, canSend, onSend, onCreateTerminal,
 }: PillBarProps) {
   return (
     <div className="flex items-center gap-1.5 px-3 pb-3 border-t border-[var(--border-subtle)] pt-2.5">
@@ -175,7 +176,19 @@ export function PillBar({
         )}
       </div>
 
-      {/* Stop / Send */}
+      {/* Terminal / Stop / Send */}
+      {onCreateTerminal && (
+        <button
+          onClick={onCreateTerminal}
+          className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors shrink-0"
+          title="New terminal"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <polyline points="4 17 10 11 4 5" strokeLinecap="round" strokeLinejoin="round" />
+            <line x1="12" y1="19" x2="20" y2="19" strokeLinecap="round" />
+          </svg>
+        </button>
+      )}
       {isGenerating && (
         <button onClick={onAbort} className="ml-auto px-3 py-1.5 bg-red-500/15 hover:bg-red-500/25 text-red-400 rounded-lg text-sm font-medium transition-colors shrink-0 border border-red-500/20">Stop</button>
       )}

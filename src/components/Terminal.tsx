@@ -157,6 +157,7 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
       unlistenOutput.then((fn) => fn()).catch(() => {});
       unlistenExit.then((fn) => fn()).catch(() => {});
       term.dispose();
+      invoke("save_terminal_cwd", { sessionId }).catch(console.error);
     };
   }, [sessionId]);
 

@@ -33,7 +33,13 @@ pub fn open_db(data_dir: &Path) -> Result<Connection> {
              plan_content                TEXT,
              parent_session_id           TEXT,
              archived                    INTEGER,
-             archived_at                 REAL
+             archived_at                 REAL,
+             session_type                TEXT    DEFAULT 'chat'
+         );
+
+         CREATE TABLE IF NOT EXISTS terminal_cwd (
+             session_id  TEXT    PRIMARY KEY,
+             cwd         TEXT    NOT NULL DEFAULT ''
          );
 
          CREATE INDEX IF NOT EXISTS sessions_directory
@@ -78,6 +84,13 @@ pub fn open_db(data_dir: &Path) -> Result<Connection> {
              context_tokens              INTEGER NOT NULL DEFAULT 0
          );",
     )?;
+
+    // Migration: add session_type column to existing databases
+    let _ = conn.execute(
+        "ALTER TABLE sessions ADD COLUMN session_type TEXT DEFAULT 'chat'",
+        [],
+    );
+
     Ok(conn)
 }
 
@@ -101,6 +114,7 @@ fn map_session_row(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
         parent_session_id: row.get(15)?,
         archived: row.get::<_, Option<bool>>(16)?,
         archived_at: row.get(17)?,
+        session_type: row.get(18)?,
     })
 }
 
@@ -109,7 +123,8 @@ pub fn db_load_sessions(conn: &Connection) -> Result<Vec<SessionMeta>> {
         "SELECT id, name, created_at, last_active_at, last_message_at, directory,
                 home_directory, claude_session_id, dangerously_skip_permissions,
                 permission_mode, active_time, has_title_been_generated,
-                provider, model, plan_content, parent_session_id, archived, archived_at
+                provider, model, plan_content, parent_session_id, archived, archived_at,
+                session_type
          FROM sessions
          ORDER BY last_active_at DESC",
     )?;
@@ -122,7 +137,8 @@ pub fn db_load_sessions_paged(conn: &Connection, limit: usize, offset: usize) ->
         "SELECT id, name, created_at, last_active_at, last_message_at, directory,
                 home_directory, claude_session_id, dangerously_skip_permissions,
                 permission_mode, active_time, has_title_been_generated,
-                provider, model, plan_content, parent_session_id, archived, archived_at
+                provider, model, plan_content, parent_session_id, archived, archived_at,
+                session_type
          FROM sessions
          ORDER BY last_active_at DESC
          LIMIT ?1 OFFSET ?2",
@@ -140,8 +156,9 @@ pub fn db_save_sessions(conn: &Connection, sessions: &[SessionMeta]) -> Result<(
                  id, name, created_at, last_active_at, last_message_at, directory,
                  home_directory, claude_session_id, dangerously_skip_permissions,
                  permission_mode, active_time, has_title_been_generated,
-                 provider, model, plan_content, parent_session_id, archived, archived_at
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+                 provider, model, plan_content, parent_session_id, archived, archived_at,
+                 session_type
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,COALESCE(?19,'chat'))",
         )?;
         for s in sessions {
             stmt.execute(params![
@@ -149,7 +166,7 @@ pub fn db_save_sessions(conn: &Connection, sessions: &[SessionMeta]) -> Result<(
                 s.directory, s.home_directory, s.claude_session_id,
                 s.dangerously_skip_permissions, s.permission_mode, s.active_time,
                 s.has_title_been_generated, s.provider, s.model, s.plan_content,
-                s.parent_session_id, s.archived, s.archived_at,
+                s.parent_session_id, s.archived, s.archived_at, s.session_type,
             ])?;
         }
     }
@@ -164,8 +181,9 @@ pub fn db_migrate_from_json(conn: &Connection, sessions: Vec<SessionMeta>) -> Re
                  id, name, created_at, last_active_at, last_message_at, directory,
                  home_directory, claude_session_id, dangerously_skip_permissions,
                  permission_mode, active_time, has_title_been_generated,
-                 provider, model, plan_content, parent_session_id, archived, archived_at
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+                 provider, model, plan_content, parent_session_id, archived, archived_at,
+                 session_type
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,COALESCE(?19,'chat'))",
         )?;
         for s in sessions {
             stmt.execute(params![
@@ -173,11 +191,36 @@ pub fn db_migrate_from_json(conn: &Connection, sessions: Vec<SessionMeta>) -> Re
                 s.directory, s.home_directory, s.claude_session_id,
                 s.dangerously_skip_permissions, s.permission_mode, s.active_time,
                 s.has_title_been_generated, s.provider, s.model, s.plan_content,
-                s.parent_session_id, s.archived, s.archived_at,
+                s.parent_session_id, s.archived, s.archived_at, s.session_type,
             ])?;
         }
     }
     tx.commit()
+}
+
+/// Persist terminal CWD for a session.
+pub fn db_save_terminal_cwd(
+    conn: &Connection,
+    session_id: &str,
+    cwd: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO terminal_cwd (session_id, cwd) VALUES (?1, ?2)",
+        params![session_id, cwd],
+    )?;
+    Ok(())
+}
+
+/// Load terminal CWD for a session. Returns None if not found.
+pub fn db_load_terminal_cwd(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT cwd FROM terminal_cwd WHERE session_id = ?1",
+    )?;
+    stmt.query_row(params![session_id], |row| row.get::<_, String>(0))
+        .optional()
 }
 
 pub fn db_get_usage_cache(

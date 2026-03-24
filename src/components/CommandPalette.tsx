@@ -15,7 +15,6 @@ interface CommandPaletteProps {
   onToggleSidebar: () => void;
   onOpenUsage: () => void;
   onOpenPRs: () => void;
-  onOpenShell: () => void;
 }
 
 interface ResultItem {
@@ -114,15 +113,6 @@ const CommandIcon = ({ id }: { id: string }) => {
       </svg>
     );
   }
-  if (id === "cmd-shell") {
-    return (
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="2.25" y="3" width="13.5" height="12" rx="2" />
-        <path d="M5.25 7.5l2.25 2.25-2.25 2.25" />
-        <path d="M9.75 12h3" />
-      </svg>
-    );
-  }
   if (id === "cmd-usage") {
     return (
       <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
@@ -146,7 +136,6 @@ export default function CommandPalette({
   onToggleSidebar,
   onOpenUsage,
   onOpenPRs,
-  onOpenShell,
 }: CommandPaletteProps) {
   void _workspaces;
   const { sessionUsage, unreadSessions } = useSessionLive();
@@ -180,10 +169,9 @@ export default function CommandPalette({
       { type: "command", id: "cmd-new", label: "New Session", section: "commands", action: onCreateSession },
       { type: "command", id: "cmd-sidebar", label: "Toggle Sidebar", section: "commands", action: onToggleSidebar },
       { type: "command", id: "cmd-prs", label: "Open PRs", section: "commands", action: onOpenPRs },
-      { type: "command", id: "cmd-shell", label: "Open Shell", section: "commands", action: onOpenShell },
       { type: "command", id: "cmd-usage", label: "Usage Stats", section: "commands", action: onOpenUsage },
     ],
-    [onCreateSession, onToggleSidebar, onOpenPRs, onOpenShell, onOpenUsage],
+    [onCreateSession, onToggleSidebar, onOpenPRs, onOpenUsage],
   );
 
   const results: ResultItem[] = useMemo(() => {

@@ -389,6 +389,8 @@ pub struct SessionMeta {
     pub archived: Option<bool>,
     #[serde(default, rename = "archivedAt", skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<f64>,
+    #[serde(default, rename = "sessionType", skip_serializing_if = "Option::is_none")]
+    pub session_type: Option<String>,
 }
 
 #[derive(Serialize, Clone, Default)]

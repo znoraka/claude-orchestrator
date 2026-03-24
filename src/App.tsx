@@ -11,7 +11,7 @@ import UsagePanel from "./components/UsagePanel";
 import FileEditor from "./components/FileEditor";
 import { repoColor } from "./components/SessionTab";
 import { prewarmContextMenu } from "./components/ContextMenu";
-import { repoRootDir, worktreeName, normalizeDir } from "./utils/workspaces";
+import { repoRootDir, normalizeDir } from "./utils/workspaces";
 import NewSessionPanel from "./components/NewSessionPanel";
 import type { VirtualSessionState } from "./components/NewSessionPanel";
 import { useWorktreeBranches } from "./hooks/useWorktreeBranches";
@@ -58,6 +58,7 @@ const SessionPanel = memo(function SessionPanel({
   clearPendingPrompt,
   restartSession,
   createSession,
+  createTerminalSession,
   currentModel,
   onModelChange,
   activeModels,
@@ -87,6 +88,7 @@ const SessionPanel = memo(function SessionPanel({
   clearPendingPrompt: (id: string) => void;
   restartSession: (id: string) => Promise<void>;
   createSession: (name: string | undefined, directory: string, skip?: boolean, systemPrompt?: string, pendingPrompt?: string, provider?: AgentProvider, model?: string, permissionMode?: "bypassPermissions" | "plan", planContent?: string, parentSessionId?: string) => Promise<string>;
+  createTerminalSession: (directory: string, name?: string) => Promise<string>;
   updatePermissionMode: (id: string, mode: "bypassPermissions" | "plan") => void;
   currentModel: string;
   onModelChange: (modelId: string) => void;
@@ -123,6 +125,18 @@ const SessionPanel = memo(function SessionPanel({
     invoke("open_in_editor", { editor, filePath: dir + filePath });
   }, [session.directory]);
 
+  const handleCreateTerminal = useCallback((directory: string, command?: string) => {
+    createTerminalSession(directory).then((newId) => {
+      if (command) {
+        setTimeout(() => {
+          invoke("write_to_pty", { sessionId: newId, data: command + "\r" }).catch(console.error);
+        }, 400);
+      }
+    }).catch(console.error);
+  }, [createTerminalSession]);
+
+  const isTerminal = session.sessionType === "terminal";
+
   return (
     <div
       className="absolute inset-0 bg-[var(--bg-primary)]"
@@ -133,38 +147,48 @@ const SessionPanel = memo(function SessionPanel({
       }}
     >
       <ErrorBoundary key={`eb-${session.id}`}>
-        <AgentChat
-          sessionId={session.id}
-          isActive={isVisible}
-          onExit={handleExit}
-          onActivity={handleActivity}
-          onBusyChange={handleBusyChange}
-          onUsageUpdate={handleUsageUpdate}
-          onDraftChange={handleDraftChange}
-          onQuestionChange={handleQuestionChange}
-          onClaudeSessionId={handleClaudeSessionId}
-          session={session}
-          onResume={handleResume}
-          onFork={handleFork}
-          onForkWithPrompt={handleForkWithPrompt}
-          currentModel={currentModel}
-          onModelChange={onModelChange}
-          activeModels={activeModels}
-          onInputHeightChange={isVisible ? setChatInputHeight : undefined}
-          onEditFile={handleEditFile}
-          onOpenFile={onOpenFile}
-          onAvailableModels={onAvailableModels}
-          onRename={handleRename}
-          onMarkTitleGenerated={handleMarkTitleGenerated}
-          onClearPendingPrompt={handleClearPendingPrompt}
-          onNavigateToSession={onNavigateToSession}
-          onPermissionModeChange={handlePermissionModeChange}
-          parentSession={parentSession}
-          childSessions={childSessions}
-          providerAvailability={providerAvailability}
-          onProviderChange={onProviderChange}
-          onStartPendingSession={onStartPendingSession}
-        />
+        {isTerminal ? (
+          <Terminal
+            sessionId={session.id}
+            isActive={isVisible}
+            onExit={handleExit}
+            onActivity={handleActivity}
+          />
+        ) : (
+          <AgentChat
+            sessionId={session.id}
+            isActive={isVisible}
+            onExit={handleExit}
+            onActivity={handleActivity}
+            onBusyChange={handleBusyChange}
+            onUsageUpdate={handleUsageUpdate}
+            onDraftChange={handleDraftChange}
+            onQuestionChange={handleQuestionChange}
+            onClaudeSessionId={handleClaudeSessionId}
+            session={session}
+            onResume={handleResume}
+            onFork={handleFork}
+            onForkWithPrompt={handleForkWithPrompt}
+            currentModel={currentModel}
+            onModelChange={onModelChange}
+            activeModels={activeModels}
+            onInputHeightChange={isVisible ? setChatInputHeight : undefined}
+            onEditFile={handleEditFile}
+            onOpenFile={onOpenFile}
+            onAvailableModels={onAvailableModels}
+            onRename={handleRename}
+            onMarkTitleGenerated={handleMarkTitleGenerated}
+            onClearPendingPrompt={handleClearPendingPrompt}
+            onNavigateToSession={onNavigateToSession}
+            onPermissionModeChange={handlePermissionModeChange}
+            parentSession={parentSession}
+            childSessions={childSessions}
+            providerAvailability={providerAvailability}
+            onProviderChange={onProviderChange}
+            onStartPendingSession={onStartPendingSession}
+            onCreateTerminal={handleCreateTerminal}
+          />
+        )}
       </ErrorBoundary>
     </div>
   );
@@ -179,6 +203,7 @@ export default function App() {
     youngestDescendantMap,
     selectSession,
     createSession,
+    createTerminalSession,
     startPendingSession,
     updateSessionModel,
     updateSessionProvider,
@@ -204,6 +229,15 @@ export default function App() {
   const { sessionUsage, unreadSessions } = useSessionLive();
   const { update, status, progress, install, dismiss } = useUpdater(showError);
   const bridgeState = useBridgeConnection();
+
+  // Track terminal sessions with running commands for sidebar visibility
+  const terminalShellTabs = useMemo(
+    () => sessions
+      .filter((s) => s.sessionType === "terminal" && s.status !== "stopped")
+      .map((s) => ({ id: s.id, directory: s.directory })),
+    [sessions]
+  );
+  const { busySessionIds: terminalBusyIds, foregroundCommands: terminalCommands } = useShellProcessStatus(terminalShellTabs);
 
   // Show disconnected overlay after 5s of failed connection
   const [showDisconnected, setShowDisconnected] = useState(false);
@@ -318,15 +352,14 @@ export default function App() {
   // ── Router-based navigation ──────────────────────────────────────
   const navigate = useNavigate();
   const { location } = useRouterState();
-  const activePanel: "prs" | "shell" | null = useMemo(() => {
+  const activePanel: "prs" | null = useMemo(() => {
     const path = location.pathname;
     if (path.endsWith("/prs")) return "prs";
-    if (path.endsWith("/shell")) return "shell";
     return null;
   }, [location.pathname]);
 
   const navigateToPanel = useCallback(
-    (panel: "prs" | "shell" | null) => {
+    (panel: "prs" | null) => {
       if (panel === null) {
         if (activeSessionId) {
           navigate({ to: "/session/$sessionId", params: { sessionId: activeSessionId } });
@@ -334,11 +367,7 @@ export default function App() {
           navigate({ to: "/" });
         }
       } else if (activeSessionId) {
-        if (panel === "prs") {
-          navigate({ to: "/session/$sessionId/prs", params: { sessionId: activeSessionId } });
-        } else {
-          navigate({ to: "/session/$sessionId/shell", params: { sessionId: activeSessionId } });
-        }
+        navigate({ to: "/session/$sessionId/prs", params: { sessionId: activeSessionId } });
       }
     },
     [navigate, activeSessionId]
@@ -549,20 +578,6 @@ export default function App() {
   );
   const unreadCount = unreadSessions?.size ?? 0;
 
-  // Sanitize directory path into a Tauri-event-safe session ID.
-  // Tauri v2 event names only allow alphanumeric, '-', '/', ':', '_'.
-  const sanitizeDir = (dir: string) => dir.replace(/[^a-zA-Z0-9\-_/:]/g, "_");
-
-  // Global shell tabs (not scoped to any workspace)
-  type ShellTab = { id: string; num: number; directory: string };
-  const [shellTabs, setShellTabs] = useState<ShellTab[]>([]);
-  const [activeShellId, setActiveShellId] = useState<string | null>(null);
-  const [showShellPicker, setShowShellPicker] = useState(false);
-  const [shellPickerIndex, setShellPickerIndex] = useState(0);
-
-  const shellCounter = useRef(0);
-  const shellProcessDirs = useShellProcessStatus(shellTabs);
-
   // Lazy mounting: track which sessions have ever been viewed so we don't
   // mount all session panels on startup. Running/starting sessions are always
   // mounted so they never miss IPC events even before first view.
@@ -575,23 +590,10 @@ export default function App() {
   const suggestionsRef = useRef<HTMLDivElement>(null);
   const dirListRef = useRef<HTMLDivElement>(null);
 
-  const addShellTab = async (dir: string) => {
-    const num = ++shellCounter.current;
-    const sid = `shell-${sanitizeDir(dir)}-${num}`;
-    try {
-      await invoke("create_shell_pty_session", { sessionId: sid, directory: dir });
-      const tab: ShellTab = { id: sid, num, directory: dir };
-      setShellTabs((prev) => [...prev, tab]);
-      setActiveShellId(sid);
-    } catch (err) {
-      console.error("Failed to create shell PTY:", err);
-    }
-  };
-
   // Ref to notify PRPanel to reset to list view
   const prPanelResetRef = useRef<(() => void) | null>(null);
 
-  const togglePanel = (panel: "prs" | "shell") => {
+  const togglePanel = (panel: "prs") => {
     if (activePanel === panel) {
       // Already on this panel — reset internal state (e.g. PR review → PR list)
       if (panel === "prs") prPanelResetRef.current?.();
@@ -600,65 +602,10 @@ export default function App() {
     navigateToPanel(panel);
   };
 
-  // Close shell picker when clicking outside
-  useEffect(() => {
-    if (!showShellPicker) return;
-    const close = () => setShowShellPicker(false);
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, [showShellPicker]);
-
   // Branch info for all worktrees across all workspaces (shared hook, polls every 10s)
   const { branches: dialogBranches, byRepo: gitWorktreesByRepo } = useWorktreeBranches(workspaces);
 
-  // Ctrl+N/P navigation for shell worktree pickers
-  // Merge workspace worktrees with git worktrees that have no sessions
-  const allWorktrees = useMemo(() => {
-    const items: { path: string; label: string }[] = [];
-    for (const ws of workspaces) {
-      const existingPaths = new Set(ws.worktrees.map((wt) => wt.path));
-      for (const wt of ws.worktrees) {
-        items.push({ path: wt.path, label: worktreeName(wt.path) });
-      }
-      const gitWts = gitWorktreesByRepo.get(ws.directory) || [];
-      for (const gwt of gitWts) {
-        if (!existingPaths.has(gwt.path)) {
-          items.push({ path: gwt.path, label: worktreeName(gwt.path) });
-        }
-      }
-    }
-    return items;
-  }, [workspaces, gitWorktreesByRepo]);
-  const shellPickerVisible = activePanel === "shell" && (shellTabs.length === 0 || showShellPicker);
-
-  useEffect(() => {
-    if (!shellPickerVisible) return;
-    setShellPickerIndex(0);
-  }, [shellPickerVisible]);
-
-  useEffect(() => {
-    if (!shellPickerVisible) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === "n") {
-        e.preventDefault();
-        setShellPickerIndex((i) => Math.min(i + 1, allWorktrees.length - 1));
-      } else if (e.ctrlKey && e.key === "p") {
-        e.preventDefault();
-        setShellPickerIndex((i) => Math.max(i - 1, 0));
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        const wt = allWorktrees[shellPickerIndex];
-        if (wt) {
-          addShellTab(wt.path);
-          setShowShellPicker(false);
-        }
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [shellPickerVisible, allWorktrees, shellPickerIndex]);
-
-  // Cmd+N to open new session dialog, Cmd+G/P/T to toggle panels
+  // Cmd+N to open new session dialog, Cmd+G/P to toggle panels
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Don't fire app shortcuts when a modal is already open
@@ -728,16 +675,6 @@ export default function App() {
         e.preventDefault();
         togglePanel("prs");
       }
-      if (e.metaKey && e.key === "t") {
-        e.preventDefault();
-        if (activePanel === "shell" && shellTabs.length > 0) {
-          const activeTab = shellTabs.find((t) => t.id === activeShellId);
-          const dir = activeTab?.directory ?? panelDirectory;
-          addShellTab(dir);
-        } else {
-          togglePanel("shell");
-        }
-      }
       if (e.metaKey && e.key === "j") {
         e.preventDefault();
         navigateToPanel(null);
@@ -765,9 +702,9 @@ export default function App() {
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [activePanel, panelDirectory, showDirDialog, showCommandPalette, shellTabs, activeShellId, activeSessionId, sessions, virtualSessions, selectedModel, permissionMode, activeVirtualDir]);
+  }, [activePanel, panelDirectory, showDirDialog, showCommandPalette, activeSessionId, sessions, virtualSessions, selectedModel, permissionMode, activeVirtualDir]);
 
-  // Wrap deleteSession to handle shell PTY lifecycle
+  // Wrap deleteSession for consistent handling
   const handleDeleteSession = async (id: string) => {
     await deleteSession(id);
   };
@@ -992,11 +929,25 @@ export default function App() {
   ) => {
     if (!activeVirtualDir) return;
     const dir = activeVirtualDir;
+    // > command — create a terminal instead of an agent session
+    if (text.startsWith(">")) {
+      const command = text.slice(1).trim();
+      setActiveVirtualDir(null);
+      setVirtualSessions(prev => { const next = new Map(prev); next.delete(dir); return next; });
+      createTerminalSession(dir).then((newId) => {
+        if (command) {
+          setTimeout(() => {
+            invoke("write_to_pty", { sessionId: newId, data: command + "\r" }).catch(console.error);
+          }, 400);
+        }
+      }).catch(console.error);
+      return;
+    }
     await createSession(undefined, dir, skipPermissions, undefined, text, provider, model, pMode, undefined, undefined, images, files);
     setActiveVirtualDir(null);
     setVirtualSessions(prev => { const next = new Map(prev); next.delete(dir); return next; });
     navigateToPanel(null);
-  }, [activeVirtualDir, createSession, skipPermissions]);
+  }, [activeVirtualDir, createSession, createTerminalSession, skipPermissions]);
 
   return (
     <PullToRefresh>
@@ -1252,7 +1203,6 @@ export default function App() {
               }
             }}
             onTogglePRs={() => togglePanel("prs")}
-            onToggleShell={() => togglePanel("shell")}
           />
         )}
 
@@ -1294,8 +1244,9 @@ export default function App() {
               onDeleteSession={handleDeleteSession}
               onArchiveSession={archiveSession}
               onUnarchiveSession={unarchiveSession}
-              shellProcessDirs={shellProcessDirs}
               youngestDescendantMap={youngestDescendantMap}
+              terminalBusyIds={terminalBusyIds}
+              terminalCommands={terminalCommands}
             />
           </div>
         </div>
@@ -1345,6 +1296,7 @@ export default function App() {
                   clearPendingPrompt={clearPendingPrompt}
                   restartSession={restartSession}
                   createSession={createSession}
+                  createTerminalSession={createTerminalSession}
                   currentModel={session.model ?? selectedModel}
                   onModelChange={handleModelChange}
                   activeModels={activeModels}
@@ -1417,6 +1369,15 @@ export default function App() {
                       const next = new Map(prev); next.set(dir, { ...e, selectionStart: start, selectionEnd: end }); return next;
                     })}
                     onDismiss={() => setActiveVirtualDir(null)}
+                    onCreateTerminal={(dir, command) => {
+                      createTerminalSession(dir).then((newId) => {
+                        if (command) {
+                          setTimeout(() => {
+                            invoke("write_to_pty", { sessionId: newId, data: command + "\r" }).catch(console.error);
+                          }, 400);
+                        }
+                      }).catch(console.error);
+                    }}
                   />
                 </div>
               )}
@@ -1447,238 +1408,6 @@ export default function App() {
                 />
               </div>
 
-              {/* Shell panel — global view, not scoped to active workspace */}
-              <div
-                className={`absolute inset-0 bg-[var(--bg-primary)] flex flex-col ${activePanel === "shell" ? "animate-slide-in-right" : ""}`}
-                style={{
-                  zIndex: activePanel === "shell" ? 2 : 0,
-                  pointerEvents: activePanel === "shell" ? "auto" : "none",
-                  visibility: activePanel === "shell" ? "visible" : "hidden",
-                }}
-              >
-                {shellTabs.length === 0 ? (
-                  /* Empty state — workspace/worktree picker */
-                  <div className="flex-1 flex flex-col items-center justify-center gap-3">
-                    <div className="text-sm font-medium text-[var(--text-primary)]">Open a terminal</div>
-                    <div className="w-full max-w-xs overflow-auto rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)]">
-                      {(() => {
-                        let flatIdx = -1;
-                        return workspaces.map((ws) => {
-                          const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
-                          const existingPaths = new Set(ws.worktrees.map((wt) => wt.path));
-                          const gitWts = (gitWorktreesByRepo.get(ws.directory) || []).filter((gwt) => !existingPaths.has(gwt.path));
-                          return (
-                            <div key={ws.id}>
-                              <div className="px-3 py-1.5 text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider border-b border-[var(--border-subtle)]">{repoName}</div>
-                              {ws.worktrees.map((wt) => {
-                                flatIdx++;
-                                const idx = flatIdx;
-                                const wtName = worktreeName(wt.path);
-                                return (
-                                  <button
-                                    key={wt.path}
-                                    onClick={() => addShellTab(wt.path)}
-                                    className={`w-full text-left px-4 py-2 text-sm transition-colors ${
-                                      idx === shellPickerIndex
-                                        ? "bg-[var(--bg-hover)] text-[var(--text-primary)]"
-                                        : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
-                                    }`}
-                                  >
-                                    {wtName}
-                                  </button>
-                                );
-                              })}
-                              {gitWts.map((gwt) => {
-                                flatIdx++;
-                                const idx = flatIdx;
-                                const wtName = worktreeName(gwt.path);
-                                return (
-                                  <button
-                                    key={gwt.path}
-                                    onClick={() => addShellTab(gwt.path)}
-                                    className={`w-full text-left px-4 py-2 text-sm transition-colors ${
-                                      idx === shellPickerIndex
-                                        ? "bg-[var(--bg-hover)] text-[var(--text-primary)]"
-                                        : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
-                                    }`}
-                                  >
-                                    {wtName} <span className="text-[var(--text-muted)] text-xs ml-1">{gwt.branch}</span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          );
-                        });
-                      })()}
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    {/* Shell tab bar */}
-                    <div className="flex items-center gap-0.5 px-2 py-0.5 border-b border-[var(--border-color)] flex-shrink-0">
-                      {shellTabs.map((tab, i) => {
-                        const isActive = tab.id === activeShellId;
-                        const repoName = repoRootDir(tab.directory).split("/").filter(Boolean).pop() || tab.directory;
-                        const wtName = worktreeName(tab.directory);
-                        const label = wtName === "main" ? repoName : `${repoName} / ${wtName}`;
-                        return (
-                          <div key={tab.id} className="flex items-center group">
-                            <button
-                              onClick={() => setActiveShellId(tab.id)}
-                              className={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-l transition-colors ${
-                                isActive
-                                  ? "text-[var(--text-primary)] bg-[var(--bg-tertiary)] font-medium"
-                                  : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
-                              }`}
-                            >
-                              <span
-                                className="w-1.5 h-1.5 rounded-full shrink-0 opacity-70"
-                                style={{ background: repoColor(tab.directory) }}
-                              />
-                              {label}
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setShellTabs((prev) => {
-                                  const remaining = prev.filter((t) => t.id !== tab.id);
-                                  if (isActive) {
-                                    if (remaining.length > 0) {
-                                      setActiveShellId(remaining[Math.min(i, remaining.length - 1)].id);
-                                    } else {
-                                      setActiveShellId(null);
-                                      navigateToPanel(null);
-                                    }
-                                  }
-                                  return remaining;
-                                });
-                              }}
-                              className={`px-1 py-0.5 text-[11px] rounded-r transition-colors opacity-0 group-hover:opacity-100 ${
-                                isActive
-                                  ? "text-[var(--text-tertiary)] bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
-                                  : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/50"
-                              }`}
-                              title="Close shell"
-                            >
-                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            </button>
-                          </div>
-                        );
-                      })}
-                      {/* "+" button with workspace/worktree picker dropdown */}
-                      <div className="relative" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          onClick={() => setShowShellPicker((v) => !v)}
-                          className="px-1.5 py-0.5 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] rounded transition-colors"
-                          title="New shell tab"
-                        >
-                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                          </svg>
-                        </button>
-                        {showShellPicker && (
-                          <div className="absolute top-full left-0 mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg min-w-[180px] max-h-64 overflow-auto py-1">
-                            {(() => {
-                              let flatIdx = -1;
-                              return workspaces.map((ws) => {
-                                const repoName = ws.directory.split("/").filter(Boolean).pop() || ws.directory;
-                                const existingPaths = new Set(ws.worktrees.map((wt) => wt.path));
-                                const gitWts = (gitWorktreesByRepo.get(ws.directory) || []).filter((gwt) => !existingPaths.has(gwt.path));
-                                return (
-                                  <div key={ws.id}>
-                                    <div className="px-3 py-1 text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">{repoName}</div>
-                                    {ws.worktrees.map((wt) => {
-                                      flatIdx++;
-                                      const idx = flatIdx;
-                                      const wtName = worktreeName(wt.path);
-                                      return (
-                                        <button
-                                          key={wt.path}
-                                          onClick={() => {
-                                            setShowShellPicker(false);
-                                            addShellTab(wt.path);
-                                          }}
-                                          className={`w-full text-left px-4 py-1.5 text-sm transition-colors ${
-                                            idx === shellPickerIndex
-                                              ? "bg-[var(--bg-hover)] text-[var(--text-primary)]"
-                                              : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
-                                          }`}
-                                        >
-                                          {wtName}
-                                        </button>
-                                      );
-                                    })}
-                                    {gitWts.map((gwt) => {
-                                      flatIdx++;
-                                      const idx = flatIdx;
-                                      const wtName = worktreeName(gwt.path);
-                                      return (
-                                        <button
-                                          key={gwt.path}
-                                          onClick={() => {
-                                            setShowShellPicker(false);
-                                            addShellTab(gwt.path);
-                                          }}
-                                          className={`w-full text-left px-4 py-1.5 text-sm transition-colors ${
-                                            idx === shellPickerIndex
-                                              ? "bg-[var(--bg-hover)] text-[var(--text-primary)]"
-                                              : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
-                                          }`}
-                                        >
-                                          {wtName} <span className="text-[var(--text-muted)] text-xs ml-1">{gwt.branch}</span>
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                );
-                              });
-                            })()}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    {/* Shell terminals — all mounted, visibility driven by activeShellId */}
-                    <div className="flex-1 min-h-0 relative">
-                      {shellTabs.map((tab) => {
-                        const isTabActive = tab.id === activeShellId;
-                        return (
-                          <div
-                            key={tab.id}
-                            className="absolute inset-0"
-                            style={{
-                              zIndex: isTabActive ? 1 : 0,
-                              pointerEvents: isTabActive ? "auto" : "none",
-                              visibility: isTabActive ? "visible" : "hidden",
-                            }}
-                          >
-                            <Terminal
-                              sessionId={tab.id}
-                              isActive={activePanel === "shell" && isTabActive}
-                              onExit={() => {
-                                setShellTabs((prev) => {
-                                  const remaining = prev.filter((t) => t.id !== tab.id);
-                                  if (tab.id === activeShellId) {
-                                    if (remaining.length > 0) {
-                                      setActiveShellId(remaining[0].id);
-                                    } else {
-                                      setActiveShellId(null);
-                                      navigateToPanel(null);
-                                    }
-                                  }
-                                  return remaining;
-                                });
-                              }}
-                              onTitleChange={() => {}}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
-              </div>
               </div>
             </div>
 
@@ -1787,7 +1516,6 @@ export default function App() {
             }
           }}
           onTogglePRs={() => { togglePanel("prs"); setDrawerOpen(false); }}
-          onToggleShell={() => { togglePanel("shell"); setDrawerOpen(false); }}
         />
       )}
 
@@ -2117,7 +1845,6 @@ export default function App() {
           onToggleSidebar={() => {}} // sidebar always visible
           onOpenUsage={() => setShowUsagePanel(true)}
           onOpenPRs={() => togglePanel("prs")}
-          onOpenShell={() => togglePanel("shell")}
         />
       )}
 

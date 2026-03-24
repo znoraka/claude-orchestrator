@@ -354,9 +354,17 @@ async fn dispatch(text: &str, state: &AppState) -> String {
             let session_id = str_field!(p, "sessionId");
             blocking!(&id, s, |s| commands::pty_has_child_process(session_id, &s))
         }
+        "pty_foreground_command" => {
+            let session_id = str_field!(p, "sessionId");
+            blocking!(&id, s, |s| commands::pty_foreground_command(session_id, &s))
+        }
         "get_pty_scrollback" => {
             let session_id = str_field!(p, "sessionId");
             blocking!(&id, s, |s| commands::get_pty_scrollback(session_id, &s))
+        }
+        "save_terminal_cwd" => {
+            let session_id = str_field!(p, "sessionId");
+            blocking!(&id, s, |s| commands::save_terminal_cwd(session_id, &s))
         }
 
         // ── Agent ─────────────────────────────────────────────────────────

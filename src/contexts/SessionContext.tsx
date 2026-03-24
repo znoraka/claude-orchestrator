@@ -86,6 +86,7 @@ interface SessionContextValue {
     pendingImages?: Array<{ id: string; data: string; mediaType: string; name: string }>,
     pendingFiles?: Array<{ id: string; name: string; content: string; mimeType: string }>
   ) => Promise<string>;
+  createTerminalSession: (directory: string, name?: string) => Promise<string>;
   createPendingSession: (
     name: string | undefined,
     directory: string,
@@ -170,6 +171,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       parentSessionId?: string;
       archived?: boolean;
       archivedAt?: number;
+      sessionType?: string;
     };
 
     const toSession = (s: RawSession): Session => ({
@@ -192,6 +194,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       parentSessionId: s.parentSessionId,
       archived: s.archived,
       archivedAt: s.archivedAt,
+      sessionType: (s.sessionType as Session["sessionType"]) || "chat",
     });
 
     const INITIAL_LIMIT = 10;
@@ -271,6 +274,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       parentSessionId: s.parentSessionId,
       archived: s.archived,
       archivedAt: s.archivedAt,
+      sessionType: s.sessionType,
     }));
   }, []);
 
@@ -507,6 +511,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       activeSessionInWorkspace.current.set(target.directory || "~", rootId);
       const wsId = repoRootDir(target.directory || "~");
       activeSessionInWorkspace.current.set(wsId, rootId);
+      // Resume stopped terminal sessions by recreating their PTY
+      if (target.sessionType === "terminal" && target.status === "stopped") {
+        dispatch({ type: "UPDATE", id: rootId, patch: { status: "running" } });
+        invoke("create_shell_pty_session", { sessionId: rootId, directory: target.directory || "~" })
+          .catch((err) => {
+            console.error("Failed to resume terminal session:", err);
+            dispatch({ type: "UPDATE", id: rootId, patch: { status: "stopped" } });
+          });
+      }
     }
   }, []);
 
@@ -646,6 +659,38 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       dispatch({ type: "ADD", session });
       setActiveSessionId(id);
       setTimeout(() => saveSessionsImmediately(), 0);
+      return id;
+    },
+    [saveSessionsImmediately]
+  );
+
+  const createTerminalSession = useCallback(
+    async (directory: string, name?: string) => {
+      const dir = normalizeDir(directory);
+      const id = uuidv4();
+      const now = Date.now();
+      const sessionCount = sessionsRef.current.length;
+      const session: Session = {
+        id,
+        name: name || `Terminal ${sessionCount + 1}`,
+        hasTitleBeenGenerated: !!name,
+        status: "running",
+        createdAt: now,
+        lastActiveAt: now,
+        lastMessageAt: now,
+        directory: dir,
+        provider: "claude-code",
+        sessionType: "terminal",
+      };
+      dispatch({ type: "ADD", session });
+      setActiveSessionId(id);
+      setTimeout(() => saveSessionsImmediately(), 0);
+      try {
+        await invoke("create_shell_pty_session", { sessionId: id, directory: dir });
+      } catch (err) {
+        console.error("Failed to create terminal session:", err);
+        dispatch({ type: "UPDATE", id, patch: { status: "stopped" } });
+      }
       return id;
     },
     [saveSessionsImmediately]
@@ -1297,6 +1342,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       selectWorkspace,
       selectWorktree,
       createSession,
+      createTerminalSession,
       createPendingSession,
       startPendingSession,
       updateSessionModel,
@@ -1333,6 +1379,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       selectWorkspace,
       selectWorktree,
       createSession,
+      createTerminalSession,
       createPendingSession,
       startPendingSession,
       updateSessionModel,

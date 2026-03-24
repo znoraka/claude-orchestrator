@@ -39,6 +39,17 @@ impl PtyManager {
         }
     }
 
+    pub fn get_scrollback_bytes(&self, session_id: &str) -> Result<Vec<u8>, String> {
+        let scrollback = self.scrollback.lock().map_err(|e| format!("Lock error: {}", e))?;
+        Ok(scrollback.get(session_id).cloned().unwrap_or_default())
+    }
+
+    pub fn set_scrollback(&self, session_id: &str, data: Vec<u8>) -> Result<(), String> {
+        let mut scrollback = self.scrollback.lock().map_err(|e| format!("Lock error: {}", e))?;
+        scrollback.insert(session_id.to_string(), data);
+        Ok(())
+    }
+
     pub fn write_to_session(&self, session_id: &str, data: &str) -> Result<(), String> {
         let mut sessions = self.sessions.lock().map_err(|e| format!("Lock error: {}", e))?;
         if let Some(session) = sessions.get_mut(session_id) {
@@ -76,6 +87,17 @@ impl PtyManager {
     ) -> Result<(), String> {
         if directory.is_empty() {
             return Err("directory is required".to_string());
+        }
+
+        // Guard: if a live PTY session already exists for this ID, skip creation.
+        // This prevents duplicate PTYs when selectSession is called twice rapidly
+        // (URL-sync effect racing with the direct call) for a resumed terminal.
+        {
+            let sessions = self.sessions.lock().map_err(|e| format!("Lock error: {}", e))?;
+            if sessions.contains_key(session_id) {
+                eprintln!("[pty_manager] Shell session {} already exists, skipping creation", session_id);
+                return Ok(());
+            }
         }
 
         let pty_system = native_pty_system();
@@ -124,6 +146,7 @@ impl PtyManager {
 
         let sid = session_id.to_string();
         let scrollback_buf = self.scrollback.clone();
+        let sessions_for_cleanup = self.sessions.clone();
 
         {
             let mut sb = scrollback_buf.lock().map_err(|e| format!("Lock error: {}", e))?;
@@ -217,6 +240,12 @@ impl PtyManager {
                     Err(RecvTimeoutError::Disconnected) => {
                         eprintln!("[pty_manager] shell reader EOF for {}", sid);
                         flush_batch!();
+                        // Remove from HashMap before firing the exit event so that
+                        // any immediate re-creation triggered by the exit handler
+                        // does not see the stale entry and skip creation.
+                        if let Ok(mut sessions) = sessions_for_cleanup.lock() {
+                            sessions.remove(&sid);
+                        }
                         event_tx.emit(ServerEvent::PtyExit {
                             session_id: sid.clone(),
                         });
@@ -256,10 +285,80 @@ impl PtyManager {
         Ok(output.status.success())
     }
 
+    /// Returns the name of the foreground process running in the shell, or None
+    /// if only the shell itself is running.
+    pub fn foreground_command(&self, session_id: &str) -> Result<Option<String>, String> {
+        let sessions = self.sessions.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let session = sessions.get(session_id)
+            .ok_or_else(|| format!("Session {} not found", session_id))?;
+        let pid = match session.child_pid {
+            Some(pid) => pid,
+            None => return Ok(None),
+        };
+        // Get child PIDs of the shell
+        let pgrep = std::process::Command::new("pgrep")
+            .arg("-P")
+            .arg(pid.to_string())
+            .output()
+            .map_err(|e| format!("Failed to run pgrep: {}", e))?;
+        if !pgrep.status.success() {
+            return Ok(None);
+        }
+        let child_pids: Vec<&str> = std::str::from_utf8(&pgrep.stdout)
+            .unwrap_or("")
+            .trim()
+            .lines()
+            .collect();
+        if child_pids.is_empty() {
+            return Ok(None);
+        }
+        // Get the command name of the last (deepest) child
+        let last_pid = child_pids.last().unwrap();
+        let ps = std::process::Command::new("ps")
+            .arg("-o")
+            .arg("comm=")
+            .arg("-p")
+            .arg(last_pid)
+            .output()
+            .map_err(|e| format!("Failed to run ps: {}", e))?;
+        let name = std::str::from_utf8(&ps.stdout)
+            .unwrap_or("")
+            .trim()
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() { Ok(None) } else { Ok(Some(name)) }
+    }
+
     pub fn kill_all(&self) {
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.drain();
         }
+    }
+
+    /// Get the current working directory of the shell process via lsof.
+    pub fn get_session_cwd(&self, session_id: &str) -> Result<Option<String>, String> {
+        let sessions = self.sessions.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let session = sessions.get(session_id)
+            .ok_or_else(|| format!("Session {} not found", session_id))?;
+        let pid = match session.child_pid {
+            Some(pid) => pid,
+            None => return Ok(None),
+        };
+        let output = std::process::Command::new("lsof")
+            .args(["-a", "-d", "cwd", "-p", &pid.to_string(), "-Fn"])
+            .output()
+            .map_err(|e| format!("Failed to run lsof: {}", e))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Some(path) = line.strip_prefix('n') {
+                if !path.is_empty() {
+                    return Ok(Some(path.to_string()));
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub fn destroy_session(&self, session_id: &str) -> Result<(), String> {

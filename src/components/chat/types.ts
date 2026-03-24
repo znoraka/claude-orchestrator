@@ -32,6 +32,7 @@ export interface AgentChatProps {
   providerAvailability?: Record<string, boolean>;
   onProviderChange?: (provider: AgentProvider) => void;
   onStartPendingSession?: (provider: AgentProvider, model: string) => Promise<void>;
+  onCreateTerminal?: (directory: string, command?: string) => void;
 }
 
 export interface ContentBlock {

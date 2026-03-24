@@ -3,13 +3,12 @@ import { memo } from "react";
 interface ActivityBarProps {
   activeView: "overview" | "session";
   drawerOpen: boolean;
-  activePanel: "prs" | "shell" | null;
+  activePanel: "prs" | null;
   unreadCount: number;
   onOverview: () => void;
   onToggleSidebar: () => void;
   onSessionsClick: () => void;
   onTogglePRs: () => void;
-  onToggleShell: () => void;
   isMobile?: boolean;
 }
 
@@ -78,7 +77,6 @@ export default memo(function ActivityBar({
   onToggleSidebar,
   onSessionsClick,
   onTogglePRs,
-  onToggleShell,
   isMobile,
 }: ActivityBarProps) {
   if (isMobile) {
@@ -148,17 +146,6 @@ export default memo(function ActivityBar({
           </svg>
         </ActivityIcon>
 
-        {/* Shell */}
-        <ActivityIcon
-          active={activePanel === "shell"}
-          onClick={onToggleShell}
-          tooltip="Shell"
-          isMobile
-        >
-          <svg style={{ width: 22, height: 22 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" />
-          </svg>
-        </ActivityIcon>
       </div>
     );
   }
@@ -225,16 +212,6 @@ export default memo(function ActivityBar({
           </svg>
         </ActivityIcon>
 
-        {/* Shell */}
-        <ActivityIcon
-          active={activePanel === "shell"}
-          onClick={onToggleShell}
-          tooltip="Shell (⌘T)"
-        >
-          <svg style={{ width: 18, height: 18 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" />
-          </svg>
-        </ActivityIcon>
 
 
       </div>

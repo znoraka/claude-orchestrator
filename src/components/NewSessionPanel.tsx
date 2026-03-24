@@ -39,6 +39,7 @@ interface NewSessionPanelProps {
   onAttachmentsChange: (dir: string, images: ImageAttachment[], pastedFiles: PastedFile[]) => void;
   onCursorChange: (dir: string, start: number, end: number) => void;
   onDismiss: () => void;
+  onCreateTerminal?: (directory: string, command?: string) => void;
 }
 
 export default function NewSessionPanel({
@@ -55,6 +56,7 @@ export default function NewSessionPanel({
   onAttachmentsChange,
   onCursorChange,
   onDismiss,
+  onCreateTerminal,
 }: NewSessionPanelProps) {
   const { directory, draftText, provider, model, permissionMode, reasoningEffort } = virtualSession;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -250,6 +252,7 @@ export default function NewSessionPanel({
           onSelectSlashCommand={selectSlashCommand}
           onShowFilePicker={() => {}}
           handleKeyDown={handleKeyDown}
+          onCreateTerminal={onCreateTerminal ? () => onCreateTerminal(directory) : undefined}
         />
         <p className="pb-4 text-[11px] text-[var(--text-tertiary)] text-center">
           Press <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)] font-mono text-[10px]">Esc</kbd> to go back · <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)] font-mono text-[10px]">Enter</kbd> to send

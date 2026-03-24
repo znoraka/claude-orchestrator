@@ -1645,9 +1645,33 @@ pub fn create_shell_pty_session(
     directory: String,
     state: &Arc<ServerState>,
 ) -> Result<(), String> {
-    eprintln!("[create_shell_pty_session] session_id={}, directory={:?}", session_id, directory);
+    // Use saved CWD if available, falling back to the session's workspace directory
+    let effective_dir = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::db_load_terminal_cwd(&conn, &session_id)
+            .ok()
+            .flatten()
+            .unwrap_or(directory)
+    };
+    eprintln!("[create_shell_pty_session] session_id={}, directory={:?}", session_id, effective_dir);
     let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
-    manager.create_shell_session(&session_id, state.event_tx.clone(), directory)
+    manager.create_shell_session(&session_id, state.event_tx.clone(), effective_dir)
+}
+
+pub fn save_terminal_cwd(
+    session_id: String,
+    state: &Arc<ServerState>,
+) -> Result<(), String> {
+    let cwd = {
+        let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
+        manager.get_session_cwd(&session_id)?
+    };
+    if let Some(cwd) = cwd {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::db_save_terminal_cwd(&conn, &session_id, &cwd)
+            .map_err(|e| format!("DB write error: {}", e))?;
+    }
+    Ok(())
 }
 
 pub fn pty_has_child_process(
@@ -1656,6 +1680,14 @@ pub fn pty_has_child_process(
 ) -> Result<bool, String> {
     let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
     manager.has_child_process(&session_id)
+}
+
+pub fn pty_foreground_command(
+    session_id: String,
+    state: &Arc<ServerState>,
+) -> Result<Option<String>, String> {
+    let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
+    manager.foreground_command(&session_id)
 }
 
 pub fn directory_exists(path: String) -> bool {

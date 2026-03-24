@@ -95,6 +95,7 @@ const AgentChat = memo(function AgentChat({
   providerAvailability,
   onProviderChange,
   onStartPendingSession,
+  onCreateTerminal,
 }: AgentChatProps) {
   const isReadOnly = session?.status === "stopped";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -164,6 +165,7 @@ const AgentChat = memo(function AgentChat({
   const onMarkTitleGeneratedRef = useRef(onMarkTitleGenerated); onMarkTitleGeneratedRef.current = onMarkTitleGenerated;
   const onClearPendingPromptRef = useRef(onClearPendingPrompt); onClearPendingPromptRef.current = onClearPendingPrompt;
   const onUsageUpdateRef = useRef(onUsageUpdate); onUsageUpdateRef.current = onUsageUpdate;
+  const onCreateTerminalRef = useRef(onCreateTerminal); onCreateTerminalRef.current = onCreateTerminal;
   const currentModelRef = useRef(currentModel); currentModelRef.current = currentModel;
 
   const activeModels = activeModelsProp || modelsForProvider(session?.provider || "claude-code");
@@ -704,6 +706,14 @@ const AgentChat = memo(function AgentChat({
     if (text === "/clear") { setMessages([]); setInputText(""); return; }
     if (text === "/compact") { setInputText(""); sendMessage("Please provide a brief summary of our conversation so far, then we can continue from that context."); return; }
     if (text === "/session-id") { const sid = sessionRef.current?.claudeSessionId; if (sid) navigator.clipboard.writeText(sid); setInputText(""); return; }
+
+    // > command — create a new terminal session and run the command
+    if (text.startsWith(">") && onCreateTerminalRef.current) {
+      const command = text.slice(1).trim();
+      setInputText("");
+      onCreateTerminalRef.current(sessionRef.current?.directory || "~", command || undefined);
+      return;
+    }
     if (text === "/editor" || text.startsWith("/editor ")) {
       const arg = text.slice("/editor".length).trim();
       if (arg) { localStorage.setItem("claude-orchestrator-editor-command", arg); setMessages((prev) => [...prev, { id: `editor-${Date.now()}`, type: "system", content: [{ type: "text", text: `Editor set to: ${arg}` }], timestamp: Date.now() }]); }
@@ -1136,6 +1146,7 @@ const AgentChat = memo(function AgentChat({
         onSelectSlashCommand={selectSlashCommand}
         onShowFilePicker={() => setShowFilePicker(true)}
         handleKeyDown={handleKeyDown} onInputHeightChange={onInputHeightChange}
+        onCreateTerminal={onCreateTerminal ? () => onCreateTerminal(sessionRef.current?.directory || "~") : undefined}
       />
 
       {/* File picker modal */}

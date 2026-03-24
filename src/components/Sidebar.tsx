@@ -48,13 +48,14 @@ interface SidebarProps {
   workspaces: Workspace[];
   activeSessionId: string | null;
   youngestDescendantMap?: Map<string, Session>;
+  terminalBusyIds?: Set<string>;
+  terminalCommands?: Map<string, string>;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
   onRenameSession: (id: string, name: string) => void;
   onDeleteSession: (id: string) => void;
   onArchiveSession?: (id: string) => void;
   onUnarchiveSession?: (id: string) => void;
-  shellProcessDirs?: Map<string, number>;
 }
 
 export default function Sidebar({
@@ -66,8 +67,9 @@ export default function Sidebar({
   onDeleteSession,
   onArchiveSession,
   onUnarchiveSession,
-  shellProcessDirs,
   youngestDescendantMap,
+  terminalBusyIds,
+  terminalCommands,
 }: SidebarProps) {
   const { sessionUsage, unreadSessions } = useSessionLive();
   const { workspaceOrder, reorderWorkspaces } = useStore();
@@ -189,6 +191,7 @@ export default function Sidebar({
       if (s.id === activeSessionId) return true;
       if (unreadSessions?.has(s.id)) return true;
       if (s.status === "running" || s.status === "starting") return true;
+      if (s.sessionType === "terminal" && terminalBusyIds?.has(s.id)) return true;
       const youngest = youngestDescendantMap?.get(s.id);
       if (youngest) {
         if (unreadSessions?.has(youngest.id)) return true;
@@ -198,7 +201,7 @@ export default function Sidebar({
       if (s.hasQuestion) return true;
       return false;
     },
-    [activeSessionId, unreadSessions, youngestDescendantMap]
+    [activeSessionId, unreadSessions, youngestDescendantMap, terminalBusyIds]
   );
 
   const contentOnlyIds = useMemo(() => {
@@ -341,6 +344,8 @@ export default function Sidebar({
           unread={unreadSessions?.has(session.id) && session.status !== "stopped"}
           parentName={parentNameMap.get(session.id)}
           childCount={childCountMap.get(session.id)}
+          terminalBusy={session.sessionType === "terminal" && terminalBusyIds?.has(session.id)}
+          terminalCommand={terminalCommands?.get(session.id)}
           onClick={() => onSelectSession(session.id)}
           onRename={(name) => onRenameSession(session.id, name)}
           onDelete={() => onDeleteSession(session.id)}
@@ -395,7 +400,6 @@ export default function Sidebar({
                 const isDirCollapsed = collapsedDirs.has(workspace.id);
                 const wt = workspace.worktrees[0]; // always exactly 1 worktree per workspace now
                 const sessions = wt?.sessions ?? [];
-                const hasShellProcess = !!(shellProcessDirs?.get(workspace.directory));
 
                 const color = repoColor(workspace.directory);
 
@@ -434,9 +438,6 @@ export default function Sidebar({
                     {dirName}
                   </span>
                   <span className="text-[11px] text-[var(--text-tertiary)] shrink-0 flex items-center gap-1">
-                    {hasShellProcess && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="Shell process running" />
-                    )}
                     {sessions.filter((s) => !s.archived).length}
                   </span>
                 </button>

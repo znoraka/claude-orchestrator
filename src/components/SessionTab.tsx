@@ -70,6 +70,8 @@ export interface SessionTabProps {
   hideDirectory?: boolean;
   parentName?: string;
   childCount?: number;
+  terminalBusy?: boolean;
+  terminalCommand?: string;
   onClick: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
@@ -87,6 +89,8 @@ export default memo(function SessionTab({
   hideDirectory: _hideDirectory,
   parentName,
   childCount,
+  terminalBusy,
+  terminalCommand,
   onClick,
   onRename,
   onDelete,
@@ -126,7 +130,7 @@ export default memo(function SessionTab({
 
   const isRunning = session.status === "running" || session.status === "starting";
   // usage.isBusy is backend-driven and shared across frontends — trust it regardless of local status
-  const isBusy = session.status === "starting" || usage?.isBusy;
+  const isBusy = session.status === "starting" || usage?.isBusy || terminalBusy;
   const hasQuestion = session.hasQuestion && isRunning;
   const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
   const hasDraft = session.hasDraft && isRunning;
@@ -203,6 +207,18 @@ export default memo(function SessionTab({
             >
               {session.name}
             </span>
+          )}
+          {session.sessionType === "terminal" && (
+            terminalCommand ? (
+              <span className="shrink-0 text-[11px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-semibold truncate max-w-[100px]" title={terminalCommand}>
+                {terminalCommand}
+              </span>
+            ) : (
+              <svg className="w-3 h-3 shrink-0 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <polyline points="4 17 10 11 4 5" strokeLinecap="round" strokeLinejoin="round" />
+                <line x1="12" y1="19" x2="20" y2="19" strokeLinecap="round" />
+              </svg>
+            )
           )}
           {childCount !== undefined && childCount > 0 && (
             <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1 py-px rounded bg-blue-500/15 text-blue-400 font-medium"

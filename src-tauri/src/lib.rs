@@ -165,6 +165,8 @@ pub(crate) struct SessionMeta {
     pub(crate) archived: Option<bool>,
     #[serde(default, rename = "archivedAt", skip_serializing_if = "Option::is_none")]
     pub(crate) archived_at: Option<f64>,
+    #[serde(default, rename = "sessionType", skip_serializing_if = "Option::is_none")]
+    pub(crate) session_type: Option<String>,
 }
 
 #[tauri::command]
@@ -206,9 +208,34 @@ fn create_shell_pty_session(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    eprintln!("[create_shell_pty_session] session_id={}, directory={:?}", session_id, directory);
+    // Use saved CWD if available, falling back to the session's workspace directory
+    let effective_dir = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::db_load_terminal_cwd(&conn, &session_id)
+            .ok()
+            .flatten()
+            .unwrap_or(directory)
+    };
+    eprintln!("[create_shell_pty_session] session_id={}, directory={:?}", session_id, effective_dir);
     let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
-    manager.create_shell_session(&session_id, app_handle, directory)
+    manager.create_shell_session(&session_id, app_handle, effective_dir)
+}
+
+#[tauri::command]
+fn save_terminal_cwd(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let cwd = {
+        let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
+        manager.get_session_cwd(&session_id)?
+    };
+    if let Some(cwd) = cwd {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::db_save_terminal_cwd(&conn, &session_id, &cwd)
+            .map_err(|e| format!("DB write error: {}", e))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -218,6 +245,15 @@ fn pty_has_child_process(
 ) -> Result<bool, String> {
     let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
     manager.has_child_process(&session_id)
+}
+
+#[tauri::command]
+fn pty_foreground_command(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
+    manager.foreground_command(&session_id)
 }
 
 /// Check whether a path falls inside a macOS TCC-protected directory (Desktop,

@@ -80,6 +80,7 @@ interface ChatInputProps {
 
   handleKeyDown: (e: React.KeyboardEvent) => void;
   onInputHeightChange?: (height: number) => void;
+  onCreateTerminal?: () => void;
 }
 
 export function ChatInput({
@@ -99,10 +100,11 @@ export function ChatInput({
   showFileMenu, fileSuggestions, fileMenuIndex, setFileMenuIndex, fileMenuRef, onSelectFile,
   showSlashMenu, filteredSlashCommands, slashMenuIndex, setSlashMenuIndex, slashMenuRef, onSelectSlashCommand,
   onShowFilePicker,
-  handleKeyDown, onInputHeightChange,
+  handleKeyDown, onInputHeightChange, onCreateTerminal,
 }: ChatInputProps) {
 
   const canSend = !!(inputText.trim() || images.length > 0 || fileReferences.length > 0 || pastedFiles.length > 0);
+  const isShellPrefix = inputText.startsWith(">");
 
   // Auto-resize textarea when inputText changes (handles paste, edit, programmatic changes)
   useEffect(() => {
@@ -179,7 +181,7 @@ export function ChatInput({
             />
 
             {/* Hero input card */}
-            <div className="chat-input-card relative rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] focus-within:border-[var(--accent)]/50 focus-within:shadow-[0_0_0_3px_rgba(124,91,240,0.08)] transition-all duration-200 shadow-[0_2px_16px_rgba(0,0,0,0.25)]">
+            <div className={`chat-input-card relative rounded-2xl border bg-[var(--bg-secondary)] transition-all duration-200 shadow-[0_2px_16px_rgba(0,0,0,0.25)] ${isShellPrefix ? "border-[var(--green,#3fb950)]/50 shadow-[0_0_0_3px_rgba(63,185,80,0.08)]" : "border-[var(--border-color)] focus-within:border-[var(--accent)]/50 focus-within:shadow-[0_0_0_3px_rgba(124,91,240,0.08)]"}`}>
               {showFileMenu && fileSuggestions.length > 0 && (
                 <div className="absolute bottom-full left-0 right-0 pb-2">
                   <FileMenu
@@ -202,6 +204,15 @@ export function ChatInput({
                   />
                 </div>
               )}
+              {/* Shell mode indicator */}
+              {isShellPrefix && (
+                <div className="flex items-center gap-1.5 px-3 pt-2 pb-0 text-[10px] font-medium text-[#3fb950] uppercase tracking-wide">
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
+                  </svg>
+                  Shell
+                </div>
+              )}
               {/* Textarea row */}
               <div className="flex items-end">
                 {sessionDir && (
@@ -219,7 +230,7 @@ export function ChatInput({
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={handleKeyDown}
                   onPaste={onPaste}
-                  placeholder={pendingQuestion ? "Reply to answer…" : pendingPermission?.toolName === "ExitPlanMode" ? "Suggest changes to the plan…" : "Message…"}
+                  placeholder={pendingQuestion ? "Reply to answer…" : pendingPermission?.toolName === "ExitPlanMode" ? "Suggest changes to the plan…" : "Type a message, @, / or >"}
                   rows={1}
                   className="flex-1 resize-none bg-transparent border-none px-3 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none max-h-40 overflow-y-auto"
                   style={{ minHeight: "44px" }}
@@ -256,6 +267,7 @@ export function ChatInput({
                 onAbort={onAbort}
                 canSend={canSend}
                 onSend={onSend}
+                onCreateTerminal={onCreateTerminal}
               />
             </div>
           </>

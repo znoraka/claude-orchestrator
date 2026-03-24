@@ -66,6 +66,7 @@ export interface Session {
   parentSessionId?: string; // ID of parent session (set when forked from plan mode)
   archived?: boolean; // true if the session has been archived (hidden from main list)
   archivedAt?: number; // timestamp when the session was archived
+  sessionType?: "chat" | "terminal"; // "chat" (default) or "terminal" (PTY session)
 }
 
 /** The directory where the session's JSONL was created (homeDirectory if the
