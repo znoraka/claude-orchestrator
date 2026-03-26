@@ -46,24 +46,24 @@ export default function UsagePanel({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dialog-backdrop animate-backdrop"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 dialog-backdrop"
       onMouseDown={onClose}
     >
       <div
-        className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-2xl p-6 w-[calc(100vw-2rem)] max-w-[640px] max-h-[80vh] shadow-[0_16px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.04] flex flex-col gap-4 overflow-hidden animate-scale-in"
+        className="bg-[var(--bg-secondary)] border-2 border-[var(--accent-color)] p-6 w-[calc(100vw-2rem)] max-w-[640px] max-h-[80vh] shadow-[6px_6px_0px_rgba(255, 122, 0,0.15)] flex flex-col gap-4 overflow-hidden"
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-[var(--text-primary)]">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-[var(--text-primary)]">
             Usage & Costs
           </h2>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setMode("cost")}
-              className={`px-2 py-1 text-xs rounded transition-colors ${
+              className={`px-2 py-1 text-xs ${
                 mode === "cost"
-                  ? "bg-[var(--accent)] text-white"
+                  ? "bg-[var(--accent-color)] text-black font-bold"
                   : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
               }`}
             >
@@ -71,9 +71,9 @@ export default function UsagePanel({ onClose }: { onClose: () => void }) {
             </button>
             <button
               onClick={() => setMode("tokens")}
-              className={`px-2 py-1 text-xs rounded transition-colors ${
+              className={`px-2 py-1 text-xs ${
                 mode === "tokens"
-                  ? "bg-[var(--accent)] text-white"
+                  ? "bg-[var(--accent-color)] text-black font-bold"
                   : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
               }`}
             >
@@ -96,7 +96,7 @@ export default function UsagePanel({ onClose }: { onClose: () => void }) {
           <>
             {/* Chart */}
             <div>
-              <h3 className="text-xs font-medium text-[var(--text-secondary)] mb-2">
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-secondary)] mb-2">
                 Last 14 Days
               </h3>
               <UsageChart data={history} mode={mode} />
@@ -104,7 +104,7 @@ export default function UsagePanel({ onClose }: { onClose: () => void }) {
 
             {/* Project table */}
             <div className="flex-1 min-h-0 overflow-y-auto">
-              <h3 className="text-xs font-medium text-[var(--text-secondary)] mb-2">
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-secondary)] mb-2">
                 By Project
               </h3>
               {projects.length === 0 ? (

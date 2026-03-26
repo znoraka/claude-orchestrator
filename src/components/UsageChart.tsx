@@ -77,7 +77,7 @@ export default function UsageChart({ data, mode }: UsageChartProps) {
                 y={y}
                 width={barWidth}
                 height={Math.max(barH, 1)}
-                rx={2}
+                rx={0}
                 fill={isHovered ? "var(--accent-hover)" : "var(--accent)"}
                 opacity={isHovered ? 1 : 0.8}
               />
@@ -101,13 +101,13 @@ export default function UsageChart({ data, mode }: UsageChartProps) {
       {/* Tooltip */}
       {hoveredIdx !== null && data[hoveredIdx] && (
         <div
-          className="absolute top-0 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-2 py-1 text-xs shadow-lg pointer-events-none z-10"
+          className="absolute top-0 bg-[var(--bg-primary)] border-2 border-[var(--accent-color)] px-2 py-1 text-xs shadow-[3px_3px_0px_rgba(255, 122, 0,0.15)] pointer-events-none z-10"
           style={{
             left: `${Math.max(10, Math.min(90, ((hoveredIdx + 0.5) / bars.length) * 100))}%`,
             transform: "translateX(-50%)",
           }}
         >
-          <div className="font-medium text-[var(--text-primary)]">
+          <div className="font-bold uppercase tracking-wider text-[10px] text-[var(--text-primary)]">
             {data[hoveredIdx].date}
           </div>
           <div className="text-[var(--text-secondary)]">

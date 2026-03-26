@@ -288,16 +288,16 @@ export default function FilePickerModal({ directory, onSelect, onClose, initialF
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="flex flex-col bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg shadow-2xl overflow-hidden"
+        className="flex flex-col bg-[var(--bg-primary)] border-2 border-[var(--accent-color)] shadow-[6px_6px_0px_rgba(255, 122, 0,0.15)] overflow-hidden"
         style={{ width: "min(900px, 90vw)", height: "min(700px, 85vh)" }}
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--border-color)] bg-[var(--bg-secondary)]">
+        <div className="flex items-center gap-2 px-3 py-2 border-b-2 border-[var(--border-color)] bg-[var(--bg-secondary)]">
           {!isViewOnly ? (
             <>
               <svg className="w-4 h-4 text-[var(--text-tertiary)] shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -325,7 +325,7 @@ export default function FilePickerModal({ directory, onSelect, onClose, initialF
           )}
           <button
             onClick={onClose}
-            className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors px-1"
+            className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-1"
           >
             ✕
           </button>
@@ -360,7 +360,7 @@ export default function FilePickerModal({ directory, onSelect, onClose, initialF
               return (
                 <button
                   key={filePath}
-                  className={`w-full text-left px-4 py-2 flex items-center gap-2 text-sm transition-colors ${
+                  className={`w-full text-left px-4 py-2 flex items-center gap-2 text-sm ${
                     i === selectedIdx
                       ? "bg-[var(--accent)]/15 text-[var(--text-primary)]"
                       : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
@@ -387,7 +387,7 @@ export default function FilePickerModal({ directory, onSelect, onClose, initialF
 
         {/* Footer */}
         {loadedFile && (
-          <div className="flex items-center gap-3 px-3 py-2 border-t border-[var(--border-color)] bg-[var(--bg-secondary)]">
+          <div className="flex items-center gap-3 px-3 py-2 border-t-2 border-[var(--border-color)] bg-[var(--bg-secondary)]">
             <span className="text-xs text-[var(--text-tertiary)] font-mono flex-1">
               {selection
                 ? `Lines ${selection.start}–${selection.end} selected (${selection.end - selection.start + 1} lines)`
@@ -398,7 +398,7 @@ export default function FilePickerModal({ directory, onSelect, onClose, initialF
             </span>
             <button
               onClick={confirm}
-              className="px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded text-xs font-medium transition-colors"
+              className="px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-bold uppercase tracking-wider"
             >
               {selection ? `${isViewOnly ? "Update" : "Add"} lines ${selection.start}–${selection.end}` : `${isViewOnly ? "Keep" : "Add"} entire file`}
             </button>

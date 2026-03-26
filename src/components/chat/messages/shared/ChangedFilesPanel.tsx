@@ -28,7 +28,7 @@ export function ChangedFilesPanel({ files, onOpenFile }: { files: ChangedFile[];
   };
 
   return (
-    <div className="mx-3 mb-2 mt-1 rounded-md overflow-hidden text-[11px]" style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-subtle)" }}>
+    <div className="mx-3 mb-2 mt-1 overflow-hidden text-[11px]" style={{ background: "var(--bg-secondary)", border: "2px solid var(--border-color)" }}>
       <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border-subtle)]" style={{ background: "var(--bg-tertiary)" }}>
         <span className="font-medium text-[var(--text-secondary)] uppercase tracking-wider text-[10px] flex items-center gap-1.5">
           CHANGED FILES ({files.length})
@@ -45,13 +45,13 @@ export function ChangedFilesPanel({ files, onOpenFile }: { files: ChangedFile[];
         </span>
         <div className="flex items-center gap-3">
           {groups.size > 1 && (
-            <button onClick={toggleAll} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">
+            <button onClick={toggleAll} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]">
               {allCollapsed ? "Expand all" : "Collapse all"}
             </button>
           )}
           <button
             onClick={() => onOpenFile(files[0].path, files[0].diff)}
-            className="text-[var(--accent)] hover:opacity-80 transition-opacity font-medium"
+            className="text-[var(--accent)] hover:opacity-80 font-medium"
           >
             View diff
           </button>
@@ -71,10 +71,10 @@ export function ChangedFilesPanel({ files, onOpenFile }: { files: ChangedFile[];
                   if (next.has(dir)) next.delete(dir); else next.add(dir);
                   return next;
                 })}
-                className="w-full flex items-center gap-1.5 px-3 py-1.5 text-left hover:bg-[var(--bg-hover)] transition-colors border-b border-[var(--border-subtle)]"
+                className="w-full flex items-center gap-1.5 px-3 py-1.5 text-left hover:bg-[var(--bg-hover)] border-b border-[var(--border-subtle)]"
               >
                 <svg
-                  className="w-2.5 h-2.5 text-[var(--text-tertiary)] shrink-0 transition-transform"
+                  className="w-2.5 h-2.5 text-[var(--text-tertiary)] shrink-0"
                   style={{ transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)" }}
                   viewBox="0 0 16 16" fill="currentColor"
                 >
@@ -100,7 +100,7 @@ export function ChangedFilesPanel({ files, onOpenFile }: { files: ChangedFile[];
                 <button
                   key={f.path}
                   onClick={() => onOpenFile(f.path, f.diff)}
-                  className="w-full flex items-center gap-1.5 text-left hover:bg-[var(--bg-hover)] transition-colors group border-b border-[var(--border-subtle)] last:border-b-0"
+                  className="w-full flex items-center gap-1.5 text-left hover:bg-[var(--bg-hover)] group border-b border-[var(--border-subtle)] last:border-b-0"
                   style={{ paddingLeft: hasDir ? "2rem" : "0.75rem", paddingRight: "0.75rem", paddingTop: "0.375rem", paddingBottom: "0.375rem" }}
                 >
                   <FileIcon filename={filename} size={13} />

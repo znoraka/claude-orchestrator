@@ -216,7 +216,7 @@ function TruncatedUnifiedDiff({ diff, filePath }: { diff: string; filePath: stri
       {truncated && (
         <button
           onClick={() => setExpanded(true)}
-          className="w-full text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] py-2 border-t border-[var(--border-subtle)] transition-colors"
+          className="w-full text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] py-2 border-t border-[var(--border-subtle)]"
         >
           Show {lines.length - TRUNCATE_LINES} more lines…
         </button>

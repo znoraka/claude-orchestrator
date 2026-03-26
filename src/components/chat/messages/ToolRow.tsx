@@ -51,11 +51,11 @@ export function ToolRow({ group, isLastMessage, isLastTool: _isLastTool, toolSta
       {/* Compact row */}
       <button
         onClick={() => onToggle(group.blockId, isExpanded)}
-        className={`w-full flex items-center gap-2 py-1.5 px-3 hover:bg-white/5 cursor-pointer text-sm transition-colors${flat ? " border-b border-[var(--border-subtle)]" : ""}`}
+        className={`w-full flex items-center gap-2 py-1.5 px-3 hover:bg-white/5 cursor-pointer text-sm${flat ? " border-b border-[var(--border-subtle)]" : ""}`}
       >
         {/* Chevron */}
         <svg
-          className={`w-3 h-3 shrink-0 transition-transform text-[var(--text-tertiary)] ${isExpanded ? "rotate-90" : ""}`}
+          className={`w-3 h-3 shrink-0 text-[var(--text-tertiary)] ${isExpanded ? "rotate-90" : ""}`}
           viewBox="0 0 24 24" fill="currentColor"
         >
           <path d="M9 18l6-6-6-6" />
@@ -70,13 +70,13 @@ export function ToolRow({ group, isLastMessage, isLastTool: _isLastTool, toolSta
           >
             {specialInfo.kind === "skill" ? (
               /* Skill: lightning icon + /name badge */
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-500/15 border border-violet-500/25 text-xs font-medium text-violet-400 shrink-0">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-violet-500/15 border-2 border-violet-500/25 text-xs font-bold text-violet-400 shrink-0">
                 <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
                 {specialInfo.displayName}
               </span>
             ) : (
               /* MCP: plug icon + server.method */
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-teal-500/15 border border-teal-500/25 text-xs font-medium text-teal-400 shrink-0 max-w-[70%] truncate">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-teal-500/15 border-2 border-teal-500/25 text-xs font-bold text-teal-400 shrink-0 max-w-[70%] truncate">
                 <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 2v4m0 12v4m-7-7H1m22 0h-4M5.64 5.64l2.12 2.12m8.48 8.48l2.12 2.12m0-12.72l-2.12 2.12m-8.48 8.48l-2.12 2.12" /></svg>
                 {specialInfo.displayName}
               </span>
@@ -89,7 +89,7 @@ export function ToolRow({ group, isLastMessage, isLastTool: _isLastTool, toolSta
             )}
             {/* Hover tooltip */}
             {showTooltip && specialInfo.detail && (
-              <div className="absolute left-0 bottom-full mb-1.5 z-50 px-2.5 py-1.5 rounded-md bg-[var(--bg-primary)] border border-[var(--border-color)] shadow-lg text-xs whitespace-nowrap pointer-events-none">
+              <div className="absolute left-0 bottom-full mb-1.5 z-50 px-2.5 py-1.5 bg-[var(--bg-primary)] border-2 border-[var(--border-color)] shadow-lg text-xs whitespace-nowrap pointer-events-none">
                 <div className="text-[var(--text-secondary)]">{specialInfo.detail}</div>
                 {specialInfo.kind === "mcp" && (
                   <div className="text-[var(--text-tertiary)] mt-0.5 font-mono text-[10px]">{rawToolName}</div>
@@ -103,7 +103,7 @@ export function ToolRow({ group, isLastMessage, isLastTool: _isLastTool, toolSta
         ) : (
           /* Normal tool display */
           <>
-            <span className={`text-xs font-medium ${toolColor} shrink-0 w-20 text-left truncate`} title={isPlanFile ? "Plan" : toolName}>
+            <span className={`text-xs font-bold ${toolColor} shrink-0 w-20 text-left truncate`} title={isPlanFile ? "Plan" : toolName}>
               {isPlanFile ? "Plan" : toolName}
             </span>
             {summary && (
@@ -132,7 +132,7 @@ export function ToolRow({ group, isLastMessage, isLastTool: _isLastTool, toolSta
   }
 
   return (
-    <div className="rounded-lg overflow-hidden border border-[var(--border-subtle)]">
+    <div className="overflow-hidden border-2 border-[var(--border-subtle)]">
       {rowContent}
     </div>
   );

@@ -215,16 +215,16 @@ export function ChatInput({
       <div className="w-full max-w-[720px] flex flex-col gap-2">
         {/* Editing indicator */}
         {editingMessageId && (
-          <div className="flex items-center gap-2 mb-2 px-1 py-1.5 text-xs text-[var(--accent)] bg-[var(--accent)]/10 rounded-lg">
+          <div className="flex items-center gap-2 mb-2 px-1 py-1.5 text-xs text-[var(--accent)] bg-[var(--accent)]/10">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
             <span className="flex-1">Editing message — send to replace</span>
-            <button onClick={onCancelEdit} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors">Cancel</button>
+            <button onClick={onCancelEdit} className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]">Cancel</button>
           </div>
         )}
 
         {/* Question banner — shown above input, not replacing it */}
         {pendingQuestion && !editingMessageId && (
-          <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-3">
+          <div className="border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-3">
             <div className="text-[10px] font-semibold text-[var(--accent)] uppercase tracking-wide mb-1.5">Agent is asking</div>
             <InlineQuestionComposer questions={pendingQuestion.questions} onAnswer={onAnswerQuestion} />
           </div>
@@ -232,7 +232,7 @@ export function ChatInput({
 
         {/* Plan banner — shown above input like question banner */}
         {pendingPermission?.toolName === "ExitPlanMode" && !editingMessageId && (
-          <div className="rounded-lg border border-[var(--warning-border,var(--border-color))] bg-[var(--bg-secondary)] p-3">
+          <div className="border border-[var(--warning-border,var(--border-color))] bg-[var(--bg-secondary)] p-3">
             <InlinePermissionComposer
               permission={pendingPermission}
               onAllow={onAllowPermission}
@@ -245,7 +245,7 @@ export function ChatInput({
 
         {/* Non-plan permission replaces input; plan mode keeps input visible */}
         {pendingPermission && pendingPermission.toolName !== "ExitPlanMode" && !editingMessageId ? (
-          <div className="rounded-lg border border-[var(--warning-border,var(--border-color))] bg-[var(--bg-secondary)] p-3">
+          <div className="border border-[var(--warning-border,var(--border-color))] bg-[var(--bg-secondary)] p-3">
             <InlinePermissionComposer
               permission={pendingPermission}
               onAllow={onAllowPermission}
@@ -268,7 +268,7 @@ export function ChatInput({
             />
 
             {/* Hero input card */}
-            <div className={`chat-input-card relative rounded-2xl border bg-[var(--bg-secondary)] transition-all duration-200 shadow-[0_2px_16px_rgba(0,0,0,0.25)] ${isShellPrefix ? "border-[var(--green,#3fb950)]/50 shadow-[0_0_0_3px_rgba(63,185,80,0.08)]" : "border-[var(--border-color)] focus-within:border-[var(--accent)]/50 focus-within:shadow-[0_0_0_3px_rgba(124,91,240,0.08)]"}`}>
+            <div className={`chat-input-card relative border bg-[var(--bg-secondary)] shadow-[0_2px_16px_rgba(0,0,0,0.25)] ${isShellPrefix ? "border-[var(--green,#3fb950)]/50 shadow-[0_0_0_3px_rgba(63,185,80,0.08)]" : "border-[var(--border-color)] focus-within:border-[var(--accent)]/50 focus-within:shadow-[0_0_0_3px_rgba(124,91,240,0.08)]"}`}>
               {showFileMenu && fileSuggestions.length > 0 && (
                 <div className="absolute bottom-full left-0 right-0 pb-2">
                   <FileMenu
@@ -305,7 +305,7 @@ export function ChatInput({
                 {sessionDir && (
                   <button
                     onClick={onShowFilePicker}
-                    className="p-3 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors shrink-0 self-center"
+                    className="p-3 text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] shrink-0 self-center"
                     title="Attach file (⌘O)"
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" /></svg>
@@ -364,7 +364,7 @@ export function ChatInput({
                   <div className="relative" ref={branchDropdownRef}>
                     <button
                       onClick={openBranchDropdown}
-                      className="flex items-center gap-1 px-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
+                      className="flex items-center gap-1 px-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
                     >
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
@@ -375,7 +375,7 @@ export function ChatInput({
                       </svg>
                     </button>
                     {branchDropdownOpen && (
-                      <div className="absolute bottom-full mb-1 left-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 min-w-[220px] max-h-[280px] flex flex-col">
+                      <div className="absolute bottom-full mb-1 left-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] shadow-[4px_4px_0px_rgba(255,255,255,0.06)] z-50 min-w-[220px] max-h-[280px] flex flex-col">
                         <input
                           ref={branchSearchRef}
                           value={branchSearch}
@@ -397,7 +397,7 @@ export function ChatInput({
                               <button
                                 key={branch}
                                 onMouseDown={(e) => { e.preventDefault(); switchBranch(branch); }}
-                                className={`w-full text-left px-3 py-1.5 text-[11px] flex items-center gap-1.5 transition-colors ${branch === activeBranch ? "text-[var(--accent)]" : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"}`}
+                                className={`w-full text-left px-3 py-1.5 text-[11px] flex items-center gap-1.5 ${branch === activeBranch ? "text-[var(--accent)]" : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"}`}
                               >
                                 {branch === activeBranch && (
                                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>

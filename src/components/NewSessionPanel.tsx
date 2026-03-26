@@ -189,9 +189,9 @@ export default function NewSessionPanel({
   return (
     <div className="absolute inset-0 flex flex-col bg-[var(--bg-primary)]">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border-subtle)]">
-        <span className="text-xs text-[var(--text-tertiary)]">New session in</span>
-        <span className="text-xs font-medium text-[var(--text-secondary)] font-mono">{dirLabel}</span>
+      <div className="flex items-center gap-2 px-4 py-3 border-b-2 border-[var(--border-color)]">
+        <span className="text-[10px] uppercase tracking-wider font-bold text-[var(--text-tertiary)]">New session in</span>
+        <span className="text-xs font-bold text-[var(--text-secondary)] font-mono">{dirLabel}</span>
       </div>
 
       {/* Compose area */}
@@ -258,7 +258,7 @@ export default function NewSessionPanel({
           onCreateTerminal={onCreateTerminal ? () => onCreateTerminal(directory) : undefined}
           footerHint={
             <span className="text-[11px] text-[var(--text-tertiary)]">
-              Press <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)] font-mono text-[10px]">Esc</kbd> to go back · <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)] font-mono text-[10px]">Enter</kbd> to send
+              Press <kbd className="px-1 py-0.5 border-2 bg-[var(--bg-tertiary)] font-mono text-[10px]">Esc</kbd> to go back · <kbd className="px-1 py-0.5 border-2 bg-[var(--bg-tertiary)] font-mono text-[10px]">Enter</kbd> to send
             </span>
           }
         />

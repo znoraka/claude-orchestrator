@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback } from "react";
 import { showContextMenu } from "./ContextMenu";
+import { Spinner } from "./ui/spinner";
 import type { Session, SessionUsage } from "../types";
 
 function timeAgo(ts: number): string {
@@ -151,7 +152,7 @@ export default memo(function SessionTab({
       onContextMenu={handleContextMenu}
       className={`
         session-tab relative flex items-center gap-2.5 pl-5 pr-2 py-2 cursor-pointer
-        rounded-lg mx-1
+        mx-1
         ${rowBg}
         ${isActive
           ? "text-[var(--text-primary)]"
@@ -162,21 +163,21 @@ export default memo(function SessionTab({
       {/* Status dot — tiny, only for meaningful states */}
       <span className="shrink-0 w-4 h-4 flex items-center justify-center">
         {hasError ? (
-          <span className="w-2 h-2 rounded-full bg-[var(--danger)]" />
+          <span className="w-2 h-2 bg-[var(--danger)]" />
         ) : hasQuestion ? (
           <svg className="w-3.5 h-3.5 text-orange-400" viewBox="0 0 16 16" fill="currentColor">
             <path d="M4.5 2a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 4.5 2Zm7 0a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 11.5 2Z" />
           </svg>
         ) : isBusy ? (
-          <span className="w-3.5 h-3.5 border-2 border-[var(--accent-color)]/50 border-t-transparent rounded-full animate-spin shrink-0" />
+          <Spinner className="w-3.5 h-3.5" />
         ) : hasDraft ? (
-          <span className="w-2 h-2 rounded-full bg-blue-400/70" />
+          <span className="w-2 h-2 bg-blue-400/70" />
         ) : unread ? (
-          <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />
+          <span className="w-2 h-2 bg-[var(--accent)]" />
         ) : isActive ? (
-          <span className="w-2 h-2 rounded-full bg-[var(--accent)]/50" />
+          <span className="w-2 h-2 bg-[var(--accent)]/50" />
         ) : (
-          <span className="w-2 h-2 rounded-full bg-[var(--text-tertiary)]/20" />
+          <span className="w-2 h-2 bg-[var(--text-tertiary)]/20" />
         )}
       </span>
 
@@ -193,12 +194,12 @@ export default memo(function SessionTab({
                 if (e.key === "Enter") handleSubmitRename();
                 if (e.key === "Escape") setIsEditing(false);
               }}
-              className="bg-[var(--bg-primary)] border border-[var(--border-color)] rounded px-1.5 py-0.5 text-xs w-full outline-none focus:border-[var(--accent)]"
+              className="bg-[var(--bg-primary)] border border-[var(--border-color)] px-1.5 py-0.5 text-[11px] w-full outline-none focus:border-[var(--accent)]"
               onClick={(e) => e.stopPropagation()}
             />
           ) : (
             <span
-              className={`text-[13px] truncate leading-snug ${isActive || unread ? "font-medium" : ""}`}
+              className={`text-[11px] truncate leading-snug ${isActive || unread ? "font-medium" : ""}`}
               onDoubleClick={(e) => {
                 e.stopPropagation();
                 setEditName(session.name);
@@ -210,7 +211,7 @@ export default memo(function SessionTab({
           )}
           {session.sessionType === "terminal" && (
             terminalCommand ? (
-              <span className="shrink-0 text-[11px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-semibold truncate max-w-[100px]" title={terminalCommand}>
+              <span className="shrink-0 text-[11px] px-1.5 py-0.5 bg-emerald-500/20 text-emerald-400 font-semibold truncate max-w-[100px]" title={terminalCommand}>
                 {terminalCommand}
               </span>
             ) : (
@@ -221,7 +222,7 @@ export default memo(function SessionTab({
             )
           )}
           {childCount !== undefined && childCount > 0 && (
-            <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1 py-px rounded bg-blue-500/15 text-blue-400 font-medium"
+            <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1 py-px bg-blue-500/15 text-blue-400 font-medium"
                   title={`${childCount} execution session${childCount !== 1 ? "s" : ""}`}>
               <svg className="w-2.5 h-2.5" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75v-.878a2.25 2.25 0 1 1 1.5 0v.878a2.25 2.25 0 0 1-2.25 2.25h-1.5v2.128a2.251 2.251 0 1 1-1.5 0V8.5h-1.5A2.25 2.25 0 0 1 3.5 6.25v-.878a2.25 2.25 0 1 1 1.5 0Z" />
@@ -230,7 +231,7 @@ export default memo(function SessionTab({
             </span>
           )}
           {contentOnly && (
-            <span className="shrink-0 text-[10px] px-1 py-px rounded bg-[var(--accent)]/10 text-[var(--accent)] font-medium">
+            <span className="shrink-0 text-[10px] px-1 py-px bg-[var(--accent)]/10 text-[var(--accent)] font-medium">
               match
             </span>
           )}

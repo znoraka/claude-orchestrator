@@ -63,25 +63,25 @@ export default memo(function WorkspaceCard({
 
   return (
     <div
-      className="rounded-xl border border-[var(--card-border)] p-4 flex flex-col gap-3 hover:border-[var(--border-color)] transition-all duration-200 cursor-default"
+      className="border border-[var(--card-border)] p-4 flex flex-col gap-3 hover:border-[var(--accent-color)] cursor-default"
       style={{ background: "var(--card-bg)" }}
     >
       {/* Header */}
       <div className="flex items-center gap-2">
-        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-        <span className="text-sm font-semibold text-[var(--text-primary)] truncate flex-1 tracking-tight">
+        <span className="w-2 h-2 shrink-0" style={{ background: color }} />
+        <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--text-primary)] truncate flex-1">
           {repoName}
         </span>
         <div className="flex items-center gap-2 shrink-0">
           {runningCount > 0 && (
             <span className="flex items-center gap-1 text-[10px] text-[var(--status-running)] font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--status-running)] animate-pulse" />
+              <span className="w-1.5 h-1.5 bg-[var(--status-running)] animate-pulse" />
               {runningCount}
             </span>
           )}
           {waitingCount > 0 && (
             <span className="flex items-center gap-1 text-[10px] text-[var(--status-waiting)] font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--status-waiting)]" />
+              <span className="w-1.5 h-1.5 bg-[var(--status-waiting)]" />
               {waitingCount} waiting
             </span>
           )}
@@ -113,7 +113,7 @@ export default memo(function WorkspaceCard({
               <button
                 key={session.id}
                 onClick={() => onSelectSession(session.id)}
-                className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors hover:bg-[var(--bg-hover)] group ${
+                className={`flex items-center gap-2 px-2 py-1.5 text-left hover:bg-[var(--bg-hover)] group ${
                   status === "waiting" ? "bg-amber-500/5" : ""
                 }`}
               >

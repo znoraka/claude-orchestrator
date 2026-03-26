@@ -138,16 +138,16 @@ export default function CommitModal({ directory, onClose }: Props) {
 
   return (
     <div
-      style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.6)" }}
+      style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.85)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        style={{ background: "var(--bg-primary)", border: "1px solid var(--border-subtle)", borderRadius: 10, width: 520, maxWidth: "90vw", maxHeight: "80vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}
+        style={{ background: "var(--bg-primary)", border: "2px solid var(--accent-color)", borderRadius: 0, width: 520, maxWidth: "90vw", maxHeight: "80vh", display: "flex", flexDirection: "column", boxShadow: "6px 6px 0px rgba(255, 122, 0,0.15)" }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Commit &amp; Push</span>
+        <div style={{ padding: "14px 18px", borderBottom: "2px solid var(--border-color)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)", textTransform: "uppercase" as const, letterSpacing: "0.05em" }}>Commit &amp; Push</span>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-tertiary)", fontSize: 16, lineHeight: 1, padding: "2px 4px" }}>✕</button>
         </div>
 
@@ -160,14 +160,14 @@ export default function CommitModal({ directory, onClose }: Props) {
             ) : hasNoFiles ? (
               <div style={{ color: "var(--text-tertiary)", fontSize: 12, padding: "6px 0" }}>No changes</div>
             ) : (
-              <div style={{ background: "var(--bg-secondary)", borderRadius: 6, border: "1px solid var(--border-subtle)", overflow: "hidden" }}>
+              <div style={{ background: "var(--bg-secondary)", borderRadius: 0, border: "2px solid var(--border-color)", overflow: "hidden" }}>
                 {/* Select-all row */}
                 <div
-                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderBottom: "1px solid var(--border-subtle)", cursor: "pointer" }}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderBottom: "2px solid var(--border-color)", cursor: "pointer" }}
                   onClick={toggleAll}
                 >
                   <Checkbox checked={allChecked} indeterminate={someChecked} onChange={toggleAll} />
-                  <span style={{ fontSize: 11, color: "var(--text-tertiary)", userSelect: "none" }}>
+                  <span style={{ fontSize: 10, color: "var(--text-tertiary)", userSelect: "none", textTransform: "uppercase" as const }}>
                     {selected.size === allFiles.length
                       ? `All ${allFiles.length} files selected`
                       : `${selected.size} / ${allFiles.length} files selected`}
@@ -201,7 +201,7 @@ export default function CommitModal({ directory, onClose }: Props) {
           {/* Commit message */}
           {!hasNoFiles && (
             <div>
-              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>Commit message</div>
+              <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>Commit message</div>
               <div style={{ position: "relative" }}>
                 <textarea
                   ref={textareaRef}
@@ -209,7 +209,7 @@ export default function CommitModal({ directory, onClose }: Props) {
                   onChange={(e) => setCommitMessage(e.target.value)}
                   placeholder={isLoadingMessage ? "Generating commit message..." : "Enter commit message..."}
                   disabled={busy}
-                  style={{ width: "100%", minHeight: 72, resize: "none", background: "var(--bg-secondary)", border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "8px 10px", fontSize: 12, fontFamily: "var(--font-mono, 'SF Mono', Menlo, monospace)", color: "var(--text-primary)", outline: "none", boxSizing: "border-box", overflow: "hidden" }}
+                  style={{ width: "100%", minHeight: 72, resize: "none", background: "var(--bg-secondary)", border: "2px solid var(--border-color)", borderRadius: 0, padding: "8px 10px", fontSize: 12, fontFamily: "var(--font-mono, 'SF Mono', Menlo, monospace)", color: "var(--text-primary)", outline: "none", boxSizing: "border-box", overflow: "hidden" }}
                   onFocus={(e) => { (e.target as HTMLTextAreaElement).style.borderColor = "var(--accent)"; }}
                   onBlur={(e) => { (e.target as HTMLTextAreaElement).style.borderColor = "var(--border-subtle)"; }}
                 />
@@ -221,14 +221,14 @@ export default function CommitModal({ directory, onClose }: Props) {
           )}
 
           {error && (
-            <div style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, padding: "8px 10px", fontSize: 12, color: "#f87171" }}>
+            <div style={{ background: "rgba(239,68,68,0.1)", border: "2px solid rgba(239,68,68,0.3)", borderRadius: 0, padding: "8px 10px", fontSize: 12, color: "#f87171" }}>
               {error}
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div style={{ padding: "12px 18px", borderTop: "1px solid var(--border-subtle)", display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <div style={{ padding: "12px 18px", borderTop: "2px solid var(--border-color)", display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <Btn onClick={handleGenerateMessage} disabled={busy || isLoadingFiles || hasNoFiles}>
             {isGenerating ? "Generating..." : "Generate Message"}
           </Btn>
@@ -269,15 +269,17 @@ function Btn({ onClick, disabled, primary, children }: { onClick: () => void; di
       onClick={onClick}
       disabled={disabled}
       style={{
-        background: primary ? "var(--accent)" : "none",
-        border: primary ? "none" : "1px solid var(--border-subtle)",
-        borderRadius: 6,
+        background: primary ? "var(--accent-color)" : "none",
+        border: primary ? "2px solid var(--accent-color)" : "2px solid var(--border-color)",
+        borderRadius: 0,
         padding: "6px 12px",
-        fontSize: 12,
-        fontWeight: primary ? 600 : 400,
-        color: primary ? "#fff" : "var(--text-secondary)",
+        fontSize: 11,
+        fontWeight: 700,
+        color: primary ? "#000" : "var(--text-secondary)",
         cursor: disabled ? "not-allowed" : "pointer",
         opacity: disabled ? 0.5 : 1,
+        textTransform: "uppercase" as const,
+        letterSpacing: "0.05em",
       }}
     >
       {children}

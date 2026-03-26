@@ -50,14 +50,14 @@ function ActivityIcon({
     <button
       onClick={onClick}
       data-tooltip={tooltip}
-      className={`activity-tooltip relative w-10 h-10 flex items-center justify-center rounded-xl ${
+      className={`activity-tooltip relative w-10 h-10 flex items-center justify-center ${
         active
-          ? "bg-[var(--accent-color)]/15 text-[var(--accent-color)]"
-          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-white/5"
+          ? "bg-[var(--accent-color)]/15 text-[var(--accent-color)] border border-[var(--accent-color)]/30"
+          : "text-[var(--text-secondary)] hover:text-[var(--accent-color)] hover:bg-white/5"
       }`}
     >
       {children}
-      <span className={`absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r bg-[var(--accent-color)] ${active ? "opacity-100" : "opacity-0"}`} />
+      <span className={`absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-[var(--accent-color)] ${active ? "opacity-100" : "opacity-0"}`} />
     </button>
   );
 }
@@ -82,7 +82,7 @@ export default memo(function ActivityBar({
   if (isMobile) {
     return (
       <div
-        className="flex items-stretch shrink-0 border-t border-[var(--border-subtle)]"
+        className="flex items-stretch shrink-0 border-t-2 border-[var(--border-color)]"
         style={{
           height: "var(--mobile-nav-height, 56px)",
           background: "var(--activity-bar-bg)",
@@ -152,7 +152,7 @@ export default memo(function ActivityBar({
 
   return (
     <div
-      className="flex flex-col items-center py-2 px-1 gap-0.5 shrink-0 border-r border-[var(--border-subtle)]"
+      className="flex flex-col items-center py-2 px-1 gap-0.5 shrink-0 border-r-2 border-[var(--border-color)]"
       style={{ width: 48, background: "var(--activity-bar-bg)" }}
     >
       {/* Top group */}

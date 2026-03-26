@@ -359,7 +359,7 @@ export default function Sidebar({
 
 
   return (
-    <div className="h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-2 pt-3 pb-3">
+    <div className="h-full bg-[var(--bg-secondary)] flex flex-col shrink-0 px-2 pt-3 pb-3 border-r-2 border-[var(--border-color)]">
       {/* Search input — minimal styling */}
       <div className="pb-2">
         <div className="relative">
@@ -382,7 +382,7 @@ export default function Sidebar({
             onChange={(e) => setFilter(e.target.value)}
             onKeyDown={handleSearchKeyDown}
             placeholder="Search sessions..."
-            className="sidebar-search w-full bg-transparent border-0 border-b border-[var(--border-subtle)] rounded-none pl-8 pr-6 py-2 text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-all duration-200"
+            className="sidebar-search w-full bg-transparent border-0 border-b-2 border-[var(--border-color)] pl-8 pr-6 py-2 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent-color)] uppercase tracking-wider"
           />
           {contentSearching && (
             <div className="absolute right-1 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--accent-color)]/50 border-t-transparent rounded-full animate-spin" />
@@ -410,7 +410,7 @@ export default function Sidebar({
                 {/* Directory header */}
                 <button
                   onClick={() => toggleDir(workspace.id)}
-                  className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-left hover:bg-[var(--bg-hover)]/40 transition-colors group"
+                  className="w-full flex items-center gap-2 px-2.5 py-2 text-left hover:bg-[var(--accent-color)]/10 group"
                 >
                   <span
                     {...dragListeners}
@@ -433,8 +433,8 @@ export default function Sidebar({
                   >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
-                  <span className="w-2 h-2 rounded-full shrink-0 opacity-80" style={{ background: color }} />
-                  <span className="text-[12px] font-semibold text-[var(--text-primary)] truncate flex-1 tracking-normal">
+                  <span className="w-2 h-2 shrink-0" style={{ background: color }} />
+                  <span className="text-[11px] font-bold text-[var(--text-primary)] truncate flex-1 tracking-wider uppercase">
                     {dirName}
                   </span>
                   <span className="text-[11px] text-[var(--text-tertiary)] shrink-0 flex items-center gap-1">
@@ -562,7 +562,7 @@ export default function Sidebar({
 
 {appVersion && (
         <div className="pt-1 text-center">
-          <span className="text-[11px] text-[var(--text-tertiary)]">v{appVersion}</span>
+          <span className="text-[10px] text-[var(--text-tertiary)] uppercase tracking-widest font-bold">v{appVersion}</span>
         </div>
       )}
     </div>

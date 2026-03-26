@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Session, SessionUsage, Workspace } from "../types";
 import { shortenPath, repoColor, directoryColor } from "./SessionTab";
 import { useSessionLive } from "../contexts/SessionContext";
+import { Spinner } from "./ui/spinner";
 
 interface CommandPaletteProps {
   onClose: () => void;
@@ -357,7 +358,7 @@ export default function CommandPalette({
     if (row.kind === "header") {
       return (
         <div
-          className="px-3 pt-3 pb-1 text-[11px] font-semibold tracking-wider"
+          className="px-3 pt-3 pb-1 text-[11px] font-bold tracking-wider"
           style={{ color: "var(--section-label)" }}
         >
           {row.label}
@@ -373,16 +374,16 @@ export default function CommandPalette({
         <div
           data-index={gi}
           onClick={() => executeItem(item)}
-          className="mx-2 flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2.5 transition-colors relative overflow-hidden"
+          className="mx-2 flex cursor-pointer items-center gap-3 px-2.5 py-2.5 relative overflow-hidden"
           style={{
             background: isSelected ? "var(--accent-glow)" : "transparent",
           }}
         >
           {isSelected && (
-            <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 rounded-r" style={{ background: "var(--accent)" }} />
+            <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6" style={{ background: "var(--accent)" }} />
           )}
           <span
-            className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors"
+            className="w-8 h-8 flex items-center justify-center shrink-0"
             style={{
               background: isSelected ? "var(--accent-muted)" : "var(--bg-tertiary)",
               color: isSelected ? "var(--accent)" : "var(--text-secondary)",
@@ -390,7 +391,7 @@ export default function CommandPalette({
           >
             <CommandIcon id={item.id} />
           </span>
-          <span className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+          <span className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--text-primary)" }}>
             {item.label}
           </span>
         </div>
@@ -424,32 +425,32 @@ export default function CommandPalette({
       <div
         data-index={gi}
         onClick={() => executeItem(item)}
-        className={`mx-2 flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 my-px transition-colors relative overflow-hidden ${rowBg}`}
+        className={`mx-2 flex cursor-pointer items-center gap-3 px-3 py-2.5 my-px relative overflow-hidden ${rowBg}`}
         style={{
           background: isSelected && !hasQuestion ? "var(--accent-glow)" : undefined,
         }}
       >
         {isSelected && (
-          <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6 rounded-r" style={{ background: "var(--accent)" }} />
+          <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-6" style={{ background: "var(--accent)" }} />
         )}
 
         <span className="shrink-0 w-3.5 h-3.5 flex items-center justify-center">
           {hasError ? (
-            <span className="w-2 h-2 rounded-full bg-[var(--danger)]" />
-          ) : hasQuestion ? (
-            <svg className="w-3 h-3 text-orange-400" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M4.5 2a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 4.5 2Zm7 0a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 11.5 2Z" />
-            </svg>
-          ) : isBusy ? (
-            <span className="rounded-full border border-[var(--accent)] border-t-transparent animate-spin" style={{ width: 8, height: 8 }} />
-          ) : hasDraft ? (
-            <span className="w-2 h-2 rounded-full bg-blue-400/70" />
+            <span className="w-2 h-2 bg-[var(--danger)]" />
+        ) : hasQuestion ? (
+          <svg className="w-3 h-3 text-orange-400" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4.5 2a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 4.5 2Zm7 0a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 11.5 2Z" />
+          </svg>
+        ) : isBusy ? (
+          <Spinner className="w-3.5 h-3.5" />
+        ) : hasDraft ? (
+          <span className="w-2 h-2 bg-blue-400/70" />
           ) : unread ? (
-            <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />
+            <span className="w-2 h-2 bg-[var(--accent)]" />
           ) : isRunning ? (
-            <span className="w-2 h-2 rounded-full bg-[var(--accent)]/50" />
+            <span className="w-2 h-2 bg-[var(--accent)]/50" />
           ) : (
-            <span className="w-2 h-2 rounded-full bg-[var(--text-tertiary)]/20" />
+            <span className="w-2 h-2 bg-[var(--text-tertiary)]/20" />
           )}
         </span>
 
@@ -457,7 +458,7 @@ export default function CommandPalette({
           <div className="flex items-center gap-1.5 leading-snug">
             {item.childCount !== undefined && item.childCount > 0 && (
               <span
-                className="inline-flex items-center gap-0.5 shrink-0 text-[9px] px-1 py-px rounded font-medium"
+                className="inline-flex items-center gap-0.5 shrink-0 text-[9px] px-1 py-px font-medium"
                 style={{ background: "rgba(96,165,250,0.15)", color: "rgb(147,197,253)" }}
                 title={`${item.childCount} execution session${item.childCount !== 1 ? "s" : ""}`}
               >
@@ -467,12 +468,12 @@ export default function CommandPalette({
                 {item.childCount}
               </span>
             )}
-            <span className="text-sm font-medium truncate" style={{ color: "var(--text-primary)" }}>
+            <span className="text-xs font-bold truncate" style={{ color: "var(--text-primary)" }}>
               {session.name}
             </span>
             {session.provider && (
               <span
-                className="ml-1 text-[9px] px-1 py-px rounded uppercase tracking-wider font-semibold shrink-0"
+                className="ml-1 text-[9px] px-1 py-px uppercase tracking-wider font-semibold shrink-0"
                 style={{ background: "var(--bg-tertiary)", color: "var(--text-tertiary)" }}
               >
                 {session.provider === "opencode" ? "OC" : session.provider === "claude-code" ? "CC" : session.provider === "codex" ? "CX" : session.provider}
@@ -544,13 +545,13 @@ export default function CommandPalette({
       onClick={onClose}
     >
       <div
-        className="command-palette animate-slide-down flex flex-col rounded-xl shadow-2xl"
+        className="command-palette animate-slide-down flex flex-col shadow-[6px_6px_0px_rgba(255, 122, 0,0.15)] border-2 border-[var(--accent-color)]"
         style={{ width: 580, maxHeight: 560 }}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
       >
         {/* Search input */}
-        <div className="flex items-center gap-3 px-4 py-3.5" style={{ borderBottom: "1px solid var(--card-border)" }}>
+        <div className="flex items-center gap-3 px-4 py-3.5" style={{ borderBottom: "2px solid var(--border-color)" }}>
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={{ opacity: 0.4, flexShrink: 0 }}>
             <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.75" />
             <path d="M13 13L16 16" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
@@ -565,7 +566,7 @@ export default function CommandPalette({
             }}
             placeholder="Search sessions, commands..."
             className="flex-1 bg-transparent outline-none"
-            style={{ fontSize: 15, color: "var(--text-primary)" }}
+            style={{ fontSize: 13, color: "var(--text-primary)", textTransform: "uppercase", letterSpacing: "0.05em" }}
           />
           {query && (
             <button
@@ -573,7 +574,7 @@ export default function CommandPalette({
                 setQuery("");
                 inputRef.current?.focus();
               }}
-              className="text-xs opacity-40 hover:opacity-70 transition-opacity"
+              className="text-xs opacity-40 hover:opacity-70"
               style={{ color: "var(--text-secondary)" }}
             >
               Clear
@@ -584,7 +585,7 @@ export default function CommandPalette({
         {/* Results — virtualised */}
         <div ref={listRef} className="flex-1 overflow-y-auto py-1.5" style={{ maxHeight: 460 }}>
           {rows.length === 0 && (
-            <div className="px-4 py-10 text-center text-sm" style={{ color: "var(--text-tertiary)" }}>
+            <div className="px-4 py-10 text-center text-xs uppercase tracking-wider" style={{ color: "var(--text-tertiary)" }}>
               No results found
             </div>
           )}
@@ -606,27 +607,27 @@ export default function CommandPalette({
         {/* Footer hints */}
         <div
           className="flex items-center gap-4 px-4 py-2.5 text-[11px]"
-          style={{ borderTop: "1px solid var(--card-border)", color: "var(--text-tertiary)" }}
+          style={{ borderTop: "2px solid var(--border-color)", color: "var(--text-tertiary)" }}
         >
           <span className="flex items-center gap-1">
-            <kbd className="px-1.5 py-0.5 rounded-md font-mono text-[10px] border" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)" }}>↑↓</kbd>
+            <kbd className="px-1.5 py-0.5 font-mono text-[10px] border-2" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)" }}>↑↓</kbd>
             <span>navigate</span>
           </span>
           <span className="flex items-center gap-1">
-            <kbd className="px-1.5 py-0.5 rounded-md font-mono text-[10px] border" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)" }}>↵</kbd>
+            <kbd className="px-1.5 py-0.5 font-mono text-[10px] border-2" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)" }}>↵</kbd>
             <span>select</span>
           </span>
           <span className="flex items-center gap-1">
-            <kbd className="px-1.5 py-0.5 rounded-md font-mono text-[10px] border" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)" }}>esc</kbd>
+            <kbd className="px-1.5 py-0.5 font-mono text-[10px] border-2" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)" }}>esc</kbd>
             <span>close</span>
           </span>
           <span className="ml-auto flex items-center gap-2 opacity-60">
             <span>
-              <kbd className="px-1 py-0.5 rounded font-mono text-[10px] border" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)" }}>&gt;</kbd>
+              <kbd className="px-1 py-0.5 font-mono text-[10px] border-2" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)" }}>&gt;</kbd>
               {" "}commands
             </span>
             <span>
-              <kbd className="px-1 py-0.5 rounded font-mono text-[10px] border" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)"}}>#</kbd>
+              <kbd className="px-1 py-0.5 font-mono text-[10px] border-2" style={{ background: "var(--bg-tertiary)", borderColor: "var(--border-subtle)"}}>#</kbd>
               {" "}status
             </span>
           </span>

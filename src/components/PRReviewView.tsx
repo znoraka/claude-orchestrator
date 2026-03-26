@@ -207,7 +207,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
         <div
           key={file.path}
           onClick={() => { setSelectedFile(file.path); setCommentLine(null); }}
-          className={`w-full text-left py-1 pr-2 text-xs font-mono flex items-center gap-1.5 rounded-lg transition-colors cursor-pointer ${
+          className={`w-full text-left py-1 pr-2 text-xs font-mono flex items-center gap-1.5 cursor-pointer ${
             isSelected
               ? "bg-[var(--accent)] text-white"
               : isViewed
@@ -221,7 +221,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
             role="checkbox"
             aria-checked={isViewed}
             onClick={(e) => { e.stopPropagation(); toggleViewed(file.path); }}
-            className={`flex-shrink-0 w-4 h-4 rounded border flex items-center justify-center cursor-pointer transition-all ${
+            className={`flex-shrink-0 w-4 h-4 border-2 flex items-center justify-center cursor-pointer ${
               isViewed
                 ? isSelected
                   ? "bg-white/90 border-white/90"
@@ -262,7 +262,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       <div key={node.path}>
         <div
           onClick={() => toggleDir(node.path)}
-          className="w-full text-left py-1 pr-2 text-xs flex items-center gap-1.5 rounded-lg transition-colors cursor-pointer text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+          className="w-full text-left py-1 pr-2 text-xs flex items-center gap-1.5 cursor-pointer text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
           style={{ paddingLeft: `${depth * 16 + 8}px` }}
         >
           <svg
@@ -308,7 +308,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       <div className="flex items-center gap-2 pl-3 pr-10 py-2 border-b border-[var(--border-color)] flex-shrink-0">
         <button
           onClick={onBack}
-          className="flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors px-2 py-1 rounded-lg hover:bg-[var(--bg-tertiary)] flex-shrink-0"
+          className="flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] px-2 py-1 hover:bg-[var(--bg-tertiary)] flex-shrink-0"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="15 18 9 12 15 6" />
@@ -317,8 +317,8 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
         </button>
         <div className="w-px h-4 bg-[var(--border-color)] flex-shrink-0" />
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          <span className="text-[11px] font-mono font-semibold text-[var(--accent)] flex-shrink-0">#{prNumber}</span>
-          <span className="text-xs text-[var(--text-primary)] truncate font-semibold">{prTitle}</span>
+          <span className="text-[11px] font-mono font-bold text-[var(--accent)] flex-shrink-0">#{prNumber}</span>
+          <span className="text-xs text-[var(--text-primary)] truncate font-bold uppercase tracking-wider">{prTitle}</span>
         </div>
 
         {/* Right side controls */}
@@ -329,9 +329,9 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
               <span className="text-[10px] text-[var(--text-tertiary)] tabular-nums whitespace-nowrap">
                 {viewedFiles.size}/{files.length}
               </span>
-              <div className="w-14 h-1.5 rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
+              <div className="w-14 h-1.5 bg-[var(--bg-tertiary)] overflow-hidden">
                 <div
-                  className="h-full rounded-full transition-all"
+                  className="h-full"
                   style={{
                     width: `${progressPct}%`,
                     background: progressPct === 100 ? "var(--success)" : "var(--accent)",
@@ -345,7 +345,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
 
           <button
             onClick={() => openUrl(prUrl)}
-            className="p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             title="Open on GitHub"
           >
             <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
@@ -356,7 +356,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
           {onAskClaude && selectedFile && (
             <button
               onClick={handleAskClaude}
-              className="text-[11px] font-medium text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors px-2 py-1 rounded-lg hover:bg-[var(--accent)]/10"
+              className="text-[11px] font-medium text-[var(--accent)] hover:text-[var(--accent-hover)] px-2 py-1 hover:bg-[var(--accent)]/10"
             >
               Ask Claude
             </button>
@@ -365,7 +365,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
           {onClaudeReview && (
             <button
               onClick={() => onClaudeReview(prNumber, headRefName)}
-              className="p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+              className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)]"
               title="Claude review in new session"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
@@ -380,7 +380,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
               setDiffMode(next);
               localStorage.setItem("git-diff-mode", next);
             }}
-            className="text-[11px] font-medium text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors px-2 py-1 rounded-lg hover:bg-[var(--bg-tertiary)]"
+            className="text-[11px] font-medium text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-2 py-1 hover:bg-[var(--bg-tertiary)]"
           >
             {diffMode === "unified" ? "Split" : "Unified"}
           </button>

@@ -31,13 +31,13 @@ function relativeTime(dateStr: string): string {
 function StatusPill({ pr }: { pr: PullRequest }) {
   if (pr.isDraft) {
     return (
-      <span className="px-2 py-0.5 text-[10px] rounded-full bg-[var(--text-tertiary)]/10 text-[var(--text-tertiary)] border border-[var(--text-tertiary)]/15">
+      <span className="px-2 py-0.5 text-[10px] bg-[var(--text-tertiary)]/10 text-[var(--text-tertiary)] border-2 border-[var(--text-tertiary)]/15">
         Draft
       </span>
     );
   }
   return (
-    <span className="px-2 py-0.5 text-[10px] rounded-full bg-[var(--success)]/15 text-[var(--success)] border border-[var(--success)]/25">
+    <span className="px-2 py-0.5 text-[10px] bg-[var(--success)]/15 text-[var(--success)] border-2 border-[var(--success)]/25">
       Open
     </span>
   );
@@ -76,10 +76,10 @@ function ChecksIndicator({ pr }: { pr: PullRequest }) {
   );
 
   return (
-    <span className={`relative group/checks flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded-full border ${bgClass} ${colorClass} cursor-default`}>
+    <span className={`relative group/checks flex items-center gap-1 px-1.5 py-0.5 text-[10px] border-2 ${bgClass} ${colorClass} cursor-default`}>
       {CheckIcon}
       {pr.checksPassing}/{pr.checksTotal}
-      <div className="absolute left-0 top-full mt-1 z-50 hidden group-hover/checks:block min-w-[200px] max-w-[300px] max-h-[300px] overflow-y-auto bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-xl shadow-lg p-2 text-[10px]">
+      <div className="absolute left-0 top-full mt-1 z-50 hidden group-hover/checks:block min-w-[200px] max-w-[300px] max-h-[300px] overflow-y-auto bg-[var(--bg-primary)] border-2 border-[var(--border-color)] shadow-lg p-2 text-[10px]">
         <div className="text-[var(--text-secondary)] font-semibold mb-1.5">
           Checks: {pr.checksPassing} passed, {pr.checksFailing} failed{pr.checksPending > 0 ? `, ${pr.checksPending} pending` : ""}
         </div>
@@ -166,7 +166,7 @@ function PRCard({
   return (
     <div className="relative px-3">
       <div
-        className={`group/card rounded-xl border px-3 py-2.5 transition-all ${
+        className={`group/card border-2 px-3 py-2.5 ${
           isCurrent
             ? "border-[var(--accent)]/40 bg-[var(--accent)]/5"
             : "border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--border-color)]"
@@ -176,7 +176,7 @@ function PRCard({
         {/* Title */}
         <div
           onClick={() => openUrl(pr.url)}
-          className="text-sm font-medium text-[var(--text-primary)] leading-snug mb-1.5 cursor-pointer hover:text-[var(--text-secondary)] transition-colors"
+          className="text-sm font-medium text-[var(--text-primary)] leading-snug mb-1.5 cursor-pointer hover:text-[var(--text-secondary)]"
         >
           {pr.title}
         </div>
@@ -187,17 +187,17 @@ function PRCard({
             <StatusPill pr={pr} />
             <ChecksIndicator pr={pr} />
             {isCurrent && (
-              <span className="px-2 py-0.5 text-[10px] rounded-full bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/30">
+              <span className="px-2 py-0.5 text-[10px] bg-[var(--accent)]/20 text-[var(--accent)] border-2 border-[var(--accent)]/30">
                 current
               </span>
             )}
             {pr.hasMyApproval && (
-              <span className="px-2 py-0.5 text-[10px] rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
+              <span className="px-2 py-0.5 text-[10px] bg-blue-500/20 text-blue-400 border-2 border-blue-500/30">
                 approved
               </span>
             )}
             {pr.hasMyComment && (
-              <span className="px-2 py-0.5 text-[10px] rounded-full bg-[var(--status-waiting)]/15 text-[var(--status-waiting)] border border-[var(--status-waiting)]/25">
+              <span className="px-2 py-0.5 text-[10px] bg-[var(--status-waiting)]/15 text-[var(--status-waiting)] border-2 border-[var(--status-waiting)]/25">
                 commented
               </span>
             )}
@@ -207,10 +207,10 @@ function PRCard({
           </div>
 
           {/* Actions — appear on hover, pinned to right */}
-          <div className="flex items-center gap-0.5 opacity-0 group-hover/card:opacity-100 transition-opacity flex-shrink-0">
+          <div className="flex items-center gap-0.5 opacity-0 group-hover/card:opacity-100 flex-shrink-0">
             <button
               onClick={(e) => { e.stopPropagation(); onReviewPR(pr); }}
-              className="p-1 rounded-lg hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--accent)] transition-colors"
+              className="p-1 hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--accent)]"
               title="Review PR diff"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
@@ -220,7 +220,7 @@ function PRCard({
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); onClaudeReview(pr.number, pr.headRefName); }}
-              className="p-1 rounded-lg hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--accent)] transition-colors"
+              className="p-1 hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--accent)]"
               title="Claude review in new session"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
@@ -230,7 +230,7 @@ function PRCard({
             <button
               onClick={handleCheckout}
               disabled={checkoutLoading || isCurrent}
-              className="p-1 rounded-lg hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-default transition-colors"
+              className="p-1 hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-default"
               title={isCurrent ? "Already on this branch" : "Checkout branch"}
             >
               {checkoutLoading ? (
@@ -250,7 +250,7 @@ function PRCard({
             <button
               onClick={handleWorktree}
               disabled={worktreeLoading}
-              className="p-1 rounded-lg hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30 transition-colors"
+              className="p-1 hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30"
               title="Checkout in worktree"
             >
               {worktreeLoading ? (
@@ -268,7 +268,7 @@ function PRCard({
         </div>
       </div>
       {toast && (
-        <div className="absolute right-5 top-2 z-10 px-2 py-1 text-[10px] bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg text-[var(--text-secondary)] max-w-[200px] truncate">
+        <div className="absolute right-5 top-2 z-10 px-2 py-1 text-[10px] bg-[var(--bg-secondary)] border-2 border-[var(--border-color)] shadow-lg text-[var(--text-secondary)] max-w-[200px] truncate">
           {toast}
         </div>
       )}
@@ -432,7 +432,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
           </div>
           <button
             onClick={() => openUrl("https://cli.github.com")}
-            className="text-[11px] text-[var(--accent)] hover:text-[var(--accent-hover)] hover:underline transition-colors"
+            className="text-[11px] text-[var(--accent)] hover:text-[var(--accent-hover)] hover:underline"
           >
             Install GitHub CLI
           </button>
@@ -463,16 +463,16 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center gap-2.5 pl-4 pr-10 py-3 border-b border-[var(--border-color)] flex-shrink-0">
-        <span className="text-sm font-semibold text-[var(--text-primary)]">Pull Requests</span>
+        <span className="text-xs font-bold uppercase tracking-wider text-[var(--text-primary)]">Pull Requests</span>
         {totalCount > 0 && (
-          <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-[var(--accent)]/15 text-[var(--accent)] border border-[var(--accent)]/25 tabular-nums">
+          <span className="px-2 py-0.5 text-[10px] font-semibold bg-[var(--accent)]/15 text-[var(--accent)] border-2 border-[var(--accent)]/25 tabular-nums">
             {searchQuery.trim() ? `${filteredCount}/${totalCount}` : totalCount}
           </span>
         )}
         <div className="ml-auto">
           <button
             onClick={() => { refresh(); fetchBranch(); }}
-            className="p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             title="Refresh"
           >
             {loading ? (
@@ -513,7 +513,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search pull requests…"
-              className="w-full bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl pl-8 pr-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-tertiary)] outline-none focus:border-[var(--accent)]/50 transition-colors"
+              className="w-full bg-[var(--bg-secondary)] border-2 border-[var(--border-color)] pl-8 pr-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-tertiary)] outline-none focus:border-[var(--accent)]/50"
             />
           </div>
         </div>
