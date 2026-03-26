@@ -122,12 +122,16 @@ export function useAgentEvents(props: AgentEventsProps) {
         }
 
         const displayText = sessionRef.current?.planContent ? "Execute the plan." : prompt;
+        const filePills = sessionRef.current?.pendingFiles && sessionRef.current.pendingFiles.length > 0
+          ? [{ type: "text", text: sessionRef.current.pendingFiles.map((f: { name: string }) => `<file name="${f.name}"></file>`).join("\n") }]
+          : [];
         const displayContent = sessionRef.current?.pendingImages && sessionRef.current.pendingImages.length > 0
           ? [
               ...sessionRef.current.pendingImages.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } })),
+              ...filePills,
               { type: "text", text: displayText },
             ]
-          : [{ type: "text", text: displayText }];
+          : [...filePills, { type: "text", text: displayText }];
         setMessages((prev) => [
           ...prev,
           { id: `user-${Date.now()}`, type: "user", content: displayContent, timestamp: Date.now() },

@@ -108,12 +108,16 @@ export default function NewSessionPanel({
   // Auto-focus input when typing anywhere (matches AgentChat behavior)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || e.key.length !== 1 || textareaRef.current === document.activeElement ||
+      if (e.metaKey || e.ctrlKey || e.key.length !== 1 ||
         (e.target instanceof HTMLElement && (e.target.isContentEditable || e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA"))) return;
-      textareaRef.current?.focus();
+      if (textareaRef.current && textareaRef.current !== document.activeElement) {
+        e.preventDefault();
+        e.stopPropagation();
+        textareaRef.current.focus();
+      }
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    window.addEventListener("keydown", handler, { capture: true });
+    return () => window.removeEventListener("keydown", handler, { capture: true });
   }, []);
 
   const filteredModels = activeModels.filter((m) =>
@@ -223,7 +227,6 @@ export default function NewSessionPanel({
           sessionPermissionMode={permissionMode}
           currentModel={model}
           activeModels={activeModels}
-          currentBranch={undefined}
           openPill={openPill}
           setOpenPill={setOpenPill}
           modelSearchTerm={modelSearchTerm}
@@ -253,10 +256,12 @@ export default function NewSessionPanel({
           onShowFilePicker={() => {}}
           handleKeyDown={handleKeyDown}
           onCreateTerminal={onCreateTerminal ? () => onCreateTerminal(directory) : undefined}
+          footerHint={
+            <span className="text-[11px] text-[var(--text-tertiary)]">
+              Press <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)] font-mono text-[10px]">Esc</kbd> to go back · <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)] font-mono text-[10px]">Enter</kbd> to send
+            </span>
+          }
         />
-        <p className="pb-4 text-[11px] text-[var(--text-tertiary)] text-center">
-          Press <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)] font-mono text-[10px]">Esc</kbd> to go back · <kbd className="px-1 py-0.5 rounded bg-[var(--bg-tertiary)] font-mono text-[10px]">Enter</kbd> to send
-        </p>
       </div>
     </div>
   );

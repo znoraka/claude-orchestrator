@@ -190,7 +190,7 @@ export default function Sidebar({
     (s: Session): boolean => {
       if (s.id === activeSessionId) return true;
       if (unreadSessions?.has(s.id)) return true;
-      if (s.status === "running" || s.status === "starting") return true;
+      if (s.sessionType !== "terminal" && (s.status === "running" || s.status === "starting")) return true;
       if (s.sessionType === "terminal" && terminalBusyIds?.has(s.id)) return true;
       const youngest = youngestDescendantMap?.get(s.id);
       if (youngest) {

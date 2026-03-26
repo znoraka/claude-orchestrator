@@ -1,4 +1,42 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { invoke } from "../../../lib/bridge";
+
+// ── Shared branch cache (per directory, survives across component instances) ──
+const branchCache = new Map<string, string>();
+const branchListeners = new Set<() => void>();
+let branchSnapshot = 0; // bump to notify subscribers
+
+function subscribeBranch(cb: () => void) {
+  branchListeners.add(cb);
+  return () => branchListeners.delete(cb);
+}
+
+function setCachedBranch(dir: string, branch: string) {
+  if (branchCache.get(dir) === branch) return;
+  branchCache.set(dir, branch);
+  branchSnapshot++;
+  branchListeners.forEach((cb) => cb());
+}
+
+function fetchBranchForDir(dir: string) {
+  invoke<{ branch: string; files: unknown[]; isGitRepo: boolean }>("get_git_status", { directory: dir })
+    .then((r) => { if (r.isGitRepo) setCachedBranch(dir, r.branch); })
+    .catch(() => {});
+}
+
+function useCachedBranch(dir: string | undefined): string {
+  // Subscribe to cache changes
+  const branch = useSyncExternalStore(
+    subscribeBranch,
+    () => (dir ? branchCache.get(dir) || "" : ""),
+  );
+  // Fetch on first access for this directory
+  useEffect(() => {
+    if (!dir) return;
+    if (!branchCache.has(dir)) fetchBranchForDir(dir);
+  }, [dir]);
+  return branch;
+}
 import { AttachmentStrip } from "./AttachmentStrip";
 import { SlashMenu } from "./SlashMenu";
 import { FileMenu } from "./FileMenu";
@@ -45,7 +83,6 @@ interface ChatInputProps {
   sessionPermissionMode?: string;
   currentModel: string;
   activeModels: ModelOption[];
-  currentBranch?: string;
   openPill: "provider" | "model" | "mode" | "effort" | null;
   setOpenPill: (pill: "provider" | "model" | "mode" | "effort" | null) => void;
   modelSearchTerm: string;
@@ -80,6 +117,7 @@ interface ChatInputProps {
 
   handleKeyDown: (e: React.KeyboardEvent) => void;
   onInputHeightChange?: (height: number) => void;
+  footerHint?: React.ReactNode;
   onCreateTerminal?: () => void;
 }
 
@@ -92,7 +130,7 @@ export function ChatInput({
   onAnswerQuestion, onAllowPermission, onDenyPermission, onAllowInNew, onPlanFeedback,
   editingMessageId, onCancelEdit,
   sessionDir, sessionStatus, sessionProvider, sessionPermissionMode,
-  currentModel, activeModels, currentBranch,
+  currentModel, activeModels,
   openPill, setOpenPill, modelSearchTerm, setModelSearchTerm, filteredModels,
   reasoningEffort, setReasoningEffort,
   onModelChange, onPermissionModeChange, onProviderChange, providerAvailability,
@@ -100,11 +138,60 @@ export function ChatInput({
   showFileMenu, fileSuggestions, fileMenuIndex, setFileMenuIndex, fileMenuRef, onSelectFile,
   showSlashMenu, filteredSlashCommands, slashMenuIndex, setSlashMenuIndex, slashMenuRef, onSelectSlashCommand,
   onShowFilePicker,
-  handleKeyDown, onInputHeightChange, onCreateTerminal,
+  handleKeyDown, onInputHeightChange, onCreateTerminal, footerHint,
 }: ChatInputProps) {
 
   const canSend = !!(inputText.trim() || images.length > 0 || fileReferences.length > 0 || pastedFiles.length > 0);
   const isShellPrefix = inputText.startsWith(">");
+
+  const activeBranch = useCachedBranch(sessionDir);
+
+  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [branchSearch, setBranchSearch] = useState("");
+  const branchDropdownRef = useRef<HTMLDivElement | null>(null);
+  const branchSearchRef = useRef<HTMLInputElement | null>(null);
+
+  const openBranchDropdown = async () => {
+    if (!sessionDir) return;
+    setBranchSearch("");
+    try {
+      const list = await invoke<string[]>("list_branches", { directory: sessionDir });
+      setBranches(list);
+    } catch {
+      setBranches([]);
+    }
+    setBranchDropdownOpen(true);
+    setTimeout(() => branchSearchRef.current?.focus(), 50);
+  };
+
+  const closeBranchDropdown = () => {
+    setBranchDropdownOpen(false);
+    setBranchSearch("");
+  };
+
+  const switchBranch = async (branch: string) => {
+    if (!sessionDir) return;
+    closeBranchDropdown();
+    try {
+      await invoke("switch_branch", { directory: sessionDir, branch });
+      setCachedBranch(sessionDir, branch);
+    } catch (e) {
+      console.error("Failed to switch branch:", e);
+    }
+  };
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!branchDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node)) {
+        closeBranchDropdown();
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [branchDropdownOpen]);
 
   // Auto-resize textarea when inputText changes (handles paste, edit, programmatic changes)
   useEffect(() => {
@@ -248,7 +335,6 @@ export function ChatInput({
                 sessionPermissionMode={sessionPermissionMode}
                 currentModel={currentModel}
                 activeModels={activeModels}
-                currentBranch={currentBranch}
                 openPill={openPill}
                 setOpenPill={setOpenPill}
                 modelSearchTerm={modelSearchTerm}
@@ -270,6 +356,66 @@ export function ChatInput({
                 onCreateTerminal={onCreateTerminal}
               />
             </div>
+
+            {/* Footer row: branch selector + optional hint */}
+            {(activeBranch || footerHint) && (
+              <div className="flex items-center justify-between">
+                {activeBranch ? (
+                  <div className="relative" ref={branchDropdownRef}>
+                    <button
+                      onClick={openBranchDropdown}
+                      className="flex items-center gap-1 px-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
+                      </svg>
+                      {activeBranch}
+                      <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-50">
+                        <path d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                      </svg>
+                    </button>
+                    {branchDropdownOpen && (
+                      <div className="absolute bottom-full mb-1 left-0 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50 min-w-[220px] max-h-[280px] flex flex-col">
+                        <input
+                          ref={branchSearchRef}
+                          value={branchSearch}
+                          onChange={(e) => setBranchSearch(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") closeBranchDropdown();
+                            if (e.key === "Enter") {
+                              const filtered = branches.filter((b) => b.toLowerCase().includes(branchSearch.toLowerCase()));
+                              if (filtered.length === 1) switchBranch(filtered[0]);
+                            }
+                          }}
+                          placeholder="Search branches…"
+                          className="w-full px-3 py-2 text-[11px] bg-transparent border-b border-[var(--border-color)] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none"
+                        />
+                        <div className="overflow-y-auto flex-1">
+                          {branches
+                            .filter((b) => b.toLowerCase().includes(branchSearch.toLowerCase()))
+                            .map((branch) => (
+                              <button
+                                key={branch}
+                                onMouseDown={(e) => { e.preventDefault(); switchBranch(branch); }}
+                                className={`w-full text-left px-3 py-1.5 text-[11px] flex items-center gap-1.5 transition-colors ${branch === activeBranch ? "text-[var(--accent)]" : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"}`}
+                              >
+                                {branch === activeBranch && (
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                                )}
+                                <span className={`truncate ${branch === activeBranch ? "" : "ml-[14px]"}`}>{branch}</span>
+                              </button>
+                            ))}
+                          {branches.filter((b) => b.toLowerCase().includes(branchSearch.toLowerCase())).length === 0 && (
+                            <div className="px-3 py-2 text-[10px] text-[var(--text-tertiary)] italic">No branches found</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : <div />}
+                {footerHint}
+              </div>
+            )}
           </>
         )}
       </div>

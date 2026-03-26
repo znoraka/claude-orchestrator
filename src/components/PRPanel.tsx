@@ -11,6 +11,7 @@ interface PRPanelProps {
   onResetRef?: React.RefObject<(() => void) | null>;
   onAskClaude?: (prompt: string) => void;
   onSwitchToClaude?: () => void;
+  initialPrNumber?: number;
 }
 
 function relativeTime(dateStr: string): string {
@@ -191,7 +192,7 @@ function PRCard({
               </span>
             )}
             {pr.hasMyApproval && (
-              <span className="px-2 py-0.5 text-[10px] rounded-full bg-[var(--success)]/15 text-[var(--success)] border border-[var(--success)]/25">
+              <span className="px-2 py-0.5 text-[10px] rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
                 approved
               </span>
             )}
@@ -275,7 +276,7 @@ function PRCard({
   );
 }
 
-export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, onSwitchToClaude: _onSwitchToClaude }: PRPanelProps) {
+export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, onSwitchToClaude: _onSwitchToClaude, initialPrNumber }: PRPanelProps) {
   const { createSession, sessions } = useSessionContext();
   const [result, setResult] = useState<PullRequestsResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -379,6 +380,18 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
     }, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, [isActive, refresh, fetchBranch]);
+
+  // Auto-open a specific PR when initialPrNumber is provided and PRs have loaded
+  const initialPrOpenedRef = useRef(false);
+  useEffect(() => {
+    if (!initialPrNumber || initialPrOpenedRef.current || !result) return;
+    const allPrs = [...(result.myPrs ?? []), ...(result.reviewRequested ?? [])];
+    const pr = allPrs.find((p) => p.number === initialPrNumber);
+    if (pr) {
+      initialPrOpenedRef.current = true;
+      setReviewingPr(pr);
+    }
+  }, [initialPrNumber, result]);
 
   if (reviewingPr) {
     return (

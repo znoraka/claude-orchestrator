@@ -96,6 +96,7 @@ const AgentChat = memo(function AgentChat({
   onProviderChange,
   onStartPendingSession,
   onCreateTerminal,
+  onOpenPRPanel,
 }: AgentChatProps) {
   const isReadOnly = session?.status === "stopped";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -119,8 +120,6 @@ const AgentChat = memo(function AgentChat({
     text: string; images: Array<{ id: string; data: string; mediaType: string; name: string }>;
     fileReferences: FileReference[]; pastedFiles: Array<{ id: string; name: string; content: string; mimeType: string }>;
   } | null>(null);
-  const [currentBranch, setCurrentBranch] = useState("");
-
   const abortedRef = useRef(false);
   const planDeniedRef = useRef(false);
   const generationStartRef = useRef<number>(0);
@@ -259,16 +258,6 @@ const AgentChat = memo(function AgentChat({
   const removeFileReference = useCallback((filePath: string) => {
     setFileReferences((prev) => prev.filter((r) => r.filePath !== filePath));
   }, []);
-
-  // Current git branch
-  useEffect(() => {
-    if (!sessionDir) return;
-    let cancelled = false;
-    invoke<{ branch: string; files: unknown[]; is_git_repo: boolean }>("get_git_status", { directory: sessionDir })
-      .then((result) => { if (!cancelled && result.is_git_repo) setCurrentBranch(result.branch); })
-      .catch(() => { });
-    return () => { cancelled = true; };
-  }, [sessionDir]);
 
   // Stream accumulator
   const streamAccumulator = useStreamAccumulator(setMessages);
@@ -751,6 +740,10 @@ const AgentChat = memo(function AgentChat({
       const refSummary = refs.map((ref) => { const lineRange = ref.startLine === 1 && ref.endLine >= ref.content.split("\n").length ? "" : `:${ref.startLine}-${ref.endLine}`; return `📎 ${ref.filePath}${lineRange}`; }).join("\n");
       displayParts.push({ type: "text", text: refSummary });
     }
+    if (activePastedFiles.length > 0) {
+      const fileSummary = activePastedFiles.map(f => `<file name="${f.name}"></file>`).join("\n");
+      displayParts.push({ type: "text", text: fileSummary });
+    }
     const userMsg: ChatMessage = {
       id: `user-${Date.now()}`, type: "user",
       content: [...activeImages.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } })), ...displayParts, ...(text ? [{ type: "text", text }] : [])],
@@ -1030,6 +1023,29 @@ const AgentChat = memo(function AgentChat({
         </button>
       )}
 
+      {/* PR review banner */}
+      {(() => {
+        if (!onOpenPRPanel) return null;
+        const prMatch = session?.name?.match(/Review PR #(\d+)/i) || session?.pendingPrompt?.match(/\/review\s+(\d+)/i);
+        if (!prMatch) return null;
+        const prNumber = parseInt(prMatch[1], 10);
+        return (
+          <div className="flex items-center gap-2 px-4 py-1.5 border-b border-[var(--border-color)] bg-[var(--bg-secondary)] flex-shrink-0">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--text-tertiary)] shrink-0">
+              <circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" />
+              <path d="M13 6h3a2 2 0 012 2v7" /><line x1="6" y1="9" x2="6" y2="21" />
+            </svg>
+            <span className="text-[11px] text-[var(--text-tertiary)]">PR #{prNumber}</span>
+            <button
+              onClick={() => onOpenPRPanel(prNumber)}
+              className="ml-auto text-[11px] text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors"
+            >
+              Open in PR Panel →
+            </button>
+          </div>
+        );
+      })()}
+
       {/* Messages area */}
       <div ref={scrollRef} onScroll={handleScroll} className="chat-scroll flex-1 overflow-y-auto py-8 flex flex-col">
         {isActive && messages.length === 0 && !isGenerating && !session?.planContent && (
@@ -1133,7 +1149,7 @@ const AgentChat = memo(function AgentChat({
         editingMessageId={editingMessageId} onCancelEdit={() => { setEditingMessageId(null); setInputText(""); }}
         sessionDir={sessionDir} sessionStatus={session?.status} sessionProvider={session?.provider}
         sessionPermissionMode={session?.permissionMode} currentModel={currentModel} activeModels={activeModels}
-        currentBranch={currentBranch} openPill={openPill} setOpenPill={setOpenPill}
+        openPill={openPill} setOpenPill={setOpenPill}
         modelSearchTerm={modelSearchTerm} setModelSearchTerm={setModelSearchTerm} filteredModels={filteredModels}
         reasoningEffort={reasoningEffort} setReasoningEffort={setReasoningEffort}
         onModelChange={onModelChange} onPermissionModeChange={onPermissionModeChange}

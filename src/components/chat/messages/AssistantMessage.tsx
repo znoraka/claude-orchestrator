@@ -73,7 +73,7 @@ export function AssistantMessage({ message, toolStates, onToggleTool, isLastMess
           if (targetToolsSeg) {
             targetToolsSeg.items.push({ type: "thinking", block });
           } else {
-            const hasToolsAhead = grouped.items.slice(i + 1).some((ni) => ni.type === "toolGroup");
+            const hasToolsAhead = isStreaming || grouped.items.slice(i + 1).some((ni) => ni.type === "toolGroup");
             if (hasToolsAhead) {
               result.push({ type: "tools", items: [{ type: "thinking", block }], key: `thinking-${i}` });
             } else {

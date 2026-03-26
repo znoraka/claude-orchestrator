@@ -72,6 +72,7 @@ const SessionPanel = memo(function SessionPanel({
   providerAvailability,
   onProviderChange,
   onStartPendingSession,
+  onOpenPRPanel,
 }: {
   session: Session;
   isActive: boolean;
@@ -102,6 +103,7 @@ const SessionPanel = memo(function SessionPanel({
   providerAvailability: Record<string, boolean>;
   onProviderChange: (provider: AgentProvider) => void;
   onStartPendingSession: (provider: AgentProvider, model: string) => Promise<void>;
+  onOpenPRPanel?: (prNumber: number) => void;
 }) {
   const isVisible = isActive && activePanel === null;
 
@@ -187,6 +189,7 @@ const SessionPanel = memo(function SessionPanel({
             onProviderChange={onProviderChange}
             onStartPendingSession={onStartPendingSession}
             onCreateTerminal={handleCreateTerminal}
+            onOpenPRPanel={onOpenPRPanel}
           />
         )}
       </ErrorBoundary>
@@ -592,6 +595,9 @@ export default function App() {
 
   // Ref to notify PRPanel to reset to list view
   const prPanelResetRef = useRef<(() => void) | null>(null);
+
+  // PR number to open directly in the PR panel (set when clicking "Open in PR Panel" from chat)
+  const [openPrNumber, setOpenPrNumber] = useState<number | undefined>(undefined);
 
   const togglePanel = (panel: "prs") => {
     if (activePanel === panel) {
@@ -1310,6 +1316,7 @@ export default function App() {
                   providerAvailability={providerAvailability}
                   onProviderChange={(provider) => handleProviderChange(session.id, provider)}
                   onStartPendingSession={(provider, model) => handleStartPendingSession(session.id, provider, model)}
+                  onOpenPRPanel={(prNumber) => { setOpenPrNumber(prNumber); navigateToPanel("prs"); }}
                 />
               ))}
 
@@ -1396,6 +1403,7 @@ export default function App() {
                   isActive={activePanel === "prs"}
                   onResetRef={prPanelResetRef}
                   onSwitchToClaude={() => navigateToPanel(null)}
+                  initialPrNumber={openPrNumber}
                   onAskClaude={(prompt) => {
                     if (!activeSessionId) return;
                     const jsonLine = JSON.stringify({

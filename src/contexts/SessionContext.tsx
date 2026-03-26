@@ -382,6 +382,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           parentSessionId?: string;
           archived?: boolean;
           archivedAt?: number;
+          sessionType?: string;
         }>
       >("load_sessions")
         .then((saved) => {
@@ -406,6 +407,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
               parentSessionId: s.parentSessionId,
               archived: s.archived,
               archivedAt: s.archivedAt,
+              sessionType: (s.sessionType as Session["sessionType"]) || "chat",
             }));
             dispatch({ type: "SET_ALL", sessions: restored });
           }
@@ -446,6 +448,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           parentSessionId?: string;
           archived?: boolean;
           archivedAt?: number;
+          sessionType?: string;
         }>
       >("load_sessions")
         .then((saved) => {
@@ -470,6 +473,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
               parentSessionId: s.parentSessionId,
               archived: s.archived,
               archivedAt: s.archivedAt,
+              sessionType: (s.sessionType as Session["sessionType"]) || "chat",
             }));
             dispatch({ type: "SET_ALL", sessions: restored });
           }

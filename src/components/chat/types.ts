@@ -33,6 +33,7 @@ export interface AgentChatProps {
   onProviderChange?: (provider: AgentProvider) => void;
   onStartPendingSession?: (provider: AgentProvider, model: string) => Promise<void>;
   onCreateTerminal?: (directory: string, command?: string) => void;
+  onOpenPRPanel?: (prNumber: number) => void;
 }
 
 export interface ContentBlock {
