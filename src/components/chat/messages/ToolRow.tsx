@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { ToolGroup } from "../types";
 import { canonicalToolName, getToolColor, getToolSummary, getSpecialToolInfo } from "../constants";
 import { ToolExpandedDetail } from "./ToolExpandedDetail";
+import { Spinner } from "../../ui/spinner";
 
 interface ToolRowProps {
   group: ToolGroup;
@@ -41,7 +42,7 @@ export function ToolRow({ group, isLastMessage, isLastTool: _isLastTool, toolSta
       {isError ? "✗" : "✓"}
     </span>
   ) : (
-    <span className="w-3.5 h-3.5 border-2 border-[var(--accent-color)]/50 border-t-transparent rounded-full animate-spin shrink-0" />
+    <Spinner className="w-3.5 h-3.5" />
   );
 
   const isSpecial = specialInfo.kind !== null;

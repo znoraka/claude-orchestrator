@@ -1105,10 +1105,10 @@ const AgentChat = memo(function AgentChat({
 
                 {isGenerating && !pendingPermission && !pendingQuestion && (
                   <div className="flex items-center gap-2 px-1 py-2">
-                    <div className="flex gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-thinking-pulse" />
-                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-thinking-pulse [animation-delay:200ms]" />
-                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-thinking-pulse [animation-delay:400ms]" />
+                    <div className="flex items-center gap-[3px]">
+                      <span className="inline-block w-[5px] h-[5px] rounded-full bg-orange-400 animate-thinking-dot" />
+                      <span className="inline-block w-[5px] h-[5px] rounded-full bg-orange-400 animate-thinking-dot" style={{ animationDelay: "500ms" }} />
+                      <span className="inline-block w-[5px] h-[5px] rounded-full bg-orange-400 animate-thinking-dot" style={{ animationDelay: "1000ms" }} />
                     </div>
                     <span className="text-xs text-[var(--text-tertiary)]">{currentTodo || "Thinking…"}</span>
                   </div>

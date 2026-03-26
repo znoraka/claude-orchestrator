@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import type { ToolsSegmentItem } from "../types";
 import { ToolRow } from "./ToolRow";
 import { canonicalToolName, getToolColor, getSpecialToolInfo } from "../constants";
+import { Spinner } from "../../ui/spinner";
 
 
 interface ToolCallGroupProps {
@@ -25,7 +26,7 @@ export function ToolCallGroup({ items, isLastMessage, toolStates, onToggle }: To
   const handleToggle = () => setIsExpanded((e) => !e);
 
   const statusIcon = isInProgress ? (
-    <span className="w-3.5 h-3.5 border-2 border-[var(--accent-color)]/50 border-t-transparent rounded-full animate-spin shrink-0" />
+    <Spinner className="w-3.5 h-3.5" />
   ) : (
     <span className={`text-xs shrink-0 ${anyError ? "text-red-400" : "text-green-400"}`}>
       {anyError ? "✗" : "✓"}
