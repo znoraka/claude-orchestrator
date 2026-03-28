@@ -12,6 +12,7 @@ interface GitFileEntry {
 interface Props {
   directory: string;
   onClose: () => void;
+  visible?: boolean;
 }
 
 function slugify(text: string): string {
@@ -34,7 +35,7 @@ const STATUS_COLORS: Record<string, string> = {
   U: "#facc15",
 };
 
-export default function CommitModal({ directory, onClose }: Props) {
+export default function CommitModal({ directory, onClose, visible = true }: Props) {
   const [allFiles, setAllFiles] = useState<GitFileEntry[]>([]);
   // selected = paths that will be included in the commit
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -53,6 +54,7 @@ export default function CommitModal({ directory, onClose }: Props) {
   const [newBranch, setNewBranch] = useState(false);
   const [newBranchName, setNewBranchName] = useState("");
   const [baseBranch, setBaseBranch] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
   const [provider, setProvider] = useState<AgentProvider>(() => {
     const saved = localStorage.getItem("commit-provider");
     return (saved as AgentProvider) || "claude-code";
@@ -63,6 +65,28 @@ export default function CommitModal({ directory, onClose }: Props) {
   const [dynamicOpencode, setDynamicOpencode] = useState<ModelOption[]>([]);
   const [dynamicCodex, setDynamicCodex] = useState<ModelOption[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const resetState = () => {
+    setCommitMessage("");
+    setPushDone(false);
+    setShowCreatePR(false);
+    setPrStep("idle");
+    setPrTitle("");
+    setPrBody("");
+    setPrUrl("");
+    setError(null);
+    setNewBranch(false);
+    setNewBranchName("");
+    setBaseBranch("");
+    setIsLoadingFiles(true);
+    setRefreshKey((k) => k + 1);
+  };
+
+  const handleClose = () => {
+    // Only reset when: PR was created, or push completed on a branch that already has a PR
+    if (prStep === "done" || (pushDone && !showCreatePR)) resetState();
+    onClose();
+  };
 
   // Fetch dynamic models for opencode/codex on mount
   useEffect(() => {
@@ -92,7 +116,9 @@ export default function CommitModal({ directory, onClose }: Props) {
   }, [provider, dynamicOpencode, dynamicCodex]);
 
   useEffect(() => {
+    if (!visible) return;
     let cancelled = false;
+    setIsLoadingFiles(true);
 
     invoke<{ files: GitFileEntry[]; branch: string; isGitRepo: boolean }>("get_git_status", { directory })
       .then((result) => {
@@ -107,8 +133,18 @@ export default function CommitModal({ directory, onClose }: Props) {
         const files = Array.from(byPath.values());
         setAllFiles(files);
         setBranch(result.branch);
-        // Pre-check files that are already staged
-        setSelected(new Set(files.filter((f) => f.staged).map((f) => f.path)));
+        // Preserve existing selections on re-open; only default to staged on fresh open
+        setSelected((prev) => {
+          if (prev.size > 0) {
+            // Keep previously selected paths that still exist, add any newly staged
+            const validPaths = new Set(files.map((f) => f.path));
+            const merged = new Set<string>();
+            for (const p of prev) { if (validPaths.has(p)) merged.add(p); }
+            for (const f of files) { if (f.staged) merged.add(f.path); }
+            return merged;
+          }
+          return new Set(files.filter((f) => f.staged).map((f) => f.path));
+        });
         setIsLoadingFiles(false);
       })
       .catch((err) => {
@@ -119,7 +155,7 @@ export default function CommitModal({ directory, onClose }: Props) {
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [directory]);
+  }, [directory, visible, refreshKey]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -263,8 +299,8 @@ export default function CommitModal({ directory, onClose }: Props) {
 
   return (
     <div
-      style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.85)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      style={{ position: "fixed", inset: 0, zIndex: 50, display: visible ? "flex" : "none", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.85)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}
     >
       <div
         style={{ background: "var(--bg-primary)", border: "2px solid var(--accent-color)", borderRadius: 0, width: prStep === "preview" || prStep === "creating" ? 620 : 520, maxWidth: "90vw", maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "6px 6px 0px rgba(255, 122, 0,0.15)", transition: "width 0.2s ease" }}
@@ -273,7 +309,7 @@ export default function CommitModal({ directory, onClose }: Props) {
         {/* Header */}
         <div style={{ padding: "14px 18px", borderBottom: "2px solid var(--border-color)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)", textTransform: "uppercase" as const, letterSpacing: "0.05em" }}>Commit &amp; Push</span>
-          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-tertiary)", fontSize: 16, lineHeight: 1, padding: "2px 4px" }}>✕</button>
+          <button onClick={handleClose} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-tertiary)", fontSize: 16, lineHeight: 1, padding: "2px 4px" }}>✕</button>
         </div>
 
         {/* Body */}
@@ -524,7 +560,7 @@ export default function CommitModal({ directory, onClose }: Props) {
               <a
                 href="#"
                 onClick={(e) => { e.preventDefault(); import("../lib/bridge").then(({ openUrl }) => openUrl(prUrl)); }}
-                style={{ color: "var(--accent)", textDecoration: "underline", fontSize: 11, fontFamily: "var(--font-mono, 'SF Mono', Menlo, monospace)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                style={{ color: "#e2e8f0", textDecoration: "underline", fontSize: 11, fontFamily: "var(--font-mono, 'SF Mono', Menlo, monospace)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
               >
                 {prUrl}
               </a>
@@ -537,6 +573,7 @@ export default function CommitModal({ directory, onClose }: Props) {
           {pushDone ? (
             <>
               <span style={{ fontSize: 11, color: "#4ade80", fontWeight: 700, marginRight: "auto", textTransform: "uppercase", letterSpacing: "0.05em" }}>Pushed</span>
+              <Btn onClick={resetState} disabled={prStep === "generating" || prStep === "creating"}>Reset</Btn>
               {showCreatePR && prStep === "idle" && (
                 <Btn onClick={handleGeneratePR} primary>
                   Create PR
@@ -558,14 +595,14 @@ export default function CommitModal({ directory, onClose }: Props) {
                   Open PR
                 </Btn>
               )}
-              <Btn onClick={onClose} disabled={prStep === "generating" || prStep === "creating"}>Close</Btn>
+              <Btn onClick={handleClose} disabled={prStep === "generating" || prStep === "creating"}>Close</Btn>
             </>
           ) : (
             <>
               <Btn onClick={handleGenerateMessage} disabled={busy || isLoadingFiles || hasNoFiles}>
                 {isGenerating ? "Generating..." : "Generate Message"}
               </Btn>
-              <Btn onClick={onClose} disabled={busy}>Close</Btn>
+              <Btn onClick={handleClose} disabled={busy}>Close</Btn>
               <Btn
                 onClick={handlePush}
                 disabled={busy || isLoadingFiles || hasNoFiles || selected.size === 0 || !commitMessage.trim()}

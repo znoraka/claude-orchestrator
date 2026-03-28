@@ -30,10 +30,12 @@ function useCachedBranch(dir: string | undefined): string {
     subscribeBranch,
     () => (dir ? branchCache.get(dir) || "" : ""),
   );
-  // Fetch on first access for this directory
+  // Fetch on first access and poll every 10s to stay in sync
   useEffect(() => {
     if (!dir) return;
-    if (!branchCache.has(dir)) fetchBranchForDir(dir);
+    fetchBranchForDir(dir);
+    const interval = setInterval(() => fetchBranchForDir(dir), 10_000);
+    return () => clearInterval(interval);
   }, [dir]);
   return branch;
 }

@@ -1161,12 +1161,11 @@ export default function App() {
           </button>
         )}
       </TitleBar>
-      {showCommitModal && (
-        <CommitModal
-          directory={panelDirectory}
-          onClose={() => setShowCommitModal(false)}
-        />
-      )}
+      <CommitModal
+        directory={panelDirectory}
+        onClose={() => setShowCommitModal(false)}
+        visible={showCommitModal}
+      />
       {showSettings && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowSettings(false); }}>
           <div
