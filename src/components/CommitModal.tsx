@@ -83,7 +83,8 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
   };
 
   const handleClose = () => {
-    if (pushDone || prStep === "done") resetState();
+    // Only reset when: PR was created, or push completed on a branch that already has a PR
+    if (prStep === "done" || (pushDone && !showCreatePR)) resetState();
     onClose();
   };
 
@@ -115,7 +116,9 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
   }, [provider, dynamicOpencode, dynamicCodex]);
 
   useEffect(() => {
+    if (!visible) return;
     let cancelled = false;
+    setIsLoadingFiles(true);
 
     invoke<{ files: GitFileEntry[]; branch: string; isGitRepo: boolean }>("get_git_status", { directory })
       .then((result) => {
@@ -130,8 +133,18 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
         const files = Array.from(byPath.values());
         setAllFiles(files);
         setBranch(result.branch);
-        // Pre-check files that are already staged
-        setSelected(new Set(files.filter((f) => f.staged).map((f) => f.path)));
+        // Preserve existing selections on re-open; only default to staged on fresh open
+        setSelected((prev) => {
+          if (prev.size > 0) {
+            // Keep previously selected paths that still exist, add any newly staged
+            const validPaths = new Set(files.map((f) => f.path));
+            const merged = new Set<string>();
+            for (const p of prev) { if (validPaths.has(p)) merged.add(p); }
+            for (const f of files) { if (f.staged) merged.add(f.path); }
+            return merged;
+          }
+          return new Set(files.filter((f) => f.staged).map((f) => f.path));
+        });
         setIsLoadingFiles(false);
       })
       .catch((err) => {
@@ -142,7 +155,7 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [directory, refreshKey]);
+  }, [directory, visible, refreshKey]);
 
   // Auto-resize textarea
   useEffect(() => {
