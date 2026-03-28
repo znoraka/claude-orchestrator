@@ -107,6 +107,80 @@ ${commitFormat}
   return runSdkQuery(systemPrompt, userMessage, model);
 }
 
+const PR_DESCRIPTION_SYSTEM_PROMPT = `You generate pull request titles and descriptions.
+
+Given a branch name, commit log, and diff, generate a PR title and description.
+
+TITLE RULES:
+- Max 60 characters — short and descriptive
+- Derive from branch name: remove prefix (feature/, fix/, hotfix/, chore/, etc.), replace dashes with spaces, capitalize first letter
+- If the branch name is not descriptive enough, use the commit messages to infer a better title
+- Examples: "feature/watch-list-exclusion" → "Watch list exclusion", "fix/signals-tracking-bug" → "Signals tracking bug"
+
+DESCRIPTION FORMAT:
+## Summary
+[1-2 sentences: WHAT was done and WHY]
+
+## How it works
+[Functional explanation — no code, just how the changes address the feature or bug]
+
+## Changes
+- **[Category]** in \`file.ts\` ([N] lines): [Brief description]
+- **Total changes**: [N] lines across [N] files
+
+## Impact / Risks
+**Impact:** [User-facing impact]
+**Risks:** [Risk level]: [Description]
+
+## How to test
+- [ ] [Setup step]
+- [ ] [Action to perform]
+- [ ] [Expected result]
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Reply with ONLY valid JSON: {"title": "...", "description": "..."}`;
+
+async function generatePRDescription(branchName, commits, diff, model, provider) {
+  const truncatedDiff = diff.slice(0, 12000);
+  const userMessage = `Generate a PR title and description.
+
+Branch: ${branchName}
+
+Commits:
+${commits}
+
+Diff (truncated):
+${truncatedDiff}`;
+
+  if (provider === "opencode") {
+    const raw = await runOpencodeQuery(PR_DESCRIPTION_SYSTEM_PROMPT, userMessage, model);
+    return parsePRResponse(raw, branchName);
+  }
+  const raw = await runSdkQuery(PR_DESCRIPTION_SYSTEM_PROMPT, userMessage, model);
+  return parsePRResponse(raw, branchName);
+}
+
+function parsePRResponse(raw, branchName) {
+  // Try to parse JSON response
+  try {
+    // Extract JSON from potential markdown code fences
+    const jsonStr = raw.replace(/^```[\w]*\n?/, "").replace(/\n?```$/, "").trim();
+    const parsed = JSON.parse(jsonStr);
+    if (parsed.title && parsed.description) {
+      // Enforce title length
+      const title = parsed.title.length > 60 ? parsed.title.slice(0, 57) + "..." : parsed.title;
+      return { title, description: parsed.description };
+    }
+  } catch {}
+  // Fallback: derive title from branch name
+  const title = branchName
+    .replace(/^(feature|fix|hotfix|chore|refactor|docs|perf|ci|build|test)\//, "")
+    .replace(/-/g, " ")
+    .replace(/^\w/, (c) => c.toUpperCase());
+  return { title: title.slice(0, 60), description: raw || "" };
+}
+
 const CLASSIFY_SYSTEM_PROMPT = `You classify coding requests as "simple" or "complex".
 
 Simple: single well-defined action — commit, push, run tests, rename variable, fix typo, create/delete a file, install a package, format code, a quick one-liner change.
@@ -276,6 +350,23 @@ const server = createServer(async (req, res) => {
       const commitMessage = await generateCommitMessage(diff, model, provider, commitFormat, recentCommits);
       log(`Generated commit message (${Date.now() - t0}ms)`);
       const responseBody = JSON.stringify({ message: commitMessage });
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(responseBody) });
+      res.end(responseBody);
+      return;
+    }
+
+    if (url === "/pr-description") {
+      const { branchName, commits, diff, model, provider } = parsed;
+      if (!branchName) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "missing branchName" }));
+        return;
+      }
+      log(`Generating PR description for branch ${branchName}${model ? ` with model ${model}` : ''}${provider ? ` via ${provider}` : ''}`);
+      const t0 = Date.now();
+      const result = await generatePRDescription(branchName, commits || "", diff || "", model, provider);
+      log(`Generated PR description (${Date.now() - t0}ms): title="${result.title}"`);
+      const responseBody = JSON.stringify(result);
       res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(responseBody) });
       res.end(responseBody);
       return;
