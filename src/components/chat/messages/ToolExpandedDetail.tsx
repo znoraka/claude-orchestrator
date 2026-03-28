@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState, useEffect } from "react";
+import { Spinner } from "../../ui/spinner";
 import { createPatch } from "diff";
 import { getHighlighter, ensureLang, langFromPath, PierreDiff } from "../../DiffViewer";
 import { MarkdownContent, LinkifiedText, handleLinkClick } from "./shared/MarkdownContent";
@@ -118,10 +119,7 @@ export function TodoListView({ todos }: { todos: TodoItem[] }) {
             <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
           </svg>
         ) : todo.status === "in_progress" ? (
-          <svg className="w-3.5 h-3.5 text-blue-400 shrink-0 animate-spin" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2}>
-            <circle cx="10" cy="10" r="7" strokeOpacity={0.25} />
-            <path d="M10 3a7 7 0 016.93 6" strokeLinecap="round" />
-          </svg>
+          <Spinner className="w-3.5 h-3.5 shrink-0" />
         ) : (
           <span className="block w-3.5 h-3.5 rounded-full border border-[var(--text-tertiary)] shrink-0" />
         );

@@ -34,6 +34,7 @@ export interface AgentChatProps {
   onStartPendingSession?: (provider: AgentProvider, model: string) => Promise<void>;
   onCreateTerminal?: (directory: string, command?: string) => void;
   onOpenPRPanel?: (prNumber: number) => void;
+  onChangedFiles?: (filesByResultId: Map<string, ChangedFile[]>) => void;
 }
 
 export interface ContentBlock {

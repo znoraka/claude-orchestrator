@@ -1,7 +1,10 @@
-import { memo, useState, useEffect, useRef } from "react";
+import { memo, useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke } from "../lib/bridge";
 import type { SessionUsage } from "../types";
 import { NewFileViewer, PierreDiff, type DiffMode } from "./DiffViewer";
+import type { ChangedFile } from "./chat/types";
+import FileIcon from "./FileIcon";
+import { buildDiffTree, type DiffTreeNode } from "../lib/turnDiffTree";
 
 interface GitFile {
   path: string;
@@ -15,13 +18,17 @@ interface GitStatusResult {
   isGitRepo: boolean;
 }
 
+type RailTab = "git" | "cost" | "turns";
+
 interface Props {
   directory: string;
   sessionUsage: Map<string, SessionUsage>;
   activeSessionId: string | null;
-  defaultTab?: "git" | "cost";
-  onTabChange?: (tab: "git" | "cost") => void;
+  defaultTab?: RailTab;
+  onTabChange?: (tab: RailTab) => void;
   selectedFile?: { path: string; seq: number; diff?: string };
+  turnChangedFiles?: Map<string, ChangedFile[]>;
+  onOpenFile?: (filePath: string, diff?: string) => void;
 }
 
 function StatusIcon({ status }: { status: string }) {
@@ -39,8 +46,10 @@ const ContextRail = memo(function ContextRail({
   defaultTab = "git",
   onTabChange,
   selectedFile,
+  turnChangedFiles,
+  onOpenFile,
 }: Props) {
-  const [activeTab, setActiveTab] = useState<"git" | "cost">(defaultTab);
+  const [activeTab, setActiveTab] = useState<RailTab>(defaultTab);
   const [diffMode, setDiffMode] = useState<DiffMode>(
     () => (localStorage.getItem("git-diff-mode") as DiffMode) || "unified"
   );
@@ -220,7 +229,7 @@ const ContextRail = memo(function ContextRail({
     }
   };
 
-  const handleTabChange = (tab: "git" | "cost") => {
+  const handleTabChange = (tab: RailTab) => {
     setActiveTab(tab);
     onTabChange?.(tab);
   };
@@ -297,6 +306,16 @@ const ContextRail = memo(function ContextRail({
           }`}
         >
           Git
+        </button>
+        <button
+          onClick={() => handleTabChange("turns")}
+          className={`px-3 py-1.5 text-xs font-medium rounded-t transition-colors ${
+            activeTab === "turns"
+              ? "text-[var(--text-primary)] border-b-2 border-[var(--accent)] -mb-px"
+              : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+          }`}
+        >
+          Turns{turnChangedFiles && turnChangedFiles.size > 0 ? ` (${turnChangedFiles.size})` : ""}
         </button>
         <button
           onClick={() => handleTabChange("cost")}
@@ -573,6 +592,176 @@ const ContextRail = memo(function ContextRail({
             </div>
           </div>
         )}
+
+        {activeTab === "turns" && (
+          <TurnsTab turnChangedFiles={turnChangedFiles} onOpenFile={onOpenFile} />
+        )}
+      </div>
+    </div>
+  );
+});
+
+// ── Turns tab: shows per-turn changed files tree ──────────────────
+
+function DiffStatLabel({ additions, deletions }: { additions: number; deletions: number }) {
+  return (
+    <>
+      <span className="text-green-400">+{additions}</span>
+      <span className="mx-0.5 text-[var(--text-tertiary)]">/</span>
+      <span className="text-red-400">-{deletions}</span>
+    </>
+  );
+}
+
+const TurnsTab = memo(function TurnsTab({
+  turnChangedFiles,
+  onOpenFile,
+}: {
+  turnChangedFiles?: Map<string, ChangedFile[]>;
+  onOpenFile?: (filePath: string, diff?: string) => void;
+}) {
+  // Merge all turns into a single flat file list, deduplicating by path (latest turn wins)
+  const allFiles = useMemo(() => {
+    if (!turnChangedFiles || turnChangedFiles.size === 0) return [];
+    const fileMap = new Map<string, ChangedFile>();
+    for (const files of turnChangedFiles.values()) {
+      for (const f of files) {
+        const existing = fileMap.get(f.path);
+        if (existing) {
+          fileMap.set(f.path, {
+            path: f.path,
+            added: existing.added + f.added,
+            removed: existing.removed + f.removed,
+            diff: existing.diff + "\n" + f.diff,
+          });
+        } else {
+          fileMap.set(f.path, { ...f });
+        }
+      }
+    }
+    return Array.from(fileMap.values());
+  }, [turnChangedFiles]);
+
+  const treeNodes = useMemo(() => buildDiffTree(allFiles), [allFiles]);
+
+  const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
+
+  // Auto-expand all directories when tree changes
+  useEffect(() => {
+    const paths: string[] = [];
+    const collect = (nodes: DiffTreeNode[]) => {
+      for (const n of nodes) {
+        if (n.kind === "directory") {
+          paths.push(n.path);
+          collect(n.children);
+        }
+      }
+    };
+    collect(treeNodes);
+    const state: Record<string, boolean> = {};
+    for (const p of paths) state[p] = true;
+    setExpandedDirs(state);
+  }, [treeNodes]);
+
+  const totalAdded = allFiles.reduce((s, f) => s + f.added, 0);
+  const totalRemoved = allFiles.reduce((s, f) => s + f.removed, 0);
+
+  // Build lookup from path to ChangedFile for diff data
+  const fileByPath = useMemo(() => {
+    const map = new Map<string, ChangedFile>();
+    for (const f of allFiles) map.set(f.path, f);
+    return map;
+  }, [allFiles]);
+
+  const handleFileClick = useCallback(
+    (path: string) => {
+      const f = fileByPath.get(path);
+      if (f && onOpenFile) onOpenFile(f.path, f.diff);
+    },
+    [fileByPath, onOpenFile],
+  );
+
+  const renderNode = (node: DiffTreeNode, depth: number) => {
+    const leftPadding = 10 + depth * 14;
+
+    if (node.kind === "directory") {
+      const isExpanded = expandedDirs[node.path] ?? true;
+      return (
+        <div key={`dir:${node.path}`}>
+          <button
+            type="button"
+            className="group flex w-full items-center gap-1.5 py-1 pr-2.5 text-left hover:bg-[var(--bg-hover)] transition-colors"
+            style={{ paddingLeft: `${leftPadding}px` }}
+            onClick={() => setExpandedDirs((prev) => ({ ...prev, [node.path]: !prev[node.path] }))}
+          >
+            <svg
+              className="w-2.5 h-2.5 text-[var(--text-tertiary)] shrink-0 transition-transform"
+              style={{ transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)" }}
+              viewBox="0 0 16 16"
+            >
+              <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <svg className="w-3 h-3 text-[var(--text-tertiary)] shrink-0" viewBox="0 0 16 16" fill="currentColor" fillOpacity="0.5">
+              <path d="M1.75 2.5A.25.25 0 0 1 2 2.25h3.586a.25.25 0 0 1 .177.073l.707.707a.25.25 0 0 0 .177.073H14a.25.25 0 0 1 .25.25v9.5a.25.25 0 0 1-.25.25H2a.25.25 0 0 1-.25-.25v-10Z" />
+            </svg>
+            <span className="font-mono text-[11px] text-[var(--text-secondary)] truncate flex-1 min-w-0 group-hover:text-[var(--text-primary)]">
+              {node.name}
+            </span>
+            {(node.stat.additions > 0 || node.stat.deletions > 0) && (
+              <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums">
+                <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
+              </span>
+            )}
+          </button>
+          {isExpanded && node.children.map((child) => renderNode(child, depth + 1))}
+        </div>
+      );
+    }
+
+    return (
+      <button
+        key={`file:${node.path}`}
+        type="button"
+        className="group flex w-full items-center gap-1.5 py-1 pr-2.5 text-left hover:bg-[var(--bg-hover)] transition-colors"
+        style={{ paddingLeft: `${leftPadding + 14}px` }}
+        onClick={() => handleFileClick(node.path)}
+      >
+        <FileIcon filename={node.name} size={13} />
+        <span className="font-mono text-[11px] text-[var(--text-secondary)] truncate flex-1 min-w-0 group-hover:text-[var(--text-primary)]">
+          {node.name}
+        </span>
+        {node.stat && (node.stat.additions > 0 || node.stat.deletions > 0) && (
+          <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums">
+            <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  if (allFiles.length === 0) {
+    return (
+      <div className="text-xs text-[var(--text-tertiary)] py-4 text-center">
+        No file changes in this session
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col">
+      <div className="text-[10px] font-medium text-[var(--text-tertiary)] uppercase tracking-wider px-3 pt-2.5 pb-1 flex items-center gap-1.5">
+        <span>{allFiles.length} file{allFiles.length !== 1 ? "s" : ""} changed</span>
+        {(totalAdded > 0 || totalRemoved > 0) && (
+          <>
+            <span>&middot;</span>
+            <span className="font-mono normal-case tracking-normal">
+              <DiffStatLabel additions={totalAdded} deletions={totalRemoved} />
+            </span>
+          </>
+        )}
+      </div>
+      <div className="py-0.5">
+        {treeNodes.map((node) => renderNode(node, 0))}
       </div>
     </div>
   );

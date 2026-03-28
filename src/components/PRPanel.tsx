@@ -4,6 +4,7 @@ import { openUrl } from "../lib/bridge";
 import type { PullRequest, PullRequestsResult, GitStatusResult } from "../types";
 import { useSessionContext } from "../contexts/SessionContext";
 import PRReviewView from "./PRReviewView";
+import { Spinner } from "./ui/spinner";
 
 interface PRPanelProps {
   directory: string;
@@ -12,6 +13,7 @@ interface PRPanelProps {
   onAskClaude?: (prompt: string) => void;
   onSwitchToClaude?: () => void;
   initialPrNumber?: number;
+  initialPrKey?: number;
 }
 
 function relativeTime(dateStr: string): string {
@@ -234,10 +236,7 @@ function PRCard({
               title={isCurrent ? "Already on this branch" : "Checkout branch"}
             >
               {checkoutLoading ? (
-                <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
+                <Spinner className="w-3 h-3" />
               ) : (
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="16 3 21 3 21 8" />
@@ -254,10 +253,7 @@ function PRCard({
               title="Checkout in worktree"
             >
               {worktreeLoading ? (
-                <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
+                <Spinner className="w-3 h-3" />
               ) : (
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
@@ -276,7 +272,7 @@ function PRCard({
   );
 }
 
-export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, onSwitchToClaude: _onSwitchToClaude, initialPrNumber }: PRPanelProps) {
+export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, onSwitchToClaude: _onSwitchToClaude, initialPrNumber, initialPrKey }: PRPanelProps) {
   const { createSession, sessions } = useSessionContext();
   const [result, setResult] = useState<PullRequestsResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -382,16 +378,17 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
   }, [isActive, refresh, fetchBranch]);
 
   // Auto-open a specific PR when initialPrNumber is provided and PRs have loaded
-  const initialPrOpenedRef = useRef(false);
+  const lastOpenedPrKeyRef = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (!initialPrNumber || initialPrOpenedRef.current || !result) return;
+    if (!initialPrNumber || !initialPrKey || !result) return;
+    if (lastOpenedPrKeyRef.current === initialPrKey) return;
     const allPrs = [...(result.myPrs ?? []), ...(result.reviewRequested ?? [])];
     const pr = allPrs.find((p) => p.number === initialPrNumber);
     if (pr) {
-      initialPrOpenedRef.current = true;
+      lastOpenedPrKeyRef.current = initialPrKey;
       setReviewingPr(pr);
     }
-  }, [initialPrNumber, result]);
+  }, [initialPrNumber, initialPrKey, result]);
 
   if (reviewingPr) {
     return (
@@ -411,10 +408,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
   if (loading && !result) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3 text-[var(--text-tertiary)]">
-        <svg className="animate-spin h-5 w-5 opacity-40" viewBox="0 0 24 24" fill="none">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
+        <Spinner className="w-5 h-5" />
         <span className="text-xs text-[var(--text-tertiary)]">Loading pull requests…</span>
       </div>
     );
@@ -476,10 +470,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
             title="Refresh"
           >
             {loading ? (
-              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
+              <Spinner className="w-4 h-4" />
             ) : (
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="23 4 23 10 17 10" />

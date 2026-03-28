@@ -80,9 +80,31 @@ const COMMIT_MSG_SYSTEM_PROMPT = `You generate git commit messages in convention
 Given a git diff, write a concise commit message: one subject line (max 72 chars, imperative mood, e.g. "feat: add login button"), optionally followed by a blank line and a short body.
 Reply with ONLY the commit message, no explanations.`;
 
-async function generateCommitMessage(diff) {
+async function generateCommitMessage(diff, model, provider, commitFormat, recentCommits) {
   const truncated = diff.slice(0, 8000);
-  return runSdkQuery(COMMIT_MSG_SYSTEM_PROMPT, `Generate a commit message for this diff:\n\n${truncated}`);
+
+  let systemPrompt;
+  if (commitFormat) {
+    systemPrompt = `You generate git commit messages following the project's specific commit conventions described below.
+Given a git diff, write a commit message that strictly follows these conventions.
+Reply with ONLY the commit message, no explanations.
+
+--- PROJECT COMMIT CONVENTIONS ---
+${commitFormat}
+--- END CONVENTIONS ---`;
+  } else {
+    systemPrompt = COMMIT_MSG_SYSTEM_PROMPT;
+  }
+
+  if (recentCommits) {
+    systemPrompt += `\n\nHere are recent commit messages from this repo — match their style, casing, prefix format, and tone:\n${recentCommits}`;
+  }
+
+  const userMessage = `Generate a commit message for this diff:\n\n${truncated}`;
+  if (provider === "opencode") {
+    return runOpencodeQuery(systemPrompt, userMessage, model);
+  }
+  return runSdkQuery(systemPrompt, userMessage, model);
 }
 
 const CLASSIFY_SYSTEM_PROMPT = `You classify coding requests as "simple" or "complex".
@@ -94,13 +116,13 @@ When in doubt, respond "complex".
 
 Reply with ONLY "simple" or "complex".`;
 
-async function runSdkQuery(systemPrompt, userMessage) {
+async function runSdkQuery(systemPrompt, userMessage, model) {
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(), 30000);
   try {
     const options = {
       maxTurns: 1,
-      model: MODEL,
+      model: model || MODEL,
       systemPrompt,
       permissionMode: "bypassPermissions",
       abortController,
@@ -121,6 +143,54 @@ async function runSdkQuery(systemPrompt, userMessage) {
     return text.trim();
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+async function runOpencodeQuery(systemPrompt, userMessage, modelId) {
+  try {
+    const port = await new Promise((resolve, reject) => {
+      const srv = createServer();
+      srv.listen(0, "127.0.0.1", () => {
+        const p = srv.address().port;
+        srv.close(() => resolve(p));
+      });
+      srv.on("error", reject);
+    });
+    const server = await createOpencodeServer({ port, timeout: 60_000 });
+    const client = createOpencodeClient({ baseUrl: server.url, directory: process.cwd() });
+
+    // Parse model ID — opencode expects { providerID, modelID }
+    // modelId format could be "providerID/modelID" or just "modelID"
+    let providerID = "opencode";
+    let parsedModelID = modelId || "";
+    if (parsedModelID.includes("/")) {
+      [providerID, parsedModelID] = parsedModelID.split("/", 2);
+    }
+
+    // Create a session first
+    const sessionResult = await client.session.create({
+      body: { system: systemPrompt },
+    });
+    const sessionId = sessionResult.data?.id || sessionResult.id;
+
+    const response = await client.session.prompt({
+      path: { id: sessionId },
+      body: {
+        model: { providerID, modelID: parsedModelID },
+        parts: [{ type: "text", text: userMessage }],
+        system: systemPrompt,
+      },
+    });
+
+    const parts = response.data?.parts || response.parts || [];
+    const text = parts
+      .filter((p) => p.type === "text")
+      .map((p) => p.text)
+      .join("\n");
+    return text.trim();
+  } catch (err) {
+    log(`OpenCode query failed: ${err.message}`);
+    throw err;
   }
 }
 
@@ -195,15 +265,15 @@ const server = createServer(async (req, res) => {
     const url = (req.url || "/").split("?")[0];
 
     if (url === "/commit-message") {
-      const { diff } = parsed;
+      const { diff, model, provider, commitFormat, recentCommits } = parsed;
       if (!diff) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: "missing diff" }));
         return;
       }
-      log(`Generating commit message for diff (${diff.length} chars)`);
+      log(`Generating commit message for diff (${diff.length} chars)${model ? ` with model ${model}` : ''}${provider ? ` via ${provider}` : ''}${commitFormat ? ' (custom format)' : ''}${recentCommits ? ' (with history)' : ''}`);
       const t0 = Date.now();
-      const commitMessage = await generateCommitMessage(diff);
+      const commitMessage = await generateCommitMessage(diff, model, provider, commitFormat, recentCommits);
       log(`Generated commit message (${Date.now() - t0}ms)`);
       const responseBody = JSON.stringify({ message: commitMessage });
       res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(responseBody) });

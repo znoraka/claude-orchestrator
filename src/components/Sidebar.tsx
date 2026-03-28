@@ -20,6 +20,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useStore } from "../store";
+import { Spinner } from "./ui/spinner";
 
 
 function SortableWorkspaceItem({
@@ -385,7 +386,7 @@ export default function Sidebar({
             className="sidebar-search w-full bg-transparent border-0 border-b-2 border-[var(--border-color)] pl-8 pr-6 py-2 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent-color)] uppercase tracking-wider"
           />
           {contentSearching && (
-            <div className="absolute right-1 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-[var(--accent-color)]/50 border-t-transparent rounded-full animate-spin" />
+            <Spinner className="absolute right-1 top-1/2 -translate-y-1/2 w-3 h-3" />
           )}
         </div>
       </div>

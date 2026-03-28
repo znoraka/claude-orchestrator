@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { Spinner } from "./ui/spinner";
 
 export type SessionStatus = "running" | "starting" | "waiting" | "stopped" | "error";
 
@@ -20,11 +21,7 @@ export default memo(function SessionStatusBadge({ status, size = "sm" }: Props) 
   }
   if (status === "starting") {
     return (
-      <span
-        className={`${dotSize} rounded-full border-2 border-[var(--accent-color)] border-t-transparent animate-spin shrink-0`}
-        style={{ width: size === "md" ? 10 : 8, height: size === "md" ? 10 : 8 }}
-        title="Starting"
-      />
+      <Spinner className={size === "md" ? "w-2.5 h-2.5" : "w-2 h-2"} />
     );
   }
   if (status === "waiting") {

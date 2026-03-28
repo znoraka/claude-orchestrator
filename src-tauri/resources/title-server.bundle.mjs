@@ -17235,11 +17235,26 @@ var TITLE_SYSTEM_PROMPT = "You are a title generator. Given a user message, resp
 var COMMIT_MSG_SYSTEM_PROMPT = `You generate git commit messages in conventional commits format.
 Given a git diff, write a concise commit message: one subject line (max 72 chars, imperative mood, e.g. "feat: add login button"), optionally followed by a blank line and a short body.
 Reply with ONLY the commit message, no explanations.`;
-async function generateCommitMessage(diff) {
+async function generateCommitMessage(diff, model, provider, commitFormat, recentCommits) {
   const truncated = diff.slice(0, 8e3);
-  return runSdkQuery(COMMIT_MSG_SYSTEM_PROMPT, `Generate a commit message for this diff:
+  let systemPrompt;
+  if (commitFormat) {
+    systemPrompt = `You generate git commit messages following the project's specific commit conventions described below.
+Given a git diff, write a commit message that strictly follows these conventions.
+Reply with ONLY the commit message, no explanations.
 
-${truncated}`);
+--- PROJECT COMMIT CONVENTIONS ---
+${commitFormat}
+--- END CONVENTIONS ---`;
+  } else {
+    systemPrompt = COMMIT_MSG_SYSTEM_PROMPT;
+  }
+  if (recentCommits) {
+    systemPrompt += `\n\nHere are recent commit messages from this repo — match their style, casing, prefix format, and tone:\n${recentCommits}`;
+  }
+  return runSdkQuery(systemPrompt, `Generate a commit message for this diff:
+
+${truncated}`, model);
 }
 var CLASSIFY_SYSTEM_PROMPT = `You classify coding requests as "simple" or "complex".
 
@@ -17249,13 +17264,13 @@ Complex: multi-step tasks, architectural decisions, refactoring, debugging, anyt
 When in doubt, respond "complex".
 
 Reply with ONLY "simple" or "complex".`;
-async function runSdkQuery(systemPrompt, userMessage) {
+async function runSdkQuery(systemPrompt, userMessage, model) {
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(), 3e4);
   try {
     const options = {
       maxTurns: 1,
-      model: MODEL,
+      model: model || MODEL,
       systemPrompt,
       permissionMode: "bypassPermissions",
       abortController
@@ -17335,15 +17350,15 @@ var server = createServer(async (req, res) => {
     const parsed = JSON.parse(body);
     const url = (req.url || "/").split("?")[0];
     if (url === "/commit-message") {
-      const { diff } = parsed;
+      const { diff, model, provider, commitFormat, recentCommits } = parsed;
       if (!diff) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: "missing diff" }));
         return;
       }
-      log(`Generating commit message for diff (${diff.length} chars)`);
+      log(`Generating commit message for diff (${diff.length} chars)${model ? ` with model ${model}` : ""}${provider ? ` via ${provider}` : ""}${commitFormat ? " (custom format)" : ""}${recentCommits ? " (with history)" : ""}`);
       const t02 = Date.now();
-      const commitMessage = await generateCommitMessage(diff);
+      const commitMessage = await generateCommitMessage(diff, model, provider, commitFormat, recentCommits);
       log(`Generated commit message (${Date.now() - t02}ms)`);
       const responseBody2 = JSON.stringify({ message: commitMessage });
       res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(responseBody2) });

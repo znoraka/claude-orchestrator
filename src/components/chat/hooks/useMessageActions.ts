@@ -3,7 +3,6 @@ import type { ChatMessage, ContentBlock } from "../types";
 
 export function useMessageActions(
   messages: ChatMessage[],
-  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
   setInputText: (text: string) => void,
   setImages: React.Dispatch<React.SetStateAction<Array<{ id: string; data: string; mediaType: string; name: string }>>>,
   setEditingMessageId: (id: string | null) => void,
@@ -57,12 +56,14 @@ export function useMessageActions(
     const text = Array.isArray(msg.content)
       ? msg.content.filter((b) => b.type === "text").map((b) => b.text).join("\n")
       : typeof msg.content === "string" ? msg.content : "";
-    setMessages((prev) => {
-      const idx = prev.findIndex((m) => m.id === messageId);
-      return idx >= 0 ? prev.slice(0, idx) : prev;
-    });
+    // Set editingMessageId so sendMessage resets the session (same as the edit flow),
+    // building context from messages before the retry point and starting a fresh session.
+    // The displayMessages memo will immediately hide messages at/after the retry point.
+    setEditingMessageId(messageId);
+    // Delay so React re-renders first (updating sendMessageRef.current with the new
+    // editingMessageId), then call via the ref-based wrapper to get the latest sendMessage.
     setTimeout(() => sendMessage(text), 0);
-  }, [messages, setMessages, sendMessage]);
+  }, [messages, setEditingMessageId, sendMessage]);
 
   const copyMessage = useCallback((messageId: string) => {
     const msg = messages.find((m) => m.id === messageId);

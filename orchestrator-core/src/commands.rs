@@ -1837,7 +1837,7 @@ pub async fn create_agent_session(
                 "permissionMode": permission_mode,
             })
         } else {
-            // Generic config for other providers (opencode, etc.)
+            // Generic config for other providers (opencode, codex, etc.)
             serde_json::json!({
                 "sessionId": &session_id,
                 "cwd": &directory,
@@ -1845,6 +1845,8 @@ pub async fn create_agent_session(
                 "model": model,
                 "permissionMode": permission_mode,
                 "ocSessionId": if resume { claude_session_id.as_deref() } else { None::<&str> },
+                // codex bridge expects `codexThreadId` (not `ocSessionId`) for thread resume
+                "codexThreadId": if resume && provider == "codex" { claude_session_id.as_deref() } else { None::<&str> },
             })
         };
         let config_json = config.to_string();
@@ -3307,8 +3309,96 @@ pub fn get_clipboard_file_paths() -> Vec<String> {
     }
 }
 
+/// Detect repo-specific commit message format/conventions from well-known config files.
+/// Returns the content of the first matching file found, or None.
+fn detect_commit_format(directory: &str) -> Option<String> {
+    let dir = std::path::Path::new(directory);
+
+    // Dedicated commit skill/command files — use entire content
+    let dedicated_paths = [
+        ".claude/skills/commit/SKILL.md",
+        ".claude/commands/commit.md",
+    ];
+    for rel in &dedicated_paths {
+        let path = dir.join(rel);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    // Generic config files — extract commit-related lines with context
+    let generic_paths = [
+        "CLAUDE.md",
+        ".cursorrules",
+        ".github/copilot-instructions.md",
+    ];
+    for rel in &generic_paths {
+        let path = dir.join(rel);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let extracted = extract_commit_section(&content);
+            if let Some(section) = extracted {
+                return Some(section);
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract commit-related sections from a generic config file.
+/// Looks for markdown headings or paragraphs containing commit-related keywords.
+fn extract_commit_section(content: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = Vec::new();
+    let mut in_section = false;
+    let mut section_level = 0;
+
+    for (i, line) in lines.iter().enumerate() {
+        let lower = line.to_lowercase();
+
+        // Check if this is a heading that mentions commits
+        if line.starts_with('#') {
+            let level = line.chars().take_while(|c| *c == '#').count();
+            if lower.contains("commit") {
+                in_section = true;
+                section_level = level;
+                result.push(*line);
+                continue;
+            } else if in_section && level <= section_level {
+                // We've left the commit section
+                break;
+            }
+        }
+
+        if in_section {
+            result.push(*line);
+        } else if lower.contains("commit message") || lower.contains("commit format") || lower.contains("commit convention") {
+            // Grab this line and a few lines of context
+            let start = if i >= 2 { i - 2 } else { 0 };
+            let end = std::cmp::min(i + 5, lines.len());
+            for j in start..end {
+                result.push(lines[j]);
+            }
+            break;
+        }
+    }
+
+    if result.is_empty() {
+        None
+    } else {
+        let joined = result.join("\n").trim().to_string();
+        if joined.is_empty() { None } else { Some(joined) }
+    }
+}
+
 pub async fn generate_commit_message(
     directory: String,
+    model: Option<String>,
+    provider: Option<String>,
+    files: Option<Vec<String>>,
     state: Arc<ServerState>,
 ) -> Result<String, String> {
     let port = state.title_server_port.load(std::sync::atomic::Ordering::Relaxed);
@@ -3316,17 +3406,32 @@ pub async fn generate_commit_message(
         return Err("Title server not running".to_string());
     }
 
+    let dir_clone = directory.clone();
+    let dir_clone2 = directory.clone();
     let diff = tokio::task::spawn_blocking(move || {
-        let output = git_command(&directory)
-            .args(["diff", "HEAD"])
-            .output()
+        let mut cmd = git_command(&dir_clone);
+        cmd.args(["diff", "HEAD"]);
+        if let Some(ref paths) = files {
+            if !paths.is_empty() {
+                cmd.arg("--");
+                cmd.args(paths);
+            }
+        }
+        let output = cmd.output()
             .map_err(|e| format!("Failed to run git diff HEAD: {}", e))?;
         if output.status.success() && !output.stdout.is_empty() {
             return Ok::<String, String>(String::from_utf8_lossy(&output.stdout).to_string());
         }
-        let staged = git_command(&directory)
-            .args(["diff", "--staged"])
-            .output()
+        // Fall back to staged diff for repos with no commits
+        let mut cmd2 = git_command(&dir_clone);
+        cmd2.args(["diff", "--staged"]);
+        if let Some(ref paths) = files {
+            if !paths.is_empty() {
+                cmd2.arg("--");
+                cmd2.args(paths);
+            }
+        }
+        let staged = cmd2.output()
             .map_err(|e| format!("Failed to run git diff --staged: {}", e))?;
         Ok(String::from_utf8_lossy(&staged.stdout).to_string())
     })
@@ -3337,7 +3442,39 @@ pub async fn generate_commit_message(
         return Ok(String::new());
     }
 
-    let body = serde_json::json!({ "diff": diff }).to_string();
+    // Detect repo-specific commit format
+    let commit_format = detect_commit_format(&directory);
+
+    // Fetch recent commit messages as style examples
+    let recent_commits = tokio::task::spawn_blocking(move || {
+        let output = git_command(&dir_clone2)
+            .args(["log", "--format=%s", "-n", "15"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        output
+    })
+    .await
+    .unwrap_or_default();
+
+    let mut json_body = serde_json::json!({ "diff": diff });
+    if let Some(ref m) = model {
+        json_body["model"] = serde_json::json!(m);
+    }
+    if let Some(ref p) = provider {
+        json_body["provider"] = serde_json::json!(p);
+    }
+    if let Some(ref fmt) = commit_format {
+        // Limit to 4000 chars to avoid bloating the request
+        let truncated = if fmt.len() > 4000 { &fmt[..4000] } else { fmt.as_str() };
+        json_body["commitFormat"] = serde_json::json!(truncated);
+    }
+    if !recent_commits.is_empty() {
+        json_body["recentCommits"] = serde_json::json!(recent_commits);
+    }
+    let body = json_body.to_string();
     let response = tokio::task::spawn_blocking(move || {
         let client = std::net::TcpStream::connect_timeout(
             &format!("127.0.0.1:{}", port).parse().unwrap(),
@@ -3422,6 +3559,64 @@ pub async fn git_commit_and_push(directory: String, message: String) -> Result<(
             }
         }
 
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+pub async fn gh_open_pr_create(directory: String, base: Option<String>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = gh_in_dir(&directory);
+        cmd.args(["pr", "create", "--web"]);
+        if let Some(ref b) = base {
+            cmd.args(["--base", b]);
+        }
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run gh pr create: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "gh pr create --web failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+pub async fn git_checkout_new_branch(directory: String, branch_name: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let output = git_command(&directory)
+            .args(["checkout", "-b", &branch_name])
+            .output()
+            .map_err(|e| format!("Failed to run git checkout -b: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git checkout -b failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+pub async fn git_checkout_branch(directory: String, branch_name: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let output = git_command(&directory)
+            .args(["checkout", &branch_name])
+            .output()
+            .map_err(|e| format!("Failed to run git checkout: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git checkout failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
         Ok(())
     })
     .await

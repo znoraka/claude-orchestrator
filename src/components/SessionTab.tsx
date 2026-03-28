@@ -169,7 +169,7 @@ export default memo(function SessionTab({
             <path d="M4.5 2a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 4.5 2Zm7 0a1.5 1.5 0 0 0-1.5 1.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 11.5 2Z" />
           </svg>
         ) : isBusy ? (
-          <Spinner className="w-3.5 h-3.5" />
+          <Spinner className="w-3.5 h-3.5" color={session.sessionType === "terminal" ? "var(--text-secondary)" : undefined} />
         ) : hasDraft ? (
           <span className="w-2 h-2 bg-blue-400/70" />
         ) : unread ? (

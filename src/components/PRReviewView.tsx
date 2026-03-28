@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "../lib/bridge";
 import { openUrl } from "../lib/bridge";
 import DiffViewer from "./DiffViewer";
+import { Spinner } from "./ui/spinner";
 import type { DiffMode } from "./DiffViewer";
 import FileIcon from "./FileIcon";
 import type { PrComment, PrFileEntry } from "../types";
@@ -291,10 +292,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3 text-[var(--text-tertiary)]">
-        <svg className="animate-spin h-5 w-5 opacity-40" viewBox="0 0 24 24" fill="none">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
+        <Spinner className="w-5 h-5" />
         <span className="text-xs">Loading PR diff…</span>
       </div>
     );
@@ -406,10 +404,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
             <div className="flex-1 overflow-auto">
               {diffLoading ? (
                 <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] gap-2">
-                  <svg className="animate-spin h-4 w-4 opacity-50" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
+                  <Spinner className="w-4 h-4" />
                   <span className="text-sm">Loading diff…</span>
                 </div>
               ) : selectedFile ? (
