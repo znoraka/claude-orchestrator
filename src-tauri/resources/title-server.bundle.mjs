@@ -17209,6 +17209,978 @@ var client = createClient(createConfig({
   baseUrl: "http://localhost:4096"
 }));
 
+// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/gen/sdk.gen.js
+var _HeyApiClient = class {
+  _client = client;
+  constructor(args) {
+    if (args?.client) {
+      this._client = args.client;
+    }
+  }
+};
+var Global = class extends _HeyApiClient {
+  /**
+   * Get events
+   */
+  event(options) {
+    return (options?.client ?? this._client).get.sse({
+      url: "/global/event",
+      ...options
+    });
+  }
+};
+var Project = class extends _HeyApiClient {
+  /**
+   * List all projects
+   */
+  list(options) {
+    return (options?.client ?? this._client).get({
+      url: "/project",
+      ...options
+    });
+  }
+  /**
+   * Get the current project
+   */
+  current(options) {
+    return (options?.client ?? this._client).get({
+      url: "/project/current",
+      ...options
+    });
+  }
+};
+var Pty = class extends _HeyApiClient {
+  /**
+   * List all PTY sessions
+   */
+  list(options) {
+    return (options?.client ?? this._client).get({
+      url: "/pty",
+      ...options
+    });
+  }
+  /**
+   * Create a new PTY session
+   */
+  create(options) {
+    return (options?.client ?? this._client).post({
+      url: "/pty",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers
+      }
+    });
+  }
+  /**
+   * Remove a PTY session
+   */
+  remove(options) {
+    return (options.client ?? this._client).delete({
+      url: "/pty/{id}",
+      ...options
+    });
+  }
+  /**
+   * Get PTY session info
+   */
+  get(options) {
+    return (options.client ?? this._client).get({
+      url: "/pty/{id}",
+      ...options
+    });
+  }
+  /**
+   * Update PTY session
+   */
+  update(options) {
+    return (options.client ?? this._client).put({
+      url: "/pty/{id}",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  /**
+   * Connect to a PTY session
+   */
+  connect(options) {
+    return (options.client ?? this._client).get({
+      url: "/pty/{id}/connect",
+      ...options
+    });
+  }
+};
+var Config = class extends _HeyApiClient {
+  /**
+   * Get config info
+   */
+  get(options) {
+    return (options?.client ?? this._client).get({
+      url: "/config",
+      ...options
+    });
+  }
+  /**
+   * Update config
+   */
+  update(options) {
+    return (options?.client ?? this._client).patch({
+      url: "/config",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers
+      }
+    });
+  }
+  /**
+   * List all providers
+   */
+  providers(options) {
+    return (options?.client ?? this._client).get({
+      url: "/config/providers",
+      ...options
+    });
+  }
+};
+var Tool = class extends _HeyApiClient {
+  /**
+   * List all tool IDs (including built-in and dynamically registered)
+   */
+  ids(options) {
+    return (options?.client ?? this._client).get({
+      url: "/experimental/tool/ids",
+      ...options
+    });
+  }
+  /**
+   * List tools with JSON schema parameters for a provider/model
+   */
+  list(options) {
+    return (options.client ?? this._client).get({
+      url: "/experimental/tool",
+      ...options
+    });
+  }
+};
+var Instance = class extends _HeyApiClient {
+  /**
+   * Dispose the current instance
+   */
+  dispose(options) {
+    return (options?.client ?? this._client).post({
+      url: "/instance/dispose",
+      ...options
+    });
+  }
+};
+var Path = class extends _HeyApiClient {
+  /**
+   * Get the current path
+   */
+  get(options) {
+    return (options?.client ?? this._client).get({
+      url: "/path",
+      ...options
+    });
+  }
+};
+var Vcs = class extends _HeyApiClient {
+  /**
+   * Get VCS info for the current instance
+   */
+  get(options) {
+    return (options?.client ?? this._client).get({
+      url: "/vcs",
+      ...options
+    });
+  }
+};
+var Session = class extends _HeyApiClient {
+  /**
+   * List all sessions
+   */
+  list(options) {
+    return (options?.client ?? this._client).get({
+      url: "/session",
+      ...options
+    });
+  }
+  /**
+   * Create a new session
+   */
+  create(options) {
+    return (options?.client ?? this._client).post({
+      url: "/session",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers
+      }
+    });
+  }
+  /**
+   * Get session status
+   */
+  status(options) {
+    return (options?.client ?? this._client).get({
+      url: "/session/status",
+      ...options
+    });
+  }
+  /**
+   * Delete a session and all its data
+   */
+  delete(options) {
+    return (options.client ?? this._client).delete({
+      url: "/session/{id}",
+      ...options
+    });
+  }
+  /**
+   * Get session
+   */
+  get(options) {
+    return (options.client ?? this._client).get({
+      url: "/session/{id}",
+      ...options
+    });
+  }
+  /**
+   * Update session properties
+   */
+  update(options) {
+    return (options.client ?? this._client).patch({
+      url: "/session/{id}",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  /**
+   * Get a session's children
+   */
+  children(options) {
+    return (options.client ?? this._client).get({
+      url: "/session/{id}/children",
+      ...options
+    });
+  }
+  /**
+   * Get the todo list for a session
+   */
+  todo(options) {
+    return (options.client ?? this._client).get({
+      url: "/session/{id}/todo",
+      ...options
+    });
+  }
+  /**
+   * Analyze the app and create an AGENTS.md file
+   */
+  init(options) {
+    return (options.client ?? this._client).post({
+      url: "/session/{id}/init",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  /**
+   * Fork an existing session at a specific message
+   */
+  fork(options) {
+    return (options.client ?? this._client).post({
+      url: "/session/{id}/fork",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  /**
+   * Abort a session
+   */
+  abort(options) {
+    return (options.client ?? this._client).post({
+      url: "/session/{id}/abort",
+      ...options
+    });
+  }
+  /**
+   * Unshare the session
+   */
+  unshare(options) {
+    return (options.client ?? this._client).delete({
+      url: "/session/{id}/share",
+      ...options
+    });
+  }
+  /**
+   * Share a session
+   */
+  share(options) {
+    return (options.client ?? this._client).post({
+      url: "/session/{id}/share",
+      ...options
+    });
+  }
+  /**
+   * Get the diff for this session
+   */
+  diff(options) {
+    return (options.client ?? this._client).get({
+      url: "/session/{id}/diff",
+      ...options
+    });
+  }
+  /**
+   * Summarize the session
+   */
+  summarize(options) {
+    return (options.client ?? this._client).post({
+      url: "/session/{id}/summarize",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  /**
+   * List messages for a session
+   */
+  messages(options) {
+    return (options.client ?? this._client).get({
+      url: "/session/{id}/message",
+      ...options
+    });
+  }
+  /**
+   * Create and send a new message to a session
+   */
+  prompt(options) {
+    return (options.client ?? this._client).post({
+      url: "/session/{id}/message",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  /**
+   * Get a message from a session
+   */
+  message(options) {
+    return (options.client ?? this._client).get({
+      url: "/session/{id}/message/{messageID}",
+      ...options
+    });
+  }
+  /**
+   * Create and send a new message to a session, start if needed and return immediately
+   */
+  promptAsync(options) {
+    return (options.client ?? this._client).post({
+      url: "/session/{id}/prompt_async",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  /**
+   * Send a new command to a session
+   */
+  command(options) {
+    return (options.client ?? this._client).post({
+      url: "/session/{id}/command",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  /**
+   * Run a shell command
+   */
+  shell(options) {
+    return (options.client ?? this._client).post({
+      url: "/session/{id}/shell",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  /**
+   * Revert a message
+   */
+  revert(options) {
+    return (options.client ?? this._client).post({
+      url: "/session/{id}/revert",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  /**
+   * Restore all reverted messages
+   */
+  unrevert(options) {
+    return (options.client ?? this._client).post({
+      url: "/session/{id}/unrevert",
+      ...options
+    });
+  }
+};
+var Command = class extends _HeyApiClient {
+  /**
+   * List all commands
+   */
+  list(options) {
+    return (options?.client ?? this._client).get({
+      url: "/command",
+      ...options
+    });
+  }
+};
+var Oauth = class extends _HeyApiClient {
+  /**
+   * Authorize a provider using OAuth
+   */
+  authorize(options) {
+    return (options.client ?? this._client).post({
+      url: "/provider/{id}/oauth/authorize",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  /**
+   * Handle OAuth callback for a provider
+   */
+  callback(options) {
+    return (options.client ?? this._client).post({
+      url: "/provider/{id}/oauth/callback",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+};
+var Provider = class extends _HeyApiClient {
+  /**
+   * List all providers
+   */
+  list(options) {
+    return (options?.client ?? this._client).get({
+      url: "/provider",
+      ...options
+    });
+  }
+  /**
+   * Get provider authentication methods
+   */
+  auth(options) {
+    return (options?.client ?? this._client).get({
+      url: "/provider/auth",
+      ...options
+    });
+  }
+  oauth = new Oauth({ client: this._client });
+};
+var Find = class extends _HeyApiClient {
+  /**
+   * Find text in files
+   */
+  text(options) {
+    return (options.client ?? this._client).get({
+      url: "/find",
+      ...options
+    });
+  }
+  /**
+   * Find files
+   */
+  files(options) {
+    return (options.client ?? this._client).get({
+      url: "/find/file",
+      ...options
+    });
+  }
+  /**
+   * Find workspace symbols
+   */
+  symbols(options) {
+    return (options.client ?? this._client).get({
+      url: "/find/symbol",
+      ...options
+    });
+  }
+};
+var File2 = class extends _HeyApiClient {
+  /**
+   * List files and directories
+   */
+  list(options) {
+    return (options.client ?? this._client).get({
+      url: "/file",
+      ...options
+    });
+  }
+  /**
+   * Read a file
+   */
+  read(options) {
+    return (options.client ?? this._client).get({
+      url: "/file/content",
+      ...options
+    });
+  }
+  /**
+   * Get file status
+   */
+  status(options) {
+    return (options?.client ?? this._client).get({
+      url: "/file/status",
+      ...options
+    });
+  }
+};
+var App = class extends _HeyApiClient {
+  /**
+   * Write a log entry to the server logs
+   */
+  log(options) {
+    return (options?.client ?? this._client).post({
+      url: "/log",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers
+      }
+    });
+  }
+  /**
+   * List all agents
+   */
+  agents(options) {
+    return (options?.client ?? this._client).get({
+      url: "/agent",
+      ...options
+    });
+  }
+};
+var Auth = class extends _HeyApiClient {
+  /**
+   * Remove OAuth credentials for an MCP server
+   */
+  remove(options) {
+    return (options.client ?? this._client).delete({
+      url: "/mcp/{name}/auth",
+      ...options
+    });
+  }
+  /**
+   * Start OAuth authentication flow for an MCP server
+   */
+  start(options) {
+    return (options.client ?? this._client).post({
+      url: "/mcp/{name}/auth",
+      ...options
+    });
+  }
+  /**
+   * Complete OAuth authentication with authorization code
+   */
+  callback(options) {
+    return (options.client ?? this._client).post({
+      url: "/mcp/{name}/auth/callback",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  /**
+   * Start OAuth flow and wait for callback (opens browser)
+   */
+  authenticate(options) {
+    return (options.client ?? this._client).post({
+      url: "/mcp/{name}/auth/authenticate",
+      ...options
+    });
+  }
+  /**
+   * Set authentication credentials
+   */
+  set(options) {
+    return (options.client ?? this._client).put({
+      url: "/auth/{id}",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+};
+var Mcp = class extends _HeyApiClient {
+  /**
+   * Get MCP server status
+   */
+  status(options) {
+    return (options?.client ?? this._client).get({
+      url: "/mcp",
+      ...options
+    });
+  }
+  /**
+   * Add MCP server dynamically
+   */
+  add(options) {
+    return (options?.client ?? this._client).post({
+      url: "/mcp",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers
+      }
+    });
+  }
+  /**
+   * Connect an MCP server
+   */
+  connect(options) {
+    return (options.client ?? this._client).post({
+      url: "/mcp/{name}/connect",
+      ...options
+    });
+  }
+  /**
+   * Disconnect an MCP server
+   */
+  disconnect(options) {
+    return (options.client ?? this._client).post({
+      url: "/mcp/{name}/disconnect",
+      ...options
+    });
+  }
+  auth = new Auth({ client: this._client });
+};
+var Lsp = class extends _HeyApiClient {
+  /**
+   * Get LSP server status
+   */
+  status(options) {
+    return (options?.client ?? this._client).get({
+      url: "/lsp",
+      ...options
+    });
+  }
+};
+var Formatter = class extends _HeyApiClient {
+  /**
+   * Get formatter status
+   */
+  status(options) {
+    return (options?.client ?? this._client).get({
+      url: "/formatter",
+      ...options
+    });
+  }
+};
+var Control = class extends _HeyApiClient {
+  /**
+   * Get the next TUI request from the queue
+   */
+  next(options) {
+    return (options?.client ?? this._client).get({
+      url: "/tui/control/next",
+      ...options
+    });
+  }
+  /**
+   * Submit a response to the TUI request queue
+   */
+  response(options) {
+    return (options?.client ?? this._client).post({
+      url: "/tui/control/response",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers
+      }
+    });
+  }
+};
+var Tui = class extends _HeyApiClient {
+  /**
+   * Append prompt to the TUI
+   */
+  appendPrompt(options) {
+    return (options?.client ?? this._client).post({
+      url: "/tui/append-prompt",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers
+      }
+    });
+  }
+  /**
+   * Open the help dialog
+   */
+  openHelp(options) {
+    return (options?.client ?? this._client).post({
+      url: "/tui/open-help",
+      ...options
+    });
+  }
+  /**
+   * Open the session dialog
+   */
+  openSessions(options) {
+    return (options?.client ?? this._client).post({
+      url: "/tui/open-sessions",
+      ...options
+    });
+  }
+  /**
+   * Open the theme dialog
+   */
+  openThemes(options) {
+    return (options?.client ?? this._client).post({
+      url: "/tui/open-themes",
+      ...options
+    });
+  }
+  /**
+   * Open the model dialog
+   */
+  openModels(options) {
+    return (options?.client ?? this._client).post({
+      url: "/tui/open-models",
+      ...options
+    });
+  }
+  /**
+   * Submit the prompt
+   */
+  submitPrompt(options) {
+    return (options?.client ?? this._client).post({
+      url: "/tui/submit-prompt",
+      ...options
+    });
+  }
+  /**
+   * Clear the prompt
+   */
+  clearPrompt(options) {
+    return (options?.client ?? this._client).post({
+      url: "/tui/clear-prompt",
+      ...options
+    });
+  }
+  /**
+   * Execute a TUI command (e.g. agent_cycle)
+   */
+  executeCommand(options) {
+    return (options?.client ?? this._client).post({
+      url: "/tui/execute-command",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers
+      }
+    });
+  }
+  /**
+   * Show a toast notification in the TUI
+   */
+  showToast(options) {
+    return (options?.client ?? this._client).post({
+      url: "/tui/show-toast",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers
+      }
+    });
+  }
+  /**
+   * Publish a TUI event
+   */
+  publish(options) {
+    return (options?.client ?? this._client).post({
+      url: "/tui/publish",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers
+      }
+    });
+  }
+  control = new Control({ client: this._client });
+};
+var Event = class extends _HeyApiClient {
+  /**
+   * Get events
+   */
+  subscribe(options) {
+    return (options?.client ?? this._client).get.sse({
+      url: "/event",
+      ...options
+    });
+  }
+};
+var OpencodeClient = class extends _HeyApiClient {
+  /**
+   * Respond to a permission request
+   */
+  postSessionIdPermissionsPermissionId(options) {
+    return (options.client ?? this._client).post({
+      url: "/session/{id}/permissions/{permissionID}",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  }
+  global = new Global({ client: this._client });
+  project = new Project({ client: this._client });
+  pty = new Pty({ client: this._client });
+  config = new Config({ client: this._client });
+  tool = new Tool({ client: this._client });
+  instance = new Instance({ client: this._client });
+  path = new Path({ client: this._client });
+  vcs = new Vcs({ client: this._client });
+  session = new Session({ client: this._client });
+  command = new Command({ client: this._client });
+  provider = new Provider({ client: this._client });
+  find = new Find({ client: this._client });
+  file = new File2({ client: this._client });
+  app = new App({ client: this._client });
+  mcp = new Mcp({ client: this._client });
+  lsp = new Lsp({ client: this._client });
+  formatter = new Formatter({ client: this._client });
+  tui = new Tui({ client: this._client });
+  auth = new Auth({ client: this._client });
+  event = new Event({ client: this._client });
+};
+
+// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/client.js
+function createOpencodeClient(config3) {
+  if (!config3?.fetch) {
+    const customFetch = (req) => {
+      req.timeout = false;
+      return fetch(req);
+    };
+    config3 = {
+      ...config3,
+      fetch: customFetch
+    };
+  }
+  if (config3?.directory) {
+    config3.headers = {
+      ...config3.headers,
+      "x-opencode-directory": encodeURIComponent(config3.directory)
+    };
+  }
+  const client2 = createClient(config3);
+  return new OpencodeClient({ client: client2 });
+}
+
+// node_modules/.pnpm/@opencode-ai+sdk@1.2.18/node_modules/@opencode-ai/sdk/dist/server.js
+import { spawn as spawn2 } from "node:child_process";
+async function createOpencodeServer(options) {
+  options = Object.assign({
+    hostname: "127.0.0.1",
+    port: 4096,
+    timeout: 5e3
+  }, options ?? {});
+  const args = [`serve`, `--hostname=${options.hostname}`, `--port=${options.port}`];
+  if (options.config?.logLevel)
+    args.push(`--log-level=${options.config.logLevel}`);
+  const proc = spawn2(`opencode`, args, {
+    signal: options.signal,
+    env: {
+      ...process.env,
+      OPENCODE_CONFIG_CONTENT: JSON.stringify(options.config ?? {})
+    }
+  });
+  const url = await new Promise((resolve, reject) => {
+    const id = setTimeout(() => {
+      reject(new Error(`Timeout waiting for server to start after ${options.timeout}ms`));
+    }, options.timeout);
+    let output = "";
+    proc.stdout?.on("data", (chunk) => {
+      output += chunk.toString();
+      const lines = output.split("\n");
+      for (const line of lines) {
+        if (line.startsWith("opencode server listening")) {
+          const match = line.match(/on\s+(https?:\/\/[^\s]+)/);
+          if (!match) {
+            throw new Error(`Failed to parse server url from output: ${line}`);
+          }
+          clearTimeout(id);
+          resolve(match[1]);
+          return;
+        }
+      }
+    });
+    proc.stderr?.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+    proc.on("exit", (code) => {
+      clearTimeout(id);
+      let msg = `Server exited with code ${code}`;
+      if (output.trim()) {
+        msg += `
+Server output: ${output}`;
+      }
+      reject(new Error(msg));
+    });
+    proc.on("error", (error2) => {
+      clearTimeout(id);
+      reject(error2);
+    });
+    if (options.signal) {
+      options.signal.addEventListener("abort", () => {
+        clearTimeout(id);
+        reject(new Error("Aborted"));
+      });
+    }
+  });
+  return {
+    url,
+    close() {
+      proc.kill();
+    }
+  };
+}
+
 // src-tauri/resources/title-server.mjs
 delete process.env.CLAUDECODE;
 var config2 = JSON.parse(process.argv[2] || "{}");
@@ -17250,11 +18222,82 @@ ${commitFormat}
     systemPrompt = COMMIT_MSG_SYSTEM_PROMPT;
   }
   if (recentCommits) {
-    systemPrompt += `\n\nHere are recent commit messages from this repo — match their style, casing, prefix format, and tone:\n${recentCommits}`;
-  }
-  return runSdkQuery(systemPrompt, `Generate a commit message for this diff:
+    systemPrompt += `
 
-${truncated}`, model);
+Here are recent commit messages from this repo \u2014 match their style, casing, prefix format, and tone:
+${recentCommits}`;
+  }
+  const userMessage = `Generate a commit message for this diff:
+
+${truncated}`;
+  if (provider === "opencode") {
+    return runOpencodeQuery(systemPrompt, userMessage, model);
+  }
+  return runSdkQuery(systemPrompt, userMessage, model);
+}
+var PR_DESCRIPTION_SYSTEM_PROMPT = `You generate pull request titles and descriptions.
+
+Given a branch name, commit log, and diff, generate a PR title and description.
+
+TITLE RULES:
+- Max 60 characters \u2014 short and descriptive
+- Derive from branch name: remove prefix (feature/, fix/, hotfix/, chore/, etc.), replace dashes with spaces, capitalize first letter
+- If the branch name is not descriptive enough, use the commit messages to infer a better title
+- Examples: "feature/watch-list-exclusion" \u2192 "Watch list exclusion", "fix/signals-tracking-bug" \u2192 "Signals tracking bug"
+
+DESCRIPTION FORMAT:
+## Summary
+[1-2 sentences: WHAT was done and WHY]
+
+## How it works
+[Functional explanation \u2014 no code, just how the changes address the feature or bug]
+
+## Changes
+- **[Category]** in \`file.ts\` ([N] lines): [Brief description]
+- **Total changes**: [N] lines across [N] files
+
+## Impact / Risks
+**Impact:** [User-facing impact]
+**Risks:** [Risk level]: [Description]
+
+## How to test
+- [ ] [Setup step]
+- [ ] [Action to perform]
+- [ ] [Expected result]
+
+\u{1F916} Generated with [Claude Code](https://claude.com/claude-code)
+
+Reply with ONLY valid JSON: {"title": "...", "description": "..."}`;
+async function generatePRDescription(branchName, commits, diff, model, provider) {
+  const truncatedDiff = diff.slice(0, 12e3);
+  const userMessage = `Generate a PR title and description.
+
+Branch: ${branchName}
+
+Commits:
+${commits}
+
+Diff (truncated):
+${truncatedDiff}`;
+  if (provider === "opencode") {
+    const raw2 = await runOpencodeQuery(PR_DESCRIPTION_SYSTEM_PROMPT, userMessage, model);
+    return parsePRResponse(raw2, branchName);
+  }
+  const raw = await runSdkQuery(PR_DESCRIPTION_SYSTEM_PROMPT, userMessage, model);
+  return parsePRResponse(raw, branchName);
+}
+function parsePRResponse(raw, branchName) {
+  try {
+    const jsonStr = raw.replace(/^```[\w]*\n?/, "").replace(/\n?```$/, "").trim();
+    const parsed = JSON.parse(jsonStr);
+    if (parsed.title && parsed.description) {
+      const title2 = parsed.title.length > 60 ? parsed.title.slice(0, 57) + "..." : parsed.title;
+      return { title: title2, description: parsed.description };
+    }
+  } catch {
+  }
+  const title = branchName.replace(/^(feature|fix|hotfix|chore|refactor|docs|perf|ci|build|test)\//, "").replace(/-/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+  return { title: title.slice(0, 60), description: raw || "" };
 }
 var CLASSIFY_SYSTEM_PROMPT = `You classify coding requests as "simple" or "complex".
 
@@ -17291,6 +18334,43 @@ async function runSdkQuery(systemPrompt, userMessage, model) {
     return text.trim();
   } finally {
     clearTimeout(timeout);
+  }
+}
+async function runOpencodeQuery(systemPrompt, userMessage, modelId) {
+  try {
+    const port = await new Promise((resolve, reject) => {
+      const srv = createServer();
+      srv.listen(0, "127.0.0.1", () => {
+        const p = srv.address().port;
+        srv.close(() => resolve(p));
+      });
+      srv.on("error", reject);
+    });
+    const server2 = await createOpencodeServer({ port, timeout: 6e4 });
+    const client2 = createOpencodeClient({ baseUrl: server2.url, directory: process.cwd() });
+    let providerID = "opencode";
+    let parsedModelID = modelId || "";
+    if (parsedModelID.includes("/")) {
+      [providerID, parsedModelID] = parsedModelID.split("/", 2);
+    }
+    const sessionResult = await client2.session.create({
+      body: { system: systemPrompt }
+    });
+    const sessionId = sessionResult.data?.id || sessionResult.id;
+    const response = await client2.session.prompt({
+      path: { id: sessionId },
+      body: {
+        model: { providerID, modelID: parsedModelID },
+        parts: [{ type: "text", text: userMessage }],
+        system: systemPrompt
+      }
+    });
+    const parts = response.data?.parts || response.parts || [];
+    const text = parts.filter((p) => p.type === "text").map((p) => p.text).join("\n");
+    return text.trim();
+  } catch (err) {
+    log(`OpenCode query failed: ${err.message}`);
+    throw err;
   }
 }
 var BAD_TITLE_PHRASES = [
@@ -17361,6 +18441,22 @@ var server = createServer(async (req, res) => {
       const commitMessage = await generateCommitMessage(diff, model, provider, commitFormat, recentCommits);
       log(`Generated commit message (${Date.now() - t02}ms)`);
       const responseBody2 = JSON.stringify({ message: commitMessage });
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(responseBody2) });
+      res.end(responseBody2);
+      return;
+    }
+    if (url === "/pr-description") {
+      const { branchName, commits, diff, model, provider } = parsed;
+      if (!branchName) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "missing branchName" }));
+        return;
+      }
+      log(`Generating PR description for branch ${branchName}${model ? ` with model ${model}` : ""}${provider ? ` via ${provider}` : ""}`);
+      const t02 = Date.now();
+      const result = await generatePRDescription(branchName, commits || "", diff || "", model, provider);
+      log(`Generated PR description (${Date.now() - t02}ms): title="${result.title}"`);
+      const responseBody2 = JSON.stringify(result);
       res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(responseBody2) });
       res.end(responseBody2);
       return;

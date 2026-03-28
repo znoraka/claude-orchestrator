@@ -3394,6 +3394,36 @@ fn extract_commit_section(content: &str) -> Option<String> {
     }
 }
 
+/// Extract the body from a raw HTTP response string.
+/// Handles both regular and chunked transfer encoding.
+fn extract_http_body(response: &str) -> String {
+    // Split on the FIRST blank line only (header/body boundary)
+    let (headers, body) = match response.splitn(2, "\r\n\r\n").collect::<Vec<_>>().as_slice() {
+        [h, b] => (*h, *b),
+        _ => return String::new(),
+    };
+
+    // If chunked transfer encoding, decode it
+    if headers.to_lowercase().contains("transfer-encoding: chunked") {
+        let mut result = String::new();
+        let mut remaining = body;
+        loop {
+            let Some(crlf) = remaining.find("\r\n") else { break };
+            let size_str = remaining[..crlf].trim();
+            let Ok(size) = usize::from_str_radix(size_str, 16) else { break };
+            if size == 0 { break }
+            remaining = &remaining[crlf + 2..];
+            if remaining.len() < size { break }
+            result.push_str(&remaining[..size]);
+            remaining = &remaining[size..];
+            if remaining.starts_with("\r\n") { remaining = &remaining[2..]; }
+        }
+        return result;
+    }
+
+    body.trim_end().to_string()
+}
+
 pub async fn generate_commit_message(
     directory: String,
     model: Option<String>,
@@ -3504,8 +3534,8 @@ pub async fn generate_commit_message(
     .await
     .map_err(|e| format!("Task join error: {}", e))??;
 
-    let body = response.split("\r\n\r\n").nth(1).unwrap_or("");
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
+    let body = extract_http_body(&response);
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
         if let Some(msg) = parsed.get("message").and_then(|m| m.as_str()) {
             return Ok(msg.trim().to_string());
         }
@@ -3582,6 +3612,143 @@ pub async fn gh_open_pr_create(directory: String, base: Option<String>) -> Resul
             ));
         }
         Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+pub async fn generate_pr_description(
+    directory: String,
+    model: Option<String>,
+    provider: Option<String>,
+    base: Option<String>,
+    state: Arc<ServerState>,
+) -> Result<serde_json::Value, String> {
+    let port = state.title_server_port.load(std::sync::atomic::Ordering::Relaxed);
+    if port == 0 {
+        return Err("Title server not running".to_string());
+    }
+
+    let dir = directory.clone();
+    let base_branch = base.clone();
+    let (branch_name, commits, diff) = tokio::task::spawn_blocking(move || {
+        // Get current branch name
+        let branch_out = git_command(&dir)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .map_err(|e| format!("Failed to get branch: {}", e))?;
+        let branch = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
+
+        // Determine base branch
+        let base = base_branch.unwrap_or_else(|| {
+            for candidate in &["main", "master", "develop"] {
+                let check = git_command(&dir)
+                    .args(["rev-parse", "--verify", candidate])
+                    .output();
+                if let Ok(out) = check {
+                    if out.status.success() {
+                        return candidate.to_string();
+                    }
+                }
+            }
+            "main".to_string()
+        });
+
+        // Get commit log since branching from base
+        let log_out = git_command(&dir)
+            .args(["log", &format!("{}..HEAD", base), "--oneline", "--no-decorate"])
+            .output()
+            .map_err(|e| format!("Failed to get git log: {}", e))?;
+        let commits = String::from_utf8_lossy(&log_out.stdout).to_string();
+
+        // Get diff against base
+        let diff_out = git_command(&dir)
+            .args(["diff", &format!("{}...HEAD", base)])
+            .output()
+            .map_err(|e| format!("Failed to get diff: {}", e))?;
+        let diff = String::from_utf8_lossy(&diff_out.stdout).to_string();
+
+        Ok::<(String, String, String), String>((branch, commits, diff))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))??;
+
+    // Call title server /pr-description endpoint
+    let mut json_body = serde_json::json!({
+        "branchName": branch_name,
+        "commits": commits,
+        "diff": diff,
+    });
+    if let Some(ref m) = model {
+        json_body["model"] = serde_json::json!(m);
+    }
+    if let Some(ref p) = provider {
+        json_body["provider"] = serde_json::json!(p);
+    }
+    let body = json_body.to_string();
+
+    let response = tokio::task::spawn_blocking(move || {
+        let client = std::net::TcpStream::connect_timeout(
+            &format!("127.0.0.1:{}", port).parse().unwrap(),
+            std::time::Duration::from_secs(5),
+        )
+        .map_err(|e| format!("Failed to connect to title server: {}", e))?;
+        client.set_read_timeout(Some(std::time::Duration::from_secs(90))).ok();
+        client.set_write_timeout(Some(std::time::Duration::from_secs(5))).ok();
+
+        use std::io::{Read, Write};
+        let mut stream = client;
+        let request = format!(
+            "POST /pr-description HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            port,
+            body.len(),
+            body
+        );
+        stream.write_all(request.as_bytes())
+            .map_err(|e| format!("Failed to send request: {}", e))?;
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response)
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+
+        Ok::<String, String>(response)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))??;
+
+    // Parse HTTP response body (skip headers, handle chunked encoding)
+    let body = extract_http_body(&response);
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
+        if let Some(err) = parsed.get("error").and_then(|e| e.as_str()) {
+            return Err(format!("Server error: {}", err));
+        }
+        return Ok(parsed);
+    }
+    Err(format!("Failed to parse PR description response (body: {:?})", &body[..body.len().min(200)]))
+}
+
+pub async fn gh_create_pr(
+    directory: String,
+    title: String,
+    body: String,
+    base: Option<String>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = gh_in_dir(&directory);
+        cmd.args(["pr", "create", "--title", &title, "--body", &body, "--assignee", "@me"]);
+        if let Some(ref b) = base {
+            cmd.args(["--base", b]);
+        }
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run gh pr create: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "gh pr create failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?

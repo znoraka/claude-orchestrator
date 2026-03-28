@@ -621,6 +621,23 @@ async fn dispatch(text: &str, state: &AppState) -> String {
                 Err(e) => err_response(&id, e),
             }
         }
+        "generate_pr_description" => {
+            let state_clone = Arc::clone(s);
+            let model = p.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let provider = p.get("provider").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let base = p.get("base").and_then(|v| v.as_str()).map(|s| s.to_string());
+            match commands::generate_pr_description(str_field!(p, "directory"), model, provider, base, state_clone).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
+        "gh_create_pr" => {
+            let base = p.get("base").and_then(|v| v.as_str()).map(|s| s.to_string());
+            match commands::gh_create_pr(str_field!(p, "directory"), str_field!(p, "title"), str_field!(p, "body"), base).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
         "git_checkout_new_branch" => {
             match commands::git_checkout_new_branch(
                 str_field!(p, "directory"),
