@@ -43,6 +43,10 @@ export default function CommitModal({ directory, onClose }: Props) {
   const [isPushing, setIsPushing] = useState(false);
   const [pushDone, setPushDone] = useState(false);
   const [showCreatePR, setShowCreatePR] = useState(false);
+  const [prStep, setPrStep] = useState<"idle" | "generating" | "preview" | "creating" | "done">("idle");
+  const [prTitle, setPrTitle] = useState("");
+  const [prBody, setPrBody] = useState("");
+  const [prUrl, setPrUrl] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [branch, setBranch] = useState("");
@@ -216,7 +220,46 @@ export default function CommitModal({ directory, onClose }: Props) {
     }
   };
 
-  const busy = isPushing || isGenerating;
+  const handleGeneratePR = async () => {
+    setPrStep("generating");
+    setError(null);
+    try {
+      const raw = await invoke<string>("generate_pr_description", {
+        directory,
+        model,
+        provider,
+        base: baseBranch || undefined,
+      });
+      const parsed = JSON.parse(raw);
+      setPrTitle(parsed.title || "");
+      setPrBody(parsed.description || "");
+      setPrStep("preview");
+    } catch (err) {
+      setError(`Failed to generate PR description: ${err}`);
+      setPrStep("idle");
+    }
+  };
+
+  const handleCreatePR = async () => {
+    if (!prTitle.trim()) { setError("PR title is required."); return; }
+    setPrStep("creating");
+    setError(null);
+    try {
+      const url = await invoke<string>("gh_create_pr", {
+        directory,
+        title: prTitle.trim(),
+        body: prBody.trim(),
+        base: baseBranch || undefined,
+      });
+      setPrUrl(url);
+      setPrStep("done");
+    } catch (err) {
+      setError(`Failed to create PR: ${err}`);
+      setPrStep("preview");
+    }
+  };
+
+  const busy = isPushing || isGenerating || prStep === "generating" || prStep === "creating";
   const hasNoFiles = !isLoadingFiles && allFiles.length === 0;
 
   return (
@@ -225,7 +268,7 @@ export default function CommitModal({ directory, onClose }: Props) {
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        style={{ background: "var(--bg-primary)", border: "2px solid var(--accent-color)", borderRadius: 0, width: 520, maxWidth: "90vw", maxHeight: "80vh", display: "flex", flexDirection: "column", boxShadow: "6px 6px 0px rgba(255, 122, 0,0.15)" }}
+        style={{ background: "var(--bg-primary)", border: "2px solid var(--accent-color)", borderRadius: 0, width: prStep === "preview" || prStep === "creating" ? 620 : 520, maxWidth: "90vw", maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "6px 6px 0px rgba(255, 122, 0,0.15)", transition: "width 0.2s ease" }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -411,26 +454,107 @@ export default function CommitModal({ directory, onClose }: Props) {
           )}
         </div>
 
+        {/* PR Preview (shown after push, when generating/editing PR) */}
+        {pushDone && (prStep === "generating" || prStep === "preview" || prStep === "creating") && (
+          <div style={{ padding: "0 18px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+            {prStep === "generating" ? (
+              <div style={{ color: "var(--text-tertiary)", fontSize: 12, padding: "6px 0" }}>Generating PR title and description...</div>
+            ) : (
+              <>
+                <div>
+                  <span style={{ fontSize: 10, color: "var(--text-tertiary)", textTransform: "uppercase" as const, letterSpacing: "0.05em", display: "block", marginBottom: 4 }}>PR Title</span>
+                  <input
+                    value={prTitle}
+                    onChange={(e) => setPrTitle(e.target.value)}
+                    disabled={prStep === "creating"}
+                    maxLength={70}
+                    style={{
+                      width: "100%",
+                      background: "var(--bg-secondary)",
+                      border: "2px solid var(--border-color)",
+                      borderRadius: 0,
+                      padding: "6px 10px",
+                      fontSize: 12,
+                      fontFamily: "var(--font-mono, 'SF Mono', Menlo, monospace)",
+                      color: "var(--text-primary)",
+                      outline: "none",
+                      boxSizing: "border-box" as const,
+                    }}
+                    onFocus={(e) => { e.target.style.borderColor = "var(--accent)"; }}
+                    onBlur={(e) => { e.target.style.borderColor = "var(--border-color)"; }}
+                  />
+                  <span style={{ fontSize: 9, color: prTitle.length > 60 ? "#fb923c" : "var(--text-tertiary)", marginTop: 2, display: "block" }}>
+                    {prTitle.length}/70
+                  </span>
+                </div>
+                <div>
+                  <span style={{ fontSize: 10, color: "var(--text-tertiary)", textTransform: "uppercase" as const, letterSpacing: "0.05em", display: "block", marginBottom: 4 }}>Description</span>
+                  <textarea
+                    value={prBody}
+                    onChange={(e) => setPrBody(e.target.value)}
+                    disabled={prStep === "creating"}
+                    style={{
+                      width: "100%",
+                      minHeight: 150,
+                      maxHeight: 250,
+                      resize: "vertical",
+                      background: "var(--bg-secondary)",
+                      border: "2px solid var(--border-color)",
+                      borderRadius: 0,
+                      padding: "8px 10px",
+                      fontSize: 11,
+                      fontFamily: "var(--font-mono, 'SF Mono', Menlo, monospace)",
+                      color: "var(--text-primary)",
+                      outline: "none",
+                      boxSizing: "border-box" as const,
+                    }}
+                    onFocus={(e) => { (e.target as HTMLTextAreaElement).style.borderColor = "var(--accent)"; }}
+                    onBlur={(e) => { (e.target as HTMLTextAreaElement).style.borderColor = "var(--border-color)"; }}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* PR Done */}
+        {prStep === "done" && prUrl && (
+          <div style={{ padding: "0 18px 14px" }}>
+            <div style={{ background: "rgba(74,222,128,0.1)", border: "2px solid rgba(74,222,128,0.3)", borderRadius: 0, padding: "8px 10px", fontSize: 12, color: "#4ade80", display: "flex", alignItems: "center", gap: 8 }}>
+              <span>PR created</span>
+              <a
+                href="#"
+                onClick={(e) => { e.preventDefault(); import("../lib/bridge").then(({ openUrl }) => openUrl(prUrl)); }}
+                style={{ color: "var(--accent)", textDecoration: "underline", fontSize: 11, fontFamily: "var(--font-mono, 'SF Mono', Menlo, monospace)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
+                {prUrl}
+              </a>
+            </div>
+          </div>
+        )}
+
         {/* Footer */}
         <div style={{ padding: "12px 18px", borderTop: "2px solid var(--border-color)", display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center" }}>
           {pushDone ? (
             <>
               <span style={{ fontSize: 11, color: "#4ade80", fontWeight: 700, marginRight: "auto", textTransform: "uppercase", letterSpacing: "0.05em" }}>Pushed</span>
-              {showCreatePR && (
-                <Btn
-                  onClick={async () => {
-                    try {
-                      await invoke("gh_open_pr_create", { directory, base: baseBranch || undefined });
-                    } catch (err) {
-                      setError(`Failed to open PR creation: ${err}`);
-                    }
-                  }}
-                  primary
-                >
+              {showCreatePR && prStep === "idle" && (
+                <Btn onClick={handleGeneratePR} primary>
                   Create PR
                 </Btn>
               )}
-              <Btn onClick={onClose}>Close</Btn>
+              {prStep === "preview" && (
+                <>
+                  <Btn onClick={() => setPrStep("idle")}>Cancel</Btn>
+                  <Btn onClick={handleCreatePR} primary disabled={!prTitle.trim()}>
+                    Create PR
+                  </Btn>
+                </>
+              )}
+              {prStep === "creating" && (
+                <Btn onClick={() => {}} disabled>Creating...</Btn>
+              )}
+              <Btn onClick={onClose} disabled={prStep === "generating" || prStep === "creating"}>Close</Btn>
             </>
           ) : (
             <>
