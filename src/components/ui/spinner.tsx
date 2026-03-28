@@ -5,7 +5,11 @@ const CLOCKWISE = [0, 1, 2, 5, 8, 7, 6, 3];
 const STEP_MS = 100;
 const DURATION_MS = CLOCKWISE.length * STEP_MS;
 
-function Spinner({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+interface SpinnerProps extends React.HTMLAttributes<HTMLDivElement> {
+  color?: string;
+}
+
+function Spinner({ className, color = "var(--accent-color)", ...props }: SpinnerProps) {
   return (
     <div
       aria-label="Loading"
@@ -18,8 +22,7 @@ function Spinner({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) 
           return (
             <div
               key={i}
-              className="bg-[var(--accent-color)]"
-              style={{ opacity: 0.12 }}
+              style={{ backgroundColor: color, opacity: 0.12 }}
             />
           );
         }
@@ -27,8 +30,8 @@ function Spinner({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) 
         return (
           <div
             key={i}
-            className="animate-grid-spinner bg-[var(--accent-color)]"
-            style={{ animationDelay: `${lightIndex * STEP_MS}ms`, animationDuration: `${DURATION_MS}ms` }}
+            className="animate-grid-spinner"
+            style={{ backgroundColor: color, animationDelay: `${lightIndex * STEP_MS}ms`, animationDuration: `${DURATION_MS}ms` }}
           />
         );
       })}

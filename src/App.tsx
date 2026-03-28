@@ -24,6 +24,7 @@ import ActivityBar from "./components/ActivityBar";
 import TitleBar from "./components/TitleBar";
 import { useMobileLayout } from "./hooks/useMobileLayout";
 import CommitModal from "./components/CommitModal";
+import { Spinner } from "./components/ui/spinner";
 import OverviewDashboard from "./components/OverviewDashboard";
 import ContextRail from "./components/ContextRail";
 import { useSessionLive } from "./contexts/SessionContext";
@@ -73,6 +74,7 @@ const SessionPanel = memo(function SessionPanel({
   onProviderChange,
   onStartPendingSession,
   onOpenPRPanel,
+  onChangedFiles,
 }: {
   session: Session;
   isActive: boolean;
@@ -104,6 +106,7 @@ const SessionPanel = memo(function SessionPanel({
   onProviderChange: (provider: AgentProvider) => void;
   onStartPendingSession: (provider: AgentProvider, model: string) => Promise<void>;
   onOpenPRPanel?: (prNumber: number) => void;
+  onChangedFiles?: (files: Map<string, import("./components/chat/types").ChangedFile[]>) => void;
 }) {
   const isVisible = isActive && activePanel === null;
 
@@ -190,6 +193,7 @@ const SessionPanel = memo(function SessionPanel({
             onStartPendingSession={onStartPendingSession}
             onCreateTerminal={handleCreateTerminal}
             onOpenPRPanel={onOpenPRPanel}
+            onChangedFiles={onChangedFiles}
           />
         )}
       </ErrorBoundary>
@@ -398,8 +402,8 @@ export default function App() {
   const [railOpen, setRailOpen] = useState<boolean>(() => {
     try { return JSON.parse(localStorage.getItem("ui:railOpen") ?? "false"); } catch { return false; }
   });
-  const [railTab, setRailTab] = useState<"git" | "cost">(() => {
-    return (localStorage.getItem("ui:railTab") as "git" | "cost") ?? "git";
+  const [railTab, setRailTab] = useState<"git" | "cost" | "turns">(() => {
+    return (localStorage.getItem("ui:railTab") as "git" | "cost" | "turns") ?? "git";
   });
   const [railWidth, setRailWidth] = useState<number>(() => {
     const saved = parseInt(localStorage.getItem("ui:railWidth") ?? "320", 10);
@@ -424,6 +428,24 @@ export default function App() {
     setSelectedGitFile({ path: filePath, seq: ++fileSelectionSeqRef.current, diff });
     setRailOpen(true);
     setRailTab("git");
+  }, []);
+
+  // Per-session changed files from agent turns (keyed by session id → result id → files)
+  const [sessionChangedFiles, setSessionChangedFiles] = useState<Map<string, Map<string, import("./components/chat/types").ChangedFile[]>>>(new Map());
+  const handleChangedFilesCallbacks = useRef<Map<string, (files: Map<string, import("./components/chat/types").ChangedFile[]>) => void>>(new Map());
+  const getChangedFilesCallback = useCallback((sessionId: string) => {
+    let cb = handleChangedFilesCallbacks.current.get(sessionId);
+    if (!cb) {
+      cb = (files: Map<string, import("./components/chat/types").ChangedFile[]>) => {
+        setSessionChangedFiles((prev) => {
+          const next = new Map(prev);
+          next.set(sessionId, files);
+          return next;
+        });
+      };
+      handleChangedFilesCallbacks.current.set(sessionId, cb);
+    }
+    return cb;
   }, []);
 
   const handleModelChange = useCallback((modelId: string) => {
@@ -597,7 +619,8 @@ export default function App() {
   const prPanelResetRef = useRef<(() => void) | null>(null);
 
   // PR number to open directly in the PR panel (set when clicking "Open in PR Panel" from chat)
-  const [openPrNumber, setOpenPrNumber] = useState<number | undefined>(undefined);
+  // Uses {number, key} so re-clicking the same PR still triggers the effect
+  const [openPrRequest, setOpenPrRequest] = useState<{ number: number; key: number } | undefined>(undefined);
 
   const togglePanel = (panel: "prs") => {
     if (activePanel === panel) {
@@ -961,7 +984,7 @@ export default function App() {
       {showDisconnected && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-4 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl shadow-2xl p-8 max-w-sm mx-4 text-center">
-            <div className="w-10 h-10 rounded-full border-2 border-[var(--text-tertiary)] border-t-[var(--text-primary)] animate-spin" />
+            <Spinner className="w-10 h-10" color="var(--text-primary)" />
             <div className="text-sm font-medium text-[var(--text-primary)]">Cannot connect to server</div>
             <div className="text-xs text-[var(--text-secondary)] leading-relaxed">
               {!isTauri && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1"
@@ -1316,7 +1339,8 @@ export default function App() {
                   providerAvailability={providerAvailability}
                   onProviderChange={(provider) => handleProviderChange(session.id, provider)}
                   onStartPendingSession={(provider, model) => handleStartPendingSession(session.id, provider, model)}
-                  onOpenPRPanel={(prNumber) => { setOpenPrNumber(prNumber); navigateToPanel("prs"); }}
+                  onOpenPRPanel={(prNumber) => { setOpenPrRequest({ number: prNumber, key: Date.now() }); navigateToPanel("prs"); }}
+                  onChangedFiles={getChangedFilesCallback(session.id)}
                 />
               ))}
 
@@ -1403,7 +1427,8 @@ export default function App() {
                   isActive={activePanel === "prs"}
                   onResetRef={prPanelResetRef}
                   onSwitchToClaude={() => navigateToPanel(null)}
-                  initialPrNumber={openPrNumber}
+                  initialPrNumber={openPrRequest?.number}
+                  initialPrKey={openPrRequest?.key}
                   onAskClaude={(prompt) => {
                     if (!activeSessionId) return;
                     const jsonLine = JSON.stringify({
@@ -1426,7 +1451,7 @@ export default function App() {
         <div
           ref={railContainerRef}
           className="overflow-hidden shrink-0 relative"
-          style={{ width: railOpen && activeSessionId && !isMobile ? railWidth : 0, transition: "width 200ms ease" }}
+          style={{ width: railOpen && activeSessionId && !isMobile ? railWidth : 0 }}
         >
           {/* Drag handle */}
           {railOpen && activeSessionId && (
@@ -1491,6 +1516,8 @@ export default function App() {
                 defaultTab={railTab}
                 onTabChange={setRailTab}
                 selectedFile={selectedGitFile}
+                turnChangedFiles={activeSessionId ? sessionChangedFiles.get(activeSessionId) : undefined}
+                onOpenFile={handleOpenFile}
               />
             )}
           </div>

@@ -62,6 +62,8 @@ impl AgentManager {
         {
             let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
             if let Some(mut old) = sessions.remove(session_id) {
+                #[cfg(unix)]
+                kill_process_group(old.pid);
                 let _ = old.child.kill();
             }
         }
@@ -76,6 +78,8 @@ impl AgentManager {
         let hist_dir = history_dir();
         let _ = std::fs::create_dir_all(&hist_dir);
         let hist_file = history_file_for(session_id);
+        // Clear disk history so a remount after edit/recreate doesn't replay stale messages
+        let _ = std::fs::remove_file(&hist_file);
 
         let path_env = super::shell_path();
 

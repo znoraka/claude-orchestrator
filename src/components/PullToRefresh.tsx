@@ -1,4 +1,5 @@
 import { useRef, useCallback, useEffect, useState } from "react";
+import { Spinner } from "./ui/spinner";
 
 const THRESHOLD = 80;
 const MAX_PULL = 120;
@@ -82,7 +83,7 @@ export default function PullToRefresh({ children }: { children: React.ReactNode 
             className="w-8 h-8 rounded-full bg-[var(--bg-secondary)] border border-[var(--border-color)] shadow-lg flex items-center justify-center"
           >
             {releasing ? (
-              <div className="w-4 h-4 rounded-full border-2 border-[var(--text-tertiary)] border-t-[var(--text-primary)] animate-spin" />
+              <Spinner className="w-4 h-4" color="var(--text-primary)" />
             ) : (
               <svg
                 width="14" height="14" viewBox="0 0 24 24" fill="none"

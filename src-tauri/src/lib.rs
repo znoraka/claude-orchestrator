@@ -2858,6 +2858,9 @@ fn get_git_diff_sync(directory: String, file_path: String, staged: bool) -> Resu
 #[tauri::command]
 async fn generate_commit_message(
     directory: String,
+    model: Option<String>,
+    provider: Option<String>,
+    files: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let port = state.title_server_port.load(std::sync::atomic::Ordering::Relaxed);
@@ -2865,20 +2868,31 @@ async fn generate_commit_message(
         return Err("Title server not running".to_string());
     }
 
-    // Get all local changes: try `git diff HEAD` first (captures both staged and unstaged vs last commit),
-    // fall back to `git diff --staged` for repos with no commits yet.
+    // Get changes for selected files only (or all if no files specified)
     let diff = tauri::async_runtime::spawn_blocking(move || {
-        let output = git_command(&directory)
-            .args(["diff", "HEAD"])
-            .output()
+        let mut cmd = git_command(&directory);
+        cmd.args(["diff", "HEAD"]);
+        if let Some(ref paths) = files {
+            if !paths.is_empty() {
+                cmd.arg("--");
+                cmd.args(paths);
+            }
+        }
+        let output = cmd.output()
             .map_err(|e| format!("Failed to run git diff HEAD: {}", e))?;
         if output.status.success() && !output.stdout.is_empty() {
             return Ok::<String, String>(String::from_utf8_lossy(&output.stdout).to_string());
         }
         // Fallback: initial commit or empty working tree — try staged diff
-        let staged = git_command(&directory)
-            .args(["diff", "--staged"])
-            .output()
+        let mut cmd2 = git_command(&directory);
+        cmd2.args(["diff", "--staged"]);
+        if let Some(ref paths) = files {
+            if !paths.is_empty() {
+                cmd2.arg("--");
+                cmd2.args(paths);
+            }
+        }
+        let staged = cmd2.output()
             .map_err(|e| format!("Failed to run git diff --staged: {}", e))?;
         Ok(String::from_utf8_lossy(&staged.stdout).to_string())
     })
@@ -2890,7 +2904,14 @@ async fn generate_commit_message(
     }
 
     // Call title server /commit-message endpoint
-    let body = serde_json::json!({ "diff": diff }).to_string();
+    let mut json_body = serde_json::json!({ "diff": diff });
+    if let Some(ref m) = model {
+        json_body["model"] = serde_json::json!(m);
+    }
+    if let Some(ref p) = provider {
+        json_body["provider"] = serde_json::json!(p);
+    }
+    let body = json_body.to_string();
     let response = tauri::async_runtime::spawn_blocking(move || {
         let client = std::net::TcpStream::connect_timeout(
             &format!("127.0.0.1:{}", port).parse().unwrap(),
@@ -2979,6 +3000,67 @@ async fn git_commit_and_push(directory: String, message: String) -> Result<(), S
             }
         }
 
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn gh_open_pr_create(directory: String, base: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = gh_in_dir(&directory);
+        cmd.args(["pr", "create", "--web"]);
+        if let Some(ref b) = base {
+            cmd.args(["--base", b]);
+        }
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run gh pr create: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "gh pr create --web failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn git_checkout_new_branch(directory: String, branch_name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = git_command(&directory)
+            .args(["checkout", "-b", &branch_name])
+            .output()
+            .map_err(|e| format!("Failed to run git checkout -b: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git checkout -b failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn git_checkout_branch(directory: String, branch_name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = git_command(&directory)
+            .args(["checkout", &branch_name])
+            .output()
+            .map_err(|e| format!("Failed to run git checkout: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git checkout failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
         Ok(())
     })
     .await

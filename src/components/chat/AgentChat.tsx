@@ -97,6 +97,7 @@ const AgentChat = memo(function AgentChat({
   onStartPendingSession,
   onCreateTerminal,
   onOpenPRPanel,
+  onChangedFiles,
 }: AgentChatProps) {
   const isReadOnly = session?.status === "stopped";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -348,6 +349,11 @@ const AgentChat = memo(function AgentChat({
     }
     return resultMap;
   }, [allMessages, onOpenFile, session?.directory]);
+
+  // Report changed files to parent (for ContextRail)
+  useEffect(() => {
+    onChangedFiles?.(modifiedFilesByResult);
+  }, [modifiedFilesByResult, onChangedFiles]);
 
   const latestTodos = useMemo<TodoItem[] | null>(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -650,6 +656,25 @@ const AgentChat = memo(function AgentChat({
       titleGeneratedRef.current = true;
     }
 
+    // Commands that should execute immediately, even while generating
+    if (text === "/clear") { setMessages([]); setInputText(""); return; }
+    if (text === "/compact") { setInputText(""); sendMessage("Please provide a brief summary of our conversation so far, then we can continue from that context."); return; }
+    if (text === "/session-id") { const sid = sessionRef.current?.claudeSessionId; if (sid) navigator.clipboard.writeText(sid); setInputText(""); return; }
+
+    // > command — create a new terminal session and run the command
+    if (text.startsWith(">") && onCreateTerminalRef.current) {
+      const command = text.slice(1).trim();
+      setInputText("");
+      onCreateTerminalRef.current(sessionRef.current?.directory || "~", command || undefined);
+      return;
+    }
+    if (text === "/editor" || text.startsWith("/editor ")) {
+      const arg = text.slice("/editor".length).trim();
+      if (arg) { localStorage.setItem("claude-orchestrator-editor-command", arg); setMessages((prev) => [...prev, { id: `editor-${Date.now()}`, type: "system", content: [{ type: "text", text: `Editor set to: ${arg}` }], timestamp: Date.now() }]); }
+      else { const current = localStorage.getItem("claude-orchestrator-editor-command") || "code"; setMessages((prev) => [...prev, { id: `editor-${Date.now()}`, type: "system", content: [{ type: "text", text: `Current editor: ${current}\nUsage: /editor <command> (e.g. code, cursor, zed, subl)` }], timestamp: Date.now() }]); }
+      setInputText(""); return;
+    }
+
     if (isGeneratingRef.current) {
       const queued = { text: overrideText ?? inputText, images: [...activeImages], fileReferences: [...activeFileRefs], pastedFiles: [...activePastedFiles] };
       if (!queued.text.trim() && queued.images.length === 0 && queued.pastedFiles.length === 0) return;
@@ -690,24 +715,6 @@ const AgentChat = memo(function AgentChat({
         const deny = JSON.stringify({ type: "permission_response", allowed: false });
         invoke("send_agent_message", { sessionId: targetSessionId, message: deny }).catch(() => { });
       }
-    }
-
-    if (text === "/clear") { setMessages([]); setInputText(""); return; }
-    if (text === "/compact") { setInputText(""); sendMessage("Please provide a brief summary of our conversation so far, then we can continue from that context."); return; }
-    if (text === "/session-id") { const sid = sessionRef.current?.claudeSessionId; if (sid) navigator.clipboard.writeText(sid); setInputText(""); return; }
-
-    // > command — create a new terminal session and run the command
-    if (text.startsWith(">") && onCreateTerminalRef.current) {
-      const command = text.slice(1).trim();
-      setInputText("");
-      onCreateTerminalRef.current(sessionRef.current?.directory || "~", command || undefined);
-      return;
-    }
-    if (text === "/editor" || text.startsWith("/editor ")) {
-      const arg = text.slice("/editor".length).trim();
-      if (arg) { localStorage.setItem("claude-orchestrator-editor-command", arg); setMessages((prev) => [...prev, { id: `editor-${Date.now()}`, type: "system", content: [{ type: "text", text: `Editor set to: ${arg}` }], timestamp: Date.now() }]); }
-      else { const current = localStorage.getItem("claude-orchestrator-editor-command") || "code"; setMessages((prev) => [...prev, { id: `editor-${Date.now()}`, type: "system", content: [{ type: "text", text: `Current editor: ${current}\nUsage: /editor <command> (e.g. code, cursor, zed, subl)` }], timestamp: Date.now() }]); }
-      setInputText(""); return;
     }
 
     const refs = activeFileRefs;
@@ -924,8 +931,8 @@ const AgentChat = memo(function AgentChat({
 
   // Message actions
   const { editMessage, forkFromMessage, retryMessage, copyMessage } = useMessageActions(
-    messages, setMessages, setInputText, setImages, setEditingMessageId, inputRef,
-    (text?: string) => sendMessage(text), onForkRef
+    messages, setInputText, setImages, setEditingMessageId, inputRef,
+    (text?: string) => sendMessageRef.current?.(text), onForkRef
   );
 
   // Toggle tool
@@ -1030,19 +1037,19 @@ const AgentChat = memo(function AgentChat({
         if (!prMatch) return null;
         const prNumber = parseInt(prMatch[1], 10);
         return (
-          <div className="flex items-center gap-2 px-4 py-1.5 border-b border-[var(--border-color)] bg-[var(--bg-secondary)] flex-shrink-0">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--text-tertiary)] shrink-0">
+          <button
+            onClick={() => onOpenPRPanel(prNumber)}
+            className="flex items-center gap-2 px-4 py-1.5 border-b border-[var(--border-color)] bg-[var(--bg-secondary)] flex-shrink-0 w-full text-left hover:bg-[var(--bg-tertiary)] transition-colors group"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--accent)] shrink-0">
               <circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" />
               <path d="M13 6h3a2 2 0 012 2v7" /><line x1="6" y1="9" x2="6" y2="21" />
             </svg>
-            <span className="text-[11px] text-[var(--text-tertiary)]">PR #{prNumber}</span>
-            <button
-              onClick={() => onOpenPRPanel(prNumber)}
-              className="ml-auto text-[11px] text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors"
-            >
-              Open in PR Panel →
-            </button>
-          </div>
+            <span className="text-[12px] text-[var(--text-secondary)] font-medium">PR #{prNumber}</span>
+            <span className="ml-auto text-[11px] text-[var(--text-tertiary)] group-hover:text-[var(--accent)] transition-colors">
+              View in PR Panel →
+            </span>
+          </button>
         );
       })()}
 

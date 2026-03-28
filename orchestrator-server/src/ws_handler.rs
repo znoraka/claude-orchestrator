@@ -595,7 +595,12 @@ async fn dispatch(text: &str, state: &AppState) -> String {
         }
         "generate_commit_message" => {
             let state_clone = Arc::clone(s);
-            match commands::generate_commit_message(str_field!(p, "directory"), state_clone).await {
+            let model = p.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let provider = p.get("provider").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let files = p.get("files").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>()
+            });
+            match commands::generate_commit_message(str_field!(p, "directory"), model, provider, files, state_clone).await {
                 Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
                 Err(e) => err_response(&id, e),
             }
@@ -604,6 +609,31 @@ async fn dispatch(text: &str, state: &AppState) -> String {
             match commands::git_commit_and_push(
                 str_field!(p, "directory"),
                 str_field!(p, "message"),
+            ).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
+        "gh_open_pr_create" => {
+            let base = p.get("base").and_then(|v| v.as_str()).map(|s| s.to_string());
+            match commands::gh_open_pr_create(str_field!(p, "directory"), base).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
+        "git_checkout_new_branch" => {
+            match commands::git_checkout_new_branch(
+                str_field!(p, "directory"),
+                str_field!(p, "branchName"),
+            ).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
+        "git_checkout_branch" => {
+            match commands::git_checkout_branch(
+                str_field!(p, "directory"),
+                str_field!(p, "branchName"),
             ).await {
                 Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
                 Err(e) => err_response(&id, e),

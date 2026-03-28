@@ -12,7 +12,7 @@ export function useVirtualMessages(
   isActive: boolean,
   sessionId: string,
   scrollRef: React.RefObject<HTMLDivElement | null>,
-  isGenerating: boolean = false
+  _isGenerating: boolean = false
 ) {
   const [renderCount, setRenderCount] = useState(INITIAL_WINDOW);
   const [isLayoutReady, setIsLayoutReady] = useState(true);
@@ -59,7 +59,7 @@ export function useVirtualMessages(
     [deferredMessages, trailingMessages],
   );
 
-  const useVirtualRendering = allMessages.length >= VIRTUAL_THRESHOLD && !isGenerating;
+  const useVirtualRendering = allMessages.length >= VIRTUAL_THRESHOLD;
 
   const estimateItemSize = useMemo(() => {
     const sizeCache = new Map<string, number>();

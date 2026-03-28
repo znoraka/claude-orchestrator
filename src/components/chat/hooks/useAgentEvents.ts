@@ -99,37 +99,39 @@ export function useAgentEvents(props: AgentEventsProps) {
         const setModelMsg = JSON.stringify({ type: "set_model", model: currentModelRef.current });
         invoke("send_agent_message", { sessionId, message: setModelMsg }).catch(() => { });
       }
-      if (sessionRef.current?.pendingPrompt && !pendingPromptConsumedRef.current) {
+      const _sess = sessionRef.current;
+      const hasPendingContent = (_sess?.pendingPrompt != null || (_sess?.pendingImages?.length ?? 0) > 0 || (_sess?.pendingFiles?.length ?? 0) > 0);
+      if (hasPendingContent && !pendingPromptConsumedRef.current && _sess) {
         pendingPromptConsumedRef.current = true;
         onClearPendingPromptRef.current?.();
-        const prompt = sessionRef.current.pendingPrompt;
+        const prompt = _sess.pendingPrompt ?? "";
 
         // Build content with images/files if present
         let pastedFileContext = "";
-        if (sessionRef.current.pendingFiles && sessionRef.current.pendingFiles.length > 0) {
-          pastedFileContext = sessionRef.current.pendingFiles.map((f: { name: string; content: string }) => `<file name="${f.name}">\n${f.content}\n</file>`).join("\n\n") + "\n\n";
+        if (_sess.pendingFiles && _sess.pendingFiles.length > 0) {
+          pastedFileContext = _sess.pendingFiles.map((f: { name: string; content: string }) => `<file name="${f.name}">\n${f.content}\n</file>`).join("\n\n") + "\n\n";
         }
         const fullText = pastedFileContext + prompt;
         let sendContent: unknown;
-        if (sessionRef.current.pendingImages && sessionRef.current.pendingImages.length > 0) {
+        if (_sess.pendingImages && _sess.pendingImages.length > 0) {
           const blocks: unknown[] = [];
-          for (const img of sessionRef.current.pendingImages)
+          for (const img of _sess.pendingImages)
             blocks.push({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } });
-          blocks.push({ type: "text", text: fullText });
+          if (fullText) blocks.push({ type: "text", text: fullText });
           sendContent = blocks;
         } else {
           sendContent = fullText;
         }
 
-        const displayText = sessionRef.current?.planContent ? "Execute the plan." : prompt;
-        const filePills = sessionRef.current?.pendingFiles && sessionRef.current.pendingFiles.length > 0
-          ? [{ type: "text", text: sessionRef.current.pendingFiles.map((f: { name: string }) => `<file name="${f.name}"></file>`).join("\n") }]
+        const displayText = _sess.planContent ? "Execute the plan." : prompt;
+        const filePills = _sess.pendingFiles && _sess.pendingFiles.length > 0
+          ? [{ type: "text", text: _sess.pendingFiles.map((f: { name: string }) => `<file name="${f.name}"></file>`).join("\n") }]
           : [];
-        const displayContent = sessionRef.current?.pendingImages && sessionRef.current.pendingImages.length > 0
+        const displayContent = _sess.pendingImages && _sess.pendingImages.length > 0
           ? [
-              ...sessionRef.current.pendingImages.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } })),
+              ..._sess.pendingImages.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } })),
               ...filePills,
-              { type: "text", text: displayText },
+              ...(prompt ? [{ type: "text", text: displayText }] : []),
             ]
           : [...filePills, { type: "text", text: displayText }];
         setMessages((prev) => [
@@ -397,7 +399,8 @@ export function useAgentEvents(props: AgentEventsProps) {
       // Recovery: scan agent history to restore any state missed before our listener
       // registered — bridge_ready for pending prompts, and is-generating for sessions
       // that were already mid-generation when this frontend connected.
-      const needsBridgeReady = !!sessionRef.current?.pendingPrompt && !pendingPromptConsumedRef.current;
+      const _recSess = sessionRef.current;
+      const needsBridgeReady = !!(_recSess?.pendingPrompt != null || (_recSess?.pendingImages?.length ?? 0) > 0 || (_recSess?.pendingFiles?.length ?? 0) > 0) && !pendingPromptConsumedRef.current;
       const needsBusyCheck = !isGeneratingRef.current && sessionRef.current?.status !== "stopped";
       if (!needsBridgeReady && !needsBusyCheck) return;
 
