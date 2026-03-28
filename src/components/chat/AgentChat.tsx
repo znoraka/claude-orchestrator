@@ -338,17 +338,17 @@ const AgentChat = memo(function AgentChat({
 
     const resultMap = new Map<string, ChangedFile[]>();
     let runStart = 0;
-    for (let i = 0; i < allMessages.length; i++) {
-      const msg = allMessages[i];
+    for (let i = 0; i < displayMessages.length; i++) {
+      const msg = displayMessages[i];
       if (msg.type === "user") {
         runStart = i + 1;
       } else if (msg.type === "result") {
-        const files = computeFiles(allMessages.slice(runStart, i));
+        const files = computeFiles(displayMessages.slice(runStart, i));
         if (files.length > 0) resultMap.set(msg.id, files);
       }
     }
     return resultMap;
-  }, [allMessages, onOpenFile, session?.directory]);
+  }, [displayMessages, onOpenFile, session?.directory]);
 
   // Report changed files to parent (for ContextRail)
   useEffect(() => {

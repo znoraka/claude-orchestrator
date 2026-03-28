@@ -24,6 +24,7 @@ import ActivityBar from "./components/ActivityBar";
 import TitleBar from "./components/TitleBar";
 import { useMobileLayout } from "./hooks/useMobileLayout";
 import CommitModal from "./components/CommitModal";
+import FileDiffModal from "./components/FileDiffModal";
 import { Spinner } from "./components/ui/spinner";
 import OverviewDashboard from "./components/OverviewDashboard";
 import ContextRail from "./components/ContextRail";
@@ -424,10 +425,15 @@ export default function App() {
 
   const [selectedGitFile, setSelectedGitFile] = useState<{ path: string; seq: number; diff?: string } | undefined>();
   const fileSelectionSeqRef = useRef(0);
+  const [fileDiffModal, setFileDiffModal] = useState<{ path: string; diff: string } | null>(null);
   const handleOpenFile = useCallback((filePath: string, diff?: string) => {
-    setSelectedGitFile({ path: filePath, seq: ++fileSelectionSeqRef.current, diff });
-    setRailOpen(true);
-    setRailTab("git");
+    if (diff !== undefined) {
+      setFileDiffModal({ path: filePath, diff });
+    } else {
+      setSelectedGitFile({ path: filePath, seq: ++fileSelectionSeqRef.current, diff });
+      setRailOpen(true);
+      setRailTab("git");
+    }
   }, []);
 
   // Per-session changed files from agent turns (keyed by session id → result id → files)
@@ -1166,6 +1172,13 @@ export default function App() {
         onClose={() => setShowCommitModal(false)}
         visible={showCommitModal}
       />
+      {fileDiffModal && (
+        <FileDiffModal
+          path={fileDiffModal.path}
+          diff={fileDiffModal.diff}
+          onClose={() => setFileDiffModal(null)}
+        />
+      )}
       {showSettings && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowSettings(false); }}>
           <div

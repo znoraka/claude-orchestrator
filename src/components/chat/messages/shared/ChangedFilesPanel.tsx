@@ -68,7 +68,10 @@ export const ChangedFilesPanel = memo(function ChangedFilesPanel({
   // Build a lookup from relative path to the ChangedFile (for diff data)
   const fileByPath = useMemo(() => {
     const map = new Map<string, ChangedFile>();
-    for (const f of files) map.set(f.path, f);
+    for (const f of files) {
+      const key = f.path.split(/[/\\]/).filter(Boolean).join("/");
+      map.set(key, f);
+    }
     return map;
   }, [files]);
 

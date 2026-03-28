@@ -190,43 +190,39 @@ const ContextRail = memo(function ContextRail({
   const handleFileClick = async (file: GitFile) => {
     const key = fileKey(file);
 
-    // Untracked file — show raw content instead of diff
+    // Untracked file — read content and open in modal
     if (file.status === "??") {
-      if (untrackedFile?.path === file.path) {
-        setUntrackedFile(null);
-        return;
-      }
       const absPath = (directory ? (directory.endsWith("/") ? directory : directory + "/") : "") + file.path;
-      invoke<string>("read_file", { filePath: absPath })
-        .then((content) => setUntrackedFile({ path: file.path, content }))
-        .catch(() => setUntrackedFile({ path: file.path, content: "" }));
+      try {
+        const content = await invoke<string>("read_file", { filePath: absPath });
+        const lines = content.split("\n");
+        const fakeDiff = `diff --git a/${file.path} b/${file.path}\n--- /dev/null\n+++ b/${file.path}\n@@ -0,0 +1,${lines.length} @@\n${lines.map(l => `+${l}`).join("\n")}`;
+        onOpenFile?.(file.path, fakeDiff);
+      } catch {
+        onOpenFile?.(file.path, "");
+      }
       return;
     }
 
-    // Toggle collapse
-    if (expandedKey === key) {
-      setExpandedKey(null);
-      return;
-    }
-
-    setExpandedKey(key);
-
-    // Load diff if not cached
-    if (!diffCache.has(key)) {
+    // Use cached diff or fetch it
+    let diff = diffCache.get(key);
+    if (diff === undefined) {
       setLoadingKey(key);
       try {
-        const diff = await invoke<string>("get_git_diff", {
+        diff = await invoke<string>("get_git_diff", {
           directory,
           filePath: file.path,
           staged: file.staged,
         });
-        setDiffCache((prev) => new Map(prev).set(key, diff));
+        setDiffCache((prev) => new Map(prev).set(key, diff!));
       } catch {
+        diff = "";
         setDiffCache((prev) => new Map(prev).set(key, ""));
       } finally {
         setLoadingKey(null);
       }
     }
+    onOpenFile?.(file.path, diff);
   };
 
   const handleTabChange = (tab: RailTab) => {
@@ -234,52 +230,16 @@ const ContextRail = memo(function ContextRail({
     onTabChange?.(tab);
   };
 
-  // Switch to git tab as soon as a file is requested
-  useEffect(() => {
-    if (!selectedFile) return;
-    setActiveTab("git");
-    onTabChange?.("git");
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedFile]);
-
-  // Once gitFiles are loaded, expand the selected file — but only process each request once
+  // When a file is selected externally (from chat inline), open it in the modal
   useEffect(() => {
     if (!selectedFile) return;
     if (selectedFile.seq <= lastHandledSeqRef.current) return;
-    const filePath = selectedFile.path;
-    const providedDiff = selectedFile.diff;
-
-    // If a pre-computed diff was provided (from the chat recap), use it directly.
-    if (providedDiff !== undefined) {
-      lastHandledSeqRef.current = selectedFile.seq;
-      setProvidedDiffView({ path: filePath, diff: providedDiff });
-      return;
-    }
-
-    if (gitLoading) return;
     lastHandledSeqRef.current = selectedFile.seq;
-    const match = gitFiles.find((f) => f.path === filePath || filePath.endsWith(f.path));
-    if (match) {
-      const key = fileKey(match);
-      setExpandedKey(key);
-      if (!diffCache.has(key)) {
-        setLoadingKey(key);
-        invoke<string>("get_git_diff", { directory, filePath: match.path, staged: match.staged })
-          .then((diff) => setDiffCache((prev) => new Map(prev).set(key, diff)))
-          .catch(() => setDiffCache((prev) => new Map(prev).set(key, "")))
-          .finally(() => setLoadingKey(null));
-      }
-    } else {
-      // File is not git-tracked — read its content directly
-      const absPath = directory
-        ? (directory.endsWith("/") ? directory : directory + "/") + filePath
-        : filePath;
-      invoke<string>("read_file", { filePath: absPath })
-        .then((content) => setUntrackedFile({ path: filePath, content }))
-        .catch(() => setUntrackedFile({ path: filePath, content: "" }));
+    if (selectedFile.diff !== undefined) {
+      onOpenFile?.(selectedFile.path, selectedFile.diff);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedFile, gitFiles, gitLoading]);
+  }, [selectedFile]);
 
   const toggleDiffMode = () => {
     const next = diffMode === "unified" ? "split" : "unified";
@@ -632,7 +592,7 @@ const TurnsTab = memo(function TurnsTab({
             path: f.path,
             added: existing.added + f.added,
             removed: existing.removed + f.removed,
-            diff: existing.diff + "\n" + f.diff,
+            diff: f.diff, // keep latest turn's diff; concatenation creates multi-file patches that @pierre/diffs can't render
           });
         } else {
           fileMap.set(f.path, { ...f });
@@ -666,10 +626,14 @@ const TurnsTab = memo(function TurnsTab({
   const totalAdded = allFiles.reduce((s, f) => s + f.added, 0);
   const totalRemoved = allFiles.reduce((s, f) => s + f.removed, 0);
 
-  // Build lookup from path to ChangedFile for diff data
+  // Build lookup from path to ChangedFile for diff data.
+  // Keys are normalized (no leading slash) to match what buildDiffTree produces for node.path.
   const fileByPath = useMemo(() => {
     const map = new Map<string, ChangedFile>();
-    for (const f of allFiles) map.set(f.path, f);
+    for (const f of allFiles) {
+      const key = f.path.split(/[/\\]/).filter(Boolean).join("/");
+      map.set(key, f);
+    }
     return map;
   }, [allFiles]);
 
