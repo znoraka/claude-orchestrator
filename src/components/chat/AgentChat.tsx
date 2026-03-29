@@ -15,6 +15,7 @@ import { useAgentEvents } from "./hooks/useAgentEvents";
 import { useMessageActions } from "./hooks/useMessageActions";
 import { MessageBubble } from "./messages/MessageList";
 import { ChatInput } from "./input/ChatInput";
+import { InlineCommandBar } from "./InlineCommandBar";
 
 interface PendingTodosPanelProps {
   todos: TodoItem[];
@@ -116,6 +117,7 @@ const AgentChat = memo(function AgentChat({
   const [reasoningEffort, setReasoningEffort] = useState<"low" | "medium" | "high">("high");
   const [openPill, setOpenPill] = useState<"provider" | "model" | "mode" | "effort" | null>(null);
   const [todosPanelCollapsed, setTodosPanelCollapsed] = useState(false);
+  const [inlineCommand, setInlineCommand] = useState<{ command: string } | null>(null);
   const [modelSearchTerm, setModelSearchTerm] = useState("");
   const [queuedMessage, setQueuedMessage] = useState<{
     text: string; images: Array<{ id: string; data: string; mediaType: string; name: string }>;
@@ -661,12 +663,25 @@ const AgentChat = memo(function AgentChat({
     if (text === "/compact") { setInputText(""); sendMessage("Please provide a brief summary of our conversation so far, then we can continue from that context."); return; }
     if (text === "/session-id") { const sid = sessionRef.current?.claudeSessionId; if (sid) navigator.clipboard.writeText(sid); setInputText(""); return; }
 
-    // > command — create a new terminal session and run the command
-    if (text.startsWith(">") && onCreateTerminalRef.current) {
+    // > command — run inline or create terminal
+    if (text.startsWith(">")) {
       const command = text.slice(1).trim();
-      setInputText("");
-      onCreateTerminalRef.current(sessionRef.current?.directory || "~", command || undefined);
-      return;
+      if (!command && onCreateTerminalRef.current) {
+        // Empty > opens a full terminal
+        setInputText("");
+        onCreateTerminalRef.current(sessionRef.current?.directory || "~");
+        return;
+      }
+      if (command) {
+        setInputText("");
+        const dir = sessionRef.current?.directory || "~";
+        setInlineCommand({ command });
+        invoke("run_inline_command", { sessionId, command, directory: dir }).catch((err) => {
+          console.error("[inline-cmd] Failed to launch:", err);
+          setInlineCommand(null);
+        });
+        return;
+      }
     }
     if (text === "/editor" || text.startsWith("/editor ")) {
       const arg = text.slice("/editor".length).trim();
@@ -1011,7 +1026,7 @@ const AgentChat = memo(function AgentChat({
   // Auto-scroll
   useEffect(() => {
     if (isAtBottomRef.current && isActive && !suppressNextScrollRef.current) requestAnimationFrame(() => scrollToBottom());
-  }, [deferredMessages, trailingMessages, virtualizerTotalSize, isActive, scrollToBottom]);
+  }, [deferredMessages, trailingMessages, virtualizerTotalSize, isActive, scrollToBottom, isLayoutReady]);
 
   return (
     <div className="chat-shell flex flex-col h-full relative">
@@ -1138,6 +1153,14 @@ const AgentChat = memo(function AgentChat({
           todos={latestTodos}
           collapsed={todosPanelCollapsed}
           onToggle={() => setTodosPanelCollapsed((c) => !c)}
+        />
+      )}
+
+      {inlineCommand && (
+        <InlineCommandBar
+          sessionId={sessionId}
+          command={inlineCommand.command}
+          onDismiss={() => setInlineCommand(null)}
         />
       )}
 

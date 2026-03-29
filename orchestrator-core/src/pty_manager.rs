@@ -269,6 +269,187 @@ impl PtyManager {
         Ok(())
     }
 
+    /// Spawn a command in a PTY (non-interactive, for inline execution).
+    pub fn create_command_session(
+        &self,
+        session_id: &str,
+        event_tx: EventSender,
+        directory: String,
+        command: String,
+    ) -> Result<(), String> {
+        if directory.is_empty() {
+            return Err("directory is required".to_string());
+        }
+        if command.is_empty() {
+            return Err("command is required".to_string());
+        }
+
+        // Kill any existing inline session for this ID
+        {
+            let mut sessions = self.sessions.lock().map_err(|e| format!("Lock error: {}", e))?;
+            if sessions.contains_key(session_id) {
+                sessions.remove(session_id);
+            }
+        }
+
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize { rows: 24, cols: 120, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| format!("Failed to open PTY: {}", e))?;
+
+        let expanded_dir = if directory.starts_with('~') {
+            if let Ok(home) = std::env::var("HOME") {
+                directory.replacen('~', &home, 1)
+            } else {
+                directory.clone()
+            }
+        } else {
+            directory.clone()
+        };
+
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let mut cmd = CommandBuilder::new(&shell);
+        cmd.env("TERM", "xterm-256color");
+
+        fn shell_escape(s: &str) -> String {
+            format!("'{}'", s.replace('\'', "'\\''"))
+        }
+
+        let shell_cmd = format!("cd {} && {}", shell_escape(&expanded_dir), command);
+        cmd.arg("-lc");
+        cmd.arg(&shell_cmd);
+        eprintln!("[pty_manager] Spawning inline command: {} -lc \"{}\"", shell, shell_cmd);
+
+        let child = pair.slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("Failed to spawn command: {}", e))?;
+
+        let child_pid = child.process_id();
+        drop(pair.slave);
+
+        let mut reader = pair.master
+            .try_clone_reader()
+            .map_err(|e| format!("Failed to clone reader: {}", e))?;
+
+        let writer = pair.master
+            .take_writer()
+            .map_err(|e| format!("Failed to take writer: {}", e))?;
+
+        let sid = session_id.to_string();
+        let sessions_for_cleanup = self.sessions.clone();
+
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+
+        // Reader thread
+        thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // Emitter thread (same batching logic, no scrollback)
+        thread::spawn(move || {
+            const FLUSH_INTERVAL: Duration = Duration::from_millis(16);
+
+            let mut pending = Vec::<u8>::new();
+            let mut batch = String::new();
+            let mut last_flush = Instant::now();
+
+            macro_rules! flush_batch {
+                () => {
+                    if !batch.is_empty() {
+                        let data = std::mem::take(&mut batch);
+                        event_tx.emit(ServerEvent::PtyOutput {
+                            session_id: sid.clone(),
+                            data,
+                        });
+                        last_flush = Instant::now();
+                    }
+                };
+            }
+
+            loop {
+                match rx.recv_timeout(FLUSH_INTERVAL) {
+                    Ok(bytes) => {
+                        pending.extend_from_slice(&bytes);
+                        let valid_up_to = match std::str::from_utf8(&pending) {
+                            Ok(_) => pending.len(),
+                            Err(e) => e.valid_up_to(),
+                        };
+                        if valid_up_to > 0 {
+                            let valid_str = unsafe {
+                                std::str::from_utf8_unchecked(&pending[..valid_up_to])
+                            };
+                            batch.push_str(valid_str);
+                        }
+                        if valid_up_to < pending.len() {
+                            let remaining = pending[valid_up_to..].to_vec();
+                            pending = remaining;
+                        } else {
+                            pending.clear();
+                        }
+                        if last_flush.elapsed() >= FLUSH_INTERVAL {
+                            flush_batch!();
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        flush_batch!();
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        eprintln!("[pty_manager] inline command EOF for {}", sid);
+                        flush_batch!();
+                        if let Ok(mut sessions) = sessions_for_cleanup.lock() {
+                            sessions.remove(&sid);
+                        }
+                        event_tx.emit(ServerEvent::PtyExit {
+                            session_id: sid.clone(),
+                        });
+                        break;
+                    }
+                }
+            }
+        });
+
+        let session = PtySession {
+            writer,
+            master: pair.master,
+            child_pid,
+        };
+
+        self.sessions
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?
+            .insert(session_id.to_string(), session);
+
+        Ok(())
+    }
+
+    /// Kill a PTY session by sending SIGKILL to the child process tree, then dropping the PTY.
+    pub fn kill_session(&self, session_id: &str) -> Result<(), String> {
+        let mut sessions = self.sessions.lock().map_err(|e| format!("Lock error: {}", e))?;
+        if let Some(session) = sessions.remove(session_id) {
+            if let Some(pid) = session.child_pid {
+                // Kill the entire process group (handles vim, long-running commands, etc.)
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &format!("-{}", pid)])
+                    .output();
+            }
+            // Dropping PtySession closes the master PTY fd
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn has_child_process(&self, session_id: &str) -> Result<bool, String> {
         let sessions = self.sessions.lock().map_err(|e| format!("Lock error: {}", e))?;
         let session = sessions.get(session_id)

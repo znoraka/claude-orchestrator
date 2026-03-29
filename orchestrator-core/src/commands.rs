@@ -1690,6 +1690,26 @@ pub fn pty_foreground_command(
     manager.foreground_command(&session_id)
 }
 
+pub fn run_inline_command(
+    session_id: String,
+    command: String,
+    directory: String,
+    state: &Arc<ServerState>,
+) -> Result<(), String> {
+    let pty_id = format!("inline-{}", session_id);
+    let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
+    manager.create_command_session(&pty_id, state.event_tx.clone(), directory, command)
+}
+
+pub fn kill_inline_command(
+    session_id: String,
+    state: &Arc<ServerState>,
+) -> Result<(), String> {
+    let pty_id = format!("inline-{}", session_id);
+    let manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
+    manager.kill_session(&pty_id)
+}
+
 pub fn directory_exists(path: String) -> bool {
     let expanded = expand_tilde(&path);
     if is_tcc_protected(&expanded) {
@@ -2434,25 +2454,17 @@ pub fn get_conversation_messages(
 ) -> Result<Vec<crate::db::ChatMessageRow>, String> {
     let conn = state.db.lock().map_err(|e| format!("DB lock error: {}", e))?;
 
-    // Try DB first
+    // Always attempt incremental JSONL ingest before reading DB — no-op when byte
+    // offset is current, but recovers messages missed due to unclean shutdown.
+    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+    if jsonl_path.exists() {
+        let _ = crate::ingest::ingest_jsonl_to_db(&conn, &claude_session_id, &directory)?;
+    }
+
     let messages = crate::db::db_get_conversation_messages(&conn, &claude_session_id)
         .map_err(|e| format!("DB query error: {}", e))?;
 
-    if !messages.is_empty() {
-        return Ok(messages);
-    }
-
-    // Lazy ingest: if DB is empty but JSONL exists, ingest now
-    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
-    if jsonl_path.exists() {
-        let n = crate::ingest::ingest_jsonl_to_db(&conn, &claude_session_id, &directory)?;
-        if n > 0 {
-            return crate::db::db_get_conversation_messages(&conn, &claude_session_id)
-                .map_err(|e| format!("DB query error: {}", e));
-        }
-    }
-
-    Ok(vec![])
+    Ok(messages)
 }
 
 /// Get the last N messages + total from the DB (with lazy ingest fallback).
@@ -2473,24 +2485,18 @@ pub fn get_conversation_messages_tail(
         )
         .unwrap_or(0);
 
-    if total > 0 {
+    // Always attempt incremental JSONL ingest: no-op when byte offset is current,
+    // but recovers any messages missed due to unclean shutdown (finalize() not called).
+    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
+    if jsonl_path.exists() {
+        let _ = crate::ingest::ingest_jsonl_to_db(&conn, &claude_session_id, &directory)?;
+    }
+
+    if total > 0 || jsonl_path.exists() {
         let (messages, total) =
             crate::db::db_get_conversation_messages_tail(&conn, &claude_session_id, max_messages)
                 .map_err(|e| format!("DB query error: {}", e))?;
-        return Ok(ConversationMessagesResult { messages, total });
-    }
-
-    // Lazy ingest fallback
-    let jsonl_path = jsonl_path_for(&claude_session_id, &directory)?;
-    if jsonl_path.exists() {
-        let n = crate::ingest::ingest_jsonl_to_db(&conn, &claude_session_id, &directory)?;
-        if n > 0 {
-            let (messages, total) = crate::db::db_get_conversation_messages_tail(
-                &conn,
-                &claude_session_id,
-                max_messages,
-            )
-            .map_err(|e| format!("DB query error: {}", e))?;
+        if total > 0 {
             return Ok(ConversationMessagesResult { messages, total });
         }
     }

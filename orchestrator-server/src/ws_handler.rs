@@ -366,6 +366,16 @@ async fn dispatch(text: &str, state: &AppState) -> String {
             let session_id = str_field!(p, "sessionId");
             blocking!(&id, s, |s| commands::save_terminal_cwd(session_id, &s))
         }
+        "run_inline_command" => {
+            let session_id = str_field!(p, "sessionId");
+            let command = str_field!(p, "command");
+            let directory = str_field!(p, "directory");
+            blocking!(&id, s, |s| commands::run_inline_command(session_id, command, directory, &s))
+        }
+        "kill_inline_command" => {
+            let session_id = str_field!(p, "sessionId");
+            blocking!(&id, s, |s| commands::kill_inline_command(session_id, &s))
+        }
 
         // ── Agent ─────────────────────────────────────────────────────────
         "create_agent_session" => {

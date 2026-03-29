@@ -734,10 +734,15 @@ export default function App() {
         e.preventDefault();
         setRailOpen((v) => !v);
       }
+      if (e.metaKey && e.key === "t") {
+        e.preventDefault();
+        if (anyModalOpen) return;
+        createTerminalSession(panelDirectory).catch(console.error);
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [activePanel, panelDirectory, showDirDialog, showCommandPalette, activeSessionId, sessions, virtualSessions, selectedModel, permissionMode, activeVirtualDir]);
+  }, [activePanel, panelDirectory, showDirDialog, showCommandPalette, activeSessionId, sessions, virtualSessions, selectedModel, permissionMode, activeVirtualDir, createTerminalSession]);
 
   // Wrap deleteSession for consistent handling
   const handleDeleteSession = async (id: string) => {
