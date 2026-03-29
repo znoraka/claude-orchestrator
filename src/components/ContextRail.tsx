@@ -573,40 +573,19 @@ function DiffStatLabel({ additions, deletions }: { additions: number; deletions:
   );
 }
 
-const TurnsTab = memo(function TurnsTab({
-  turnChangedFiles,
+// ── Per-turn file tree (reusable) ─────────────────────────────────
+
+function TurnFileTree({
+  files,
   onOpenFile,
 }: {
-  turnChangedFiles?: Map<string, ChangedFile[]>;
+  files: ChangedFile[];
   onOpenFile?: (filePath: string, diff?: string) => void;
 }) {
-  // Merge all turns into a single flat file list, deduplicating by path (latest turn wins)
-  const allFiles = useMemo(() => {
-    if (!turnChangedFiles || turnChangedFiles.size === 0) return [];
-    const fileMap = new Map<string, ChangedFile>();
-    for (const files of turnChangedFiles.values()) {
-      for (const f of files) {
-        const existing = fileMap.get(f.path);
-        if (existing) {
-          fileMap.set(f.path, {
-            path: f.path,
-            added: existing.added + f.added,
-            removed: existing.removed + f.removed,
-            diff: f.diff, // keep latest turn's diff; concatenation creates multi-file patches that @pierre/diffs can't render
-          });
-        } else {
-          fileMap.set(f.path, { ...f });
-        }
-      }
-    }
-    return Array.from(fileMap.values());
-  }, [turnChangedFiles]);
-
-  const treeNodes = useMemo(() => buildDiffTree(allFiles), [allFiles]);
+  const treeNodes = useMemo(() => buildDiffTree(files), [files]);
 
   const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
 
-  // Auto-expand all directories when tree changes
   useEffect(() => {
     const paths: string[] = [];
     const collect = (nodes: DiffTreeNode[]) => {
@@ -623,19 +602,14 @@ const TurnsTab = memo(function TurnsTab({
     setExpandedDirs(state);
   }, [treeNodes]);
 
-  const totalAdded = allFiles.reduce((s, f) => s + f.added, 0);
-  const totalRemoved = allFiles.reduce((s, f) => s + f.removed, 0);
-
-  // Build lookup from path to ChangedFile for diff data.
-  // Keys are normalized (no leading slash) to match what buildDiffTree produces for node.path.
   const fileByPath = useMemo(() => {
     const map = new Map<string, ChangedFile>();
-    for (const f of allFiles) {
+    for (const f of files) {
       const key = f.path.split(/[/\\]/).filter(Boolean).join("/");
       map.set(key, f);
     }
     return map;
-  }, [allFiles]);
+  }, [files]);
 
   const handleFileClick = useCallback(
     (path: string) => {
@@ -703,7 +677,54 @@ const TurnsTab = memo(function TurnsTab({
     );
   };
 
-  if (allFiles.length === 0) {
+  return <div className="py-0.5">{treeNodes.map((node) => renderNode(node, 0))}</div>;
+}
+
+// ── Turns tab: shows per-turn changed files ────────────────────────
+
+const TurnsTab = memo(function TurnsTab({
+  turnChangedFiles,
+  onOpenFile,
+}: {
+  turnChangedFiles?: Map<string, ChangedFile[]>;
+  onOpenFile?: (filePath: string, diff?: string) => void;
+}) {
+  const turns = useMemo(
+    () => (turnChangedFiles ? Array.from(turnChangedFiles.entries()) : []),
+    [turnChangedFiles],
+  );
+
+  // Last turn expanded by default, others collapsed
+  const [expandedTurns, setExpandedTurns] = useState<Record<number, boolean>>({});
+  useEffect(() => {
+    if (turns.length === 0) return;
+    setExpandedTurns((prev) => {
+      const next: Record<number, boolean> = {};
+      for (let i = 0; i < turns.length; i++) {
+        // Keep existing state; default: only last turn expanded
+        next[i] = prev[i] !== undefined ? prev[i] : i === turns.length - 1;
+      }
+      return next;
+    });
+  }, [turns.length]);
+
+  const { totalAdded, totalRemoved, totalFiles } = useMemo(() => {
+    const fileMap = new Map<string, { added: number; removed: number }>();
+    for (const [, files] of turns) {
+      for (const f of files) {
+        const e = fileMap.get(f.path);
+        fileMap.set(f.path, {
+          added: (e?.added ?? 0) + f.added,
+          removed: (e?.removed ?? 0) + f.removed,
+        });
+      }
+    }
+    let a = 0, r = 0;
+    for (const v of fileMap.values()) { a += v.added; r += v.removed; }
+    return { totalAdded: a, totalRemoved: r, totalFiles: fileMap.size };
+  }, [turns]);
+
+  if (turns.length === 0) {
     return (
       <div className="text-xs text-[var(--text-tertiary)] py-4 text-center">
         No file changes in this session
@@ -713,8 +734,9 @@ const TurnsTab = memo(function TurnsTab({
 
   return (
     <div className="flex flex-col">
+      {/* Session-level summary */}
       <div className="text-[10px] font-medium text-[var(--text-tertiary)] uppercase tracking-wider px-3 pt-2.5 pb-1 flex items-center gap-1.5">
-        <span>{allFiles.length} file{allFiles.length !== 1 ? "s" : ""} changed</span>
+        <span>{totalFiles} file{totalFiles !== 1 ? "s" : ""} changed</span>
         {(totalAdded > 0 || totalRemoved > 0) && (
           <>
             <span>&middot;</span>
@@ -724,9 +746,45 @@ const TurnsTab = memo(function TurnsTab({
           </>
         )}
       </div>
-      <div className="py-0.5">
-        {treeNodes.map((node) => renderNode(node, 0))}
-      </div>
+
+      {/* Per-turn sections */}
+      {turns.map(([, files], idx) => {
+        const isExpanded = expandedTurns[idx] ?? (idx === turns.length - 1);
+        const turnAdded = files.reduce((s, f) => s + f.added, 0);
+        const turnRemoved = files.reduce((s, f) => s + f.removed, 0);
+
+        return (
+          <div key={idx} className="border-t border-[var(--border-subtle)] first:border-t-0">
+            <button
+              type="button"
+              className="group flex w-full items-center gap-1.5 px-3 py-1.5 text-left hover:bg-[var(--bg-hover)] transition-colors"
+              onClick={() => setExpandedTurns((prev) => ({ ...prev, [idx]: !isExpanded }))}
+            >
+              <svg
+                className="w-2.5 h-2.5 text-[var(--text-tertiary)] shrink-0 transition-transform"
+                style={{ transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)" }}
+                viewBox="0 0 16 16"
+              >
+                <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span className="text-[11px] font-medium text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]">
+                Turn {idx + 1}
+              </span>
+              <span className="text-[10px] text-[var(--text-tertiary)] ml-1">
+                {files.length} file{files.length !== 1 ? "s" : ""}
+              </span>
+              {(turnAdded > 0 || turnRemoved > 0) && (
+                <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums">
+                  <DiffStatLabel additions={turnAdded} deletions={turnRemoved} />
+                </span>
+              )}
+            </button>
+            {isExpanded && (
+              <TurnFileTree files={files} onOpenFile={onOpenFile} />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 });
