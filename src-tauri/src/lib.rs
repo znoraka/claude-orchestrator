@@ -484,16 +484,33 @@ async fn fetch_opencode_models(state: State<'_, AppState>) -> Result<String, Str
             .unwrap_or_else(|_| format!("/Users/{}", std::env::var("USER").unwrap_or_default()));
         let config_json = r#"{"mode":"list-models"}"#;
 
-        let output = std::process::Command::new(&node_bin)
-            .arg(&bridge_path)
+        #[cfg(unix)]
+        use std::os::unix::process::CommandExt as _;
+
+        let mut cmd = std::process::Command::new(&node_bin);
+        cmd.arg(&bridge_path)
             .arg(config_json)
             .env("PATH", path_env)
             .env("HOME", &home)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
+            .stderr(std::process::Stdio::piped());
+        #[cfg(unix)]
+        cmd.process_group(0);
+
+        let mut child = cmd.spawn()
             .map_err(|e| format!("Failed to spawn opencode bridge: {}", e))?;
+        let pgid = child.id();
+        let output = child.wait_with_output()
+            .map_err(|e| format!("Failed to wait for opencode bridge: {}", e))?;
+
+        // Kill the entire process group to clean up any child processes (e.g. the opencode server)
+        // that the bridge may have spawned and not fully terminated before exiting.
+        #[cfg(unix)]
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &format!("-{}", pgid)])
+            .env("PATH", "/bin:/usr/bin")
+            .status();
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if stdout.is_empty() {
@@ -526,6 +543,9 @@ async fn fetch_codex_models(state: State<'_, AppState>) -> Result<String, String
         let openai_api_key = shell_env_var("OPENAI_API_KEY");
         let config_json = r#"{"mode":"list-models"}"#;
 
+        #[cfg(unix)]
+        use std::os::unix::process::CommandExt as _;
+
         let mut cmd = std::process::Command::new(&node_bin);
         cmd.arg(&bridge_path)
             .arg(config_json)
@@ -537,9 +557,21 @@ async fn fetch_codex_models(state: State<'_, AppState>) -> Result<String, String
         if let Some(key) = openai_api_key {
             cmd.env("OPENAI_API_KEY", key);
         }
+        #[cfg(unix)]
+        cmd.process_group(0);
 
-        let output = cmd.output()
+        let mut child = cmd.spawn()
             .map_err(|e| format!("Failed to spawn codex bridge: {}", e))?;
+        let pgid = child.id();
+        let output = child.wait_with_output()
+            .map_err(|e| format!("Failed to wait for codex bridge: {}", e))?;
+
+        // Kill the entire process group to clean up any child processes spawned by the bridge.
+        #[cfg(unix)]
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &format!("-{}", pgid)])
+            .env("PATH", "/bin:/usr/bin")
+            .status();
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if stdout.is_empty() {
