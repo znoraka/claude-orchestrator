@@ -235,6 +235,8 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
       setIsCommitOnly(false);
       setCommitedOnly(true);
       setPushDone(true);
+      setSelected(new Set());
+      setRefreshKey((k) => k + 1);
     } catch (err) {
       setError(`Commit failed: ${err}`);
       if (newBranch && origBranch && !branchAlreadyExists) {
@@ -657,14 +659,12 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
                   Open PR
                 </Btn>
               )}
-              <Btn onClick={handleClose} disabled={prStep === "generating" || prStep === "creating" || isPushing}>Close</Btn>
             </>
           ) : (
             <>
               <Btn onClick={handleGenerateMessage} disabled={busy || isLoadingFiles || hasNoFiles}>
                 {isGenerating ? "Generating..." : "Generate Message"}
               </Btn>
-              <Btn onClick={handleClose} disabled={busy}>Close</Btn>
               <Btn
                 onClick={handleCommit}
                 disabled={busy || isLoadingFiles || hasNoFiles || selected.size === 0 || !commitMessage.trim()}
