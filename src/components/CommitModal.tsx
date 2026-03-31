@@ -91,7 +91,10 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
   };
 
   const handleClose = () => {
-    // Only reset when: PR was created, or push completed on a branch that already has a PR
+    if (pushDone) {
+      setSelected(new Set());
+      setRefreshKey((k) => k + 1);
+    }
     if (prStep === "done" || (pushDone && !showCreatePR)) resetState();
     onClose();
   };
@@ -235,8 +238,6 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
       setIsCommitOnly(false);
       setCommitedOnly(true);
       setPushDone(true);
-      setSelected(new Set());
-      setRefreshKey((k) => k + 1);
     } catch (err) {
       setError(`Commit failed: ${err}`);
       if (newBranch && origBranch && !branchAlreadyExists) {
