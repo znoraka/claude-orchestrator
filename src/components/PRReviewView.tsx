@@ -71,12 +71,14 @@ interface PRReviewViewProps {
   prTitle: string;
   prUrl: string;
   headRefName: string;
+  currentBranch?: string;
   onBack: () => void;
+  onBranchChanged?: () => void;
   onAskClaude?: (prompt: string) => void;
   onClaudeReview?: (prNumber: number, headRefName: string) => void;
 }
 
-export default function PRReviewView({ directory, prNumber, prTitle, prUrl, headRefName, onBack, onAskClaude, onClaudeReview }: PRReviewViewProps) {
+export default function PRReviewView({ directory, prNumber, prTitle, prUrl, headRefName, currentBranch, onBack, onBranchChanged, onAskClaude, onClaudeReview }: PRReviewViewProps) {
   const [files, setFiles] = useState<PrFileEntry[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
@@ -93,6 +95,45 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
   const [diffLoading, setDiffLoading] = useState(false);
   const [viewedFiles, setViewedFiles] = useState<Set<string>>(new Set());
   const [blameLines, setBlameLines] = useState<BlameLine[]>([]);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [worktreeLoading, setWorktreeLoading] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const isCurrent = currentBranch === headRefName;
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  const handleCheckout = useCallback(async () => {
+    setCheckoutLoading(true);
+    try {
+      await invoke<string>("checkout_pr", { directory, prNumber });
+      onBranchChanged?.();
+      showToast(`Checked out #${prNumber}`);
+    } catch (err) {
+      showToast(`Error: ${err}`);
+    } finally {
+      setCheckoutLoading(false);
+    }
+  }, [directory, prNumber, onBranchChanged, showToast]);
+
+  const handleWorktree = useCallback(async () => {
+    setWorktreeLoading(true);
+    try {
+      const path = await invoke<string>("checkout_pr_worktree", {
+        directory,
+        prNumber,
+        headRefName,
+      });
+      showToast(`Worktree: ${path}`);
+    } catch (err) {
+      showToast(`Error: ${err}`);
+    } finally {
+      setWorktreeLoading(false);
+    }
+  }, [directory, prNumber, headRefName, showToast]);
 
   const toggleViewed = useCallback((file: string) => {
     const willBeViewed = !viewedFiles.has(file);
@@ -317,7 +358,12 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
   const progressPct = files.length > 0 ? (viewedFiles.size / files.length) * 100 : 0;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full relative">
+      {toast && (
+        <div className="absolute right-12 top-2 z-10 px-2 py-1 text-[10px] bg-[var(--bg-secondary)] border-2 border-[var(--border-color)] shadow-lg text-[var(--text-secondary)] max-w-[220px] truncate">
+          {toast}
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center gap-2 pl-3 pr-10 py-2 border-b border-[var(--border-color)] flex-shrink-0">
         <button
@@ -365,6 +411,38 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
             <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
               <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
             </svg>
+          </button>
+
+          <button
+            onClick={handleCheckout}
+            disabled={checkoutLoading || isCurrent}
+            className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-30 disabled:cursor-default"
+            title={isCurrent ? "Already on this branch" : `Checkout ${headRefName}`}
+          >
+            {checkoutLoading ? (
+              <Spinner className="w-3.5 h-3.5" />
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="16 3 21 3 21 8" />
+                <line x1="4" y1="20" x2="21" y2="3" />
+                <polyline points="21 16 21 21 16 21" />
+                <line x1="15" y1="15" x2="21" y2="21" />
+              </svg>
+            )}
+          </button>
+          <button
+            onClick={handleWorktree}
+            disabled={worktreeLoading}
+            className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-30"
+            title="Checkout in worktree"
+          >
+            {worktreeLoading ? (
+              <Spinner className="w-3.5 h-3.5" />
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+              </svg>
+            )}
           </button>
 
           {onAskClaude && selectedFile && (

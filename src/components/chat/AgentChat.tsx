@@ -16,6 +16,7 @@ import { useMessageActions } from "./hooks/useMessageActions";
 import { MessageBubble } from "./messages/MessageList";
 import { ChatInput } from "./input/ChatInput";
 import { InlineCommandBar } from "./InlineCommandBar";
+import { OpenFileContext } from "./OpenFileContext";
 
 interface PendingTodosPanelProps {
   todos: TodoItem[];
@@ -101,6 +102,28 @@ const AgentChat = memo(function AgentChat({
   onChangedFiles,
 }: AgentChatProps) {
   const isReadOnly = session?.status === "stopped";
+  const openFileInEditor = useCallback(async (filePath: string) => {
+    if (!session?.directory) return;
+    const dir = session.directory.endsWith("/") ? session.directory : session.directory + "/";
+    const editor = localStorage.getItem("claude-orchestrator-editor-command") || "code";
+    // Bare filename (no slash) — search the project and open the first match
+    if (!filePath.includes("/")) {
+      try {
+        const results = await invoke<string[]>("search_project_files", { directory: session.directory, query: filePath });
+        const exact = results.find((r) => r.endsWith("/" + filePath) || r === filePath);
+        if (exact) {
+          invoke("open_in_editor", { editor, filePath: dir + exact });
+          return;
+        }
+        if (results.length > 0) {
+          invoke("open_in_editor", { editor, filePath: dir + results[0] });
+          return;
+        }
+      } catch { /* fall through to direct open */ }
+    }
+    const resolved = filePath.startsWith("/") ? filePath : dir + filePath;
+    invoke("open_in_editor", { editor, filePath: resolved });
+  }, [session?.directory]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
@@ -1029,6 +1052,7 @@ const AgentChat = memo(function AgentChat({
   }, [deferredMessages, trailingMessages, virtualizerTotalSize, isActive, scrollToBottom, isLayoutReady]);
 
   return (
+    <OpenFileContext.Provider value={openFileInEditor}>
     <div className="chat-shell flex flex-col h-full relative">
       {isDragging && (
         <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
@@ -1203,6 +1227,7 @@ const AgentChat = memo(function AgentChat({
         <FilePickerModal directory={sessionDir} initialFile={viewingFileRef} onSelect={addFileReference} onClose={() => setViewingFileRef(null)} />
       )}
     </div>
+    </OpenFileContext.Provider>
   );
 }, (prev, next) => {
   return (

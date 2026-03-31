@@ -398,7 +398,9 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
         prTitle={reviewingPr.title}
         prUrl={reviewingPr.url}
         headRefName={reviewingPr.headRefName}
+        currentBranch={currentBranch}
         onBack={() => setReviewingPr(null)}
+        onBranchChanged={fetchBranch}
         onAskClaude={onAskClaude}
         onClaudeReview={handleClaudeReview}
       />

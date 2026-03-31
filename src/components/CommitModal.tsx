@@ -47,6 +47,7 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
   const [commitedOnly, setCommitedOnly] = useState(false);
   const [pushDone, setPushDone] = useState(false);
   const [showCreatePR, setShowCreatePR] = useState(false);
+  const [existingPrUrl, setExistingPrUrl] = useState<string | null>(null);
   const [prStep, setPrStep] = useState<"idle" | "generating" | "preview" | "creating" | "done">("idle");
   const [prTitle, setPrTitle] = useState("");
   const [prBody, setPrBody] = useState("");
@@ -75,6 +76,7 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
     setCommitMessage("");
     setPushDone(false);
     setShowCreatePR(false);
+    setExistingPrUrl(null);
     setPrStep("idle");
     setPrTitle("");
     setPrBody("");
@@ -258,16 +260,19 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
       setCommitedOnly(false);
 
       const activeBranch = newBranch ? newBranchName.trim() : branch;
-      if (newBranch && !branchAlreadyExists) {
-        setShowCreatePR(true);
-      } else {
-        if (activeBranch && activeBranch !== "main" && activeBranch !== "master") {
-          try {
-            const prs = await invoke<{ my_prs: { headRefName: string }[]; review_requested: { headRefName: string }[] }>("get_pull_requests", { directory });
-            const allPrs = [...(prs.my_prs || []), ...(prs.review_requested || [])];
-            const hasExistingPR = allPrs.some((pr) => pr.headRefName === activeBranch);
-            setShowCreatePR(!hasExistingPR);
-          } catch {}
+      if (activeBranch && activeBranch !== "main" && activeBranch !== "master") {
+        try {
+          const prs = await invoke<{ myPrs: { headRefName: string; url: string }[]; reviewRequested: { headRefName: string; url: string }[] }>("get_pull_requests", { directory });
+          const allPrs = [...(prs.myPrs || []), ...(prs.reviewRequested || [])];
+          const existingPR = allPrs.find((pr) => pr.headRefName === activeBranch);
+          if (existingPR) {
+            setExistingPrUrl(existingPR.url);
+            setShowCreatePR(false);
+          } else {
+            setShowCreatePR(true);
+          }
+        } catch {
+          setShowCreatePR(true);
         }
       }
     } catch (err) {
@@ -627,6 +632,11 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
               {commitedOnly && prStep === "idle" && (
                 <Btn onClick={handlePushAfterCommit} disabled={isPushing} primary>
                   {isPushing ? "Pushing..." : "Push"}
+                </Btn>
+              )}
+              {!commitedOnly && existingPrUrl && prStep === "idle" && (
+                <Btn onClick={() => import("../lib/bridge").then(({ openUrl }) => openUrl(existingPrUrl!))} primary>
+                  View PR
                 </Btn>
               )}
               {!commitedOnly && showCreatePR && prStep === "idle" && (

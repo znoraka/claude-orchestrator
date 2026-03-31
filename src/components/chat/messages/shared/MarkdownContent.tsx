@@ -18,6 +18,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { openUrl } from "../../../../lib/bridge";
 import { resolveDiffThemeName, type DiffThemeName } from "../../../../lib/diffRendering";
+import { useOpenFile } from "../../OpenFileContext";
 import { fnv1a32 } from "../../../../lib/diffRendering";
 import { LRUCache } from "../../../../lib/lruCache";
 
@@ -130,6 +131,9 @@ function getHighlighterPromise(language: string): Promise<DiffsHighlighter> {
 // ── Link helpers ──────────────────────────────────────────────────────────────
 
 const URL_RE = /(https?:\/\/[^\s<>'")\]]+)/g;
+
+// Matches file paths with an extension: src/App.tsx, ./foo/bar.js, /abs/path.rs, review-helpers.js
+const FILE_PATH_RE = /^(\.{0,2}\/)?([a-zA-Z0-9_@.-]+\/)*[a-zA-Z0-9_@.-]+\.[a-zA-Z0-9]{1,10}(:\d+)?$/;
 
 /** Intercept <a> clicks and open in default browser via Tauri */
 export function handleLinkClick(e: React.MouseEvent<HTMLDivElement | HTMLSpanElement>) {
@@ -269,8 +273,28 @@ function SuspenseShikiCodeBlock({ className, code, isStreaming }: SuspenseShikiC
 // ── Main component ────────────────────────────────────────────────────────────
 
 function MarkdownContentInner({ text, isStreaming = false }: { text: string; isStreaming?: boolean }) {
+  const openFile = useOpenFile();
+
   const markdownComponents = useMemo<Components>(
     () => ({
+      code({ node: _node, className, children, ...props }) {
+        // Block code (inside <pre>) has a className like "language-xxx" — skip it
+        if (className) return <code className={className} {...props}>{children}</code>;
+        const text = typeof children === "string" ? children : "";
+        if (openFile && FILE_PATH_RE.test(text.trim())) {
+          return (
+            <button
+              type="button"
+              className="font-mono text-blue-400 hover:text-blue-300 hover:underline cursor-pointer bg-transparent border-0 p-0 text-[0.85em]"
+              title={`Open ${text} in editor`}
+              onClick={() => openFile(text.trim().replace(/:\d+$/, ""))}
+            >
+              {children}
+            </button>
+          );
+        }
+        return <code className={className} {...props}>{children}</code>;
+      },
       a({ node: _node, href, ...props }) {
         return (
           <a
@@ -308,7 +332,7 @@ function MarkdownContentInner({ text, isStreaming = false }: { text: string; isS
         );
       },
     }),
-    [isStreaming],
+    [isStreaming, openFile],
   );
 
   const processedText = useMemo(() => {
