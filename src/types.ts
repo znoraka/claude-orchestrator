@@ -174,6 +174,14 @@ export interface PrComment {
   createdAt: string;
 }
 
+export interface BlameLine {
+  line: number;
+  sha: string;
+  author: string;
+  date: string;
+  content: string;
+}
+
 export interface Worktree {
   path: string;        // absolute path (e.g. /repo/.worktrees/feat-x, or /repo for main)
   branch: string;      // current branch name

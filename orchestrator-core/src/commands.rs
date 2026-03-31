@@ -238,6 +238,15 @@ pub struct PrFileEntry {
     pub status: String,
 }
 
+#[derive(Serialize, Clone)]
+pub struct BlameLine {
+    pub line: u32,
+    pub sha: String,
+    pub author: String,
+    pub date: String,
+    pub content: String,
+}
+
 #[derive(Serialize)]
 pub struct ConversationTailResult {
     pub lines: Vec<String>,
@@ -3043,6 +3052,69 @@ pub async fn get_pr_file_diff(directory: String, pr_number: u32, file_path: Stri
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
+}
+
+pub async fn git_blame_pr_file(directory: String, pr_number: u32, file_path: String) -> Result<Vec<BlameLine>, String> {
+    tokio::task::spawn_blocking(move || {
+        // Get the PR's head commit SHA
+        let pr_output = gh_in_dir(&directory)
+            .args(["pr", "view", &pr_number.to_string(), "--json", "headRefOid", "-q", ".headRefOid"])
+            .output()
+            .map_err(|e| format!("Failed to get PR info: {}", e))?;
+        let commit_sha = String::from_utf8_lossy(&pr_output.stdout).trim().to_string();
+        if commit_sha.is_empty() {
+            return Err("Could not determine PR commit SHA".to_string());
+        }
+
+        let blame_output = git_command(&directory)
+            .args(["blame", "--porcelain", &commit_sha, "--", &file_path])
+            .output()
+            .map_err(|e| format!("Failed to run git blame: {}", e))?;
+        if !blame_output.status.success() {
+            return Err(String::from_utf8_lossy(&blame_output.stderr).to_string());
+        }
+
+        let output_str = String::from_utf8_lossy(&blame_output.stdout);
+        Ok(parse_blame_porcelain(&output_str))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+fn parse_blame_porcelain(output: &str) -> Vec<BlameLine> {
+    let mut lines = Vec::new();
+    let mut current_sha = String::new();
+    let mut current_author = String::new();
+    let mut current_date = String::new();
+    let mut current_line_num: u32 = 0;
+
+    for line in output.lines() {
+        // Blame block header: 40-char hex SHA followed by line numbers
+        if line.len() >= 40 && line[..40].chars().all(|c| c.is_ascii_hexdigit()) && line.chars().nth(40) == Some(' ') {
+            let parts: Vec<&str> = line.splitn(4, ' ').collect();
+            current_sha = parts[0][..7].to_string();
+            current_line_num = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+        } else if let Some(name) = line.strip_prefix("author ") {
+            current_author = if name == "Not Committed Yet" {
+                "Uncommitted".to_string()
+            } else {
+                name.to_string()
+            };
+        } else if let Some(ts_str) = line.strip_prefix("author-time ") {
+            if let Ok(ts) = ts_str.trim().parse::<u64>() {
+                current_date = civil_date_from_epoch(ts);
+            }
+        } else if let Some(content) = line.strip_prefix('\t') {
+            lines.push(BlameLine {
+                line: current_line_num,
+                sha: current_sha.clone(),
+                author: current_author.clone(),
+                date: current_date.clone(),
+                content: content.to_string(),
+            });
+        }
+    }
+    lines
 }
 
 pub async fn post_pr_comment(

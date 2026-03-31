@@ -5,7 +5,7 @@ import DiffViewer from "./DiffViewer";
 import { Spinner } from "./ui/spinner";
 import type { DiffMode } from "./DiffViewer";
 import FileIcon from "./FileIcon";
-import type { PrComment, PrFileEntry } from "../types";
+import type { BlameLine, PrComment, PrFileEntry } from "../types";
 
 // Tree node for the file tree
 interface FileTreeNode {
@@ -92,6 +92,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
   const [posting, setPosting] = useState(false);
   const [diffLoading, setDiffLoading] = useState(false);
   const [viewedFiles, setViewedFiles] = useState<Set<string>>(new Set());
+  const [blameLines, setBlameLines] = useState<BlameLine[]>([]);
 
   const toggleViewed = useCallback((file: string) => {
     const willBeViewed = !viewedFiles.has(file);
@@ -145,6 +146,21 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       .catch((e) => setFileDiff(`Error: ${e}`))
       .finally(() => setDiffLoading(false));
   }, [selectedFile, directory, prNumber]);
+
+  useEffect(() => {
+    if (!selectedFile) return;
+    setBlameLines([]);
+    invoke<BlameLine[]>("git_blame_pr_file", { directory, prNumber, filePath: selectedFile })
+      .then(setBlameLines)
+      .catch(() => {/* blame is optional */});
+  }, [selectedFile, directory, prNumber]);
+
+  const blameMap = useMemo(() => {
+    if (blameLines.length === 0) return undefined;
+    const m = new Map<number, BlameLine>();
+    for (const b of blameLines) m.set(b.line, b);
+    return m;
+  }, [blameLines]);
 
   const fileComments = useMemo(
     () => comments.filter((c) => c.path === selectedFile),
@@ -207,7 +223,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       return (
         <div
           key={file.path}
-          onClick={() => { setSelectedFile(file.path); setCommentLine(null); }}
+          onClick={() => { setSelectedFile(file.path); setCommentLine(null); setBlameLines([]); }}
           className={`w-full text-left py-1 pr-2 text-xs font-mono flex items-center gap-1.5 cursor-pointer ${
             isSelected
               ? "bg-[var(--accent)] text-white"
@@ -399,7 +415,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
             {fileTree.map((node) => renderTreeNode(node, 0))}
           </div>
 
-          {/* Diff viewer */}
+          {/* Diff viewer (with optional blame overlay) */}
           <div className="flex-1 w-0 flex flex-col bg-[var(--bg-primary)]">
             <div className="flex-1 overflow-auto">
               {diffLoading ? (
@@ -414,6 +430,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
                   filePath={selectedFile}
                   searchQuery=""
                   currentMatch={0}
+                  blameMap={blameMap}
                   onLineClick={handleLineClick}
                   inlineComments={{
                     comments: fileComments,

@@ -761,6 +761,16 @@ async fn dispatch(text: &str, state: &AppState) -> String {
                 Err(e) => err_response(&id, e),
             }
         }
+        "git_blame_pr_file" => {
+            match commands::git_blame_pr_file(
+                str_field!(p, "directory"),
+                p.get("prNumber").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                str_field!(p, "filePath"),
+            ).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
         "post_pr_comment" => {
             match commands::post_pr_comment(
                 str_field!(p, "directory"),

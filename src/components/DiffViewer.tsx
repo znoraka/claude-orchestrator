@@ -1,7 +1,7 @@
-import { useMemo, useRef, useState, useEffect } from "react";
+import { useMemo, useRef, useState, useEffect, useCallback } from "react";
 import { createHighlighter, type Highlighter, type BundledLanguage } from "shiki";
 import { PatchDiff } from "@pierre/diffs/react";
-import type { PrComment } from "../types";
+import type { PrComment, BlameLine } from "../types";
 
 // --- Types ---
 
@@ -107,12 +107,54 @@ export const DIFF_UNSAFE_CSS = `
   }
 `;
 
+// --- Relative time helper ---
+
+function relativeTime(dateStr: string): string {
+  const d = new Date(dateStr + "T00:00:00");
+  const now = new Date();
+  const days = Math.floor((now.getTime() - d.getTime()) / 86400000);
+  if (days < 1) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  const years = Math.floor(months / 12);
+  return `${years}y ago`;
+}
+
+// --- Blame hover bridge ---
+// Polls Pierre's getHoveredLine and writes the blame to a ref so the parent can read it.
+
+function BlameHoverBridge({ getHoveredLine, blameMap, onBlameChange }: {
+  getHoveredLine: () => { lineNumber: number; side: string } | undefined;
+  blameMap: Map<number, BlameLine>;
+  onBlameChange: (blame: BlameLine | null) => void;
+}) {
+  useEffect(() => {
+    let prev: string | null = null;
+    let raf: number;
+    const poll = () => {
+      const hovered = getHoveredLine();
+      const b = hovered ? (blameMap.get(hovered.lineNumber) ?? null) : null;
+      const key = b?.sha ?? null;
+      if (key !== prev) { prev = key; onBlameChange(b); }
+      raf = requestAnimationFrame(poll);
+    };
+    raf = requestAnimationFrame(poll);
+    return () => { cancelAnimationFrame(raf); onBlameChange(null); };
+  }, [getHoveredLine, blameMap, onBlameChange]);
+
+  return null; // renders nothing inside the diff
+}
+
 // --- PatchDiff wrapper ---
 
-export function PierreDiff({ diff, mode, filePath }: {
+export function PierreDiff({ diff, mode, filePath, blameMap, onBlameHover }: {
   diff: string;
   mode: DiffMode;
   filePath: string;
+  blameMap?: Map<number, BlameLine>;
+  onBlameHover?: (blame: BlameLine | null) => void;
 }) {
   // Ensure the patch has proper git diff headers for @pierre/diffs to parse
   const patch = useMemo(() => {
@@ -120,6 +162,16 @@ export function PierreDiff({ diff, mode, filePath }: {
     // Wrap raw hunks in a minimal git diff header
     return `diff --git a/${filePath} b/${filePath}\n--- a/${filePath}\n+++ b/${filePath}\n${diff}`;
   }, [diff, filePath]);
+
+  const hasBlame = !!blameMap && blameMap.size > 0 && !!onBlameHover;
+
+  const renderHoverUtility = useCallback(
+    (getHoveredLine: () => { lineNumber: number; side: string } | undefined) => {
+      if (!blameMap || blameMap.size === 0 || !onBlameHover) return null;
+      return <BlameHoverBridge getHoveredLine={getHoveredLine} blameMap={blameMap} onBlameChange={onBlameHover} />;
+    },
+    [blameMap, onBlameHover]
+  );
 
   return (
     <PatchDiff
@@ -132,7 +184,9 @@ export function PierreDiff({ diff, mode, filePath }: {
         themeType: "dark",
         disableFileHeader: true,
         unsafeCSS: DIFF_UNSAFE_CSS,
+        enableHoverUtility: hasBlame,
       }}
+      renderHoverUtility={hasBlame ? renderHoverUtility : undefined}
     />
   );
 }
@@ -164,7 +218,7 @@ function splitIntoHunks(diffText: string): string[] {
   return chunks;
 }
 
-function LazyHunk({ hunk, mode, filePath }: { hunk: string; mode: DiffMode; filePath: string }) {
+function LazyHunk({ hunk, mode, filePath, blameMap, onBlameHover }: { hunk: string; mode: DiffMode; filePath: string; blameMap?: Map<number, BlameLine>; onBlameHover?: (blame: BlameLine | null) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
 
@@ -180,21 +234,21 @@ function LazyHunk({ hunk, mode, filePath }: { hunk: string; mode: DiffMode; file
   const estimatedHeight = hunk.split("\n").length * 20;
   return (
     <div ref={ref} style={{ minHeight: visible ? undefined : estimatedHeight }}>
-      {visible && <PierreDiff diff={hunk} mode={mode} filePath={filePath} />}
+      {visible && <PierreDiff diff={hunk} mode={mode} filePath={filePath} blameMap={blameMap} onBlameHover={onBlameHover} />}
     </div>
   );
 }
 
-function LazyPatchDiff({ diff, mode, filePath }: { diff: string; mode: DiffMode; filePath: string }) {
+function LazyPatchDiff({ diff, mode, filePath, blameMap, onBlameHover }: { diff: string; mode: DiffMode; filePath: string; blameMap?: Map<number, BlameLine>; onBlameHover?: (blame: BlameLine | null) => void }) {
   const lineCount = diff.split("\n").length;
   if (lineCount < LAZY_THRESHOLD) {
-    return <PierreDiff diff={diff} mode={mode} filePath={filePath} />;
+    return <PierreDiff diff={diff} mode={mode} filePath={filePath} blameMap={blameMap} onBlameHover={onBlameHover} />;
   }
   const hunks = splitIntoHunks(diff);
   return (
     <div>
       {hunks.map((hunk, i) => (
-        <LazyHunk key={i} hunk={hunk} mode={mode} filePath={filePath} />
+        <LazyHunk key={i} hunk={hunk} mode={mode} filePath={filePath} blameMap={blameMap} onBlameHover={onBlameHover} />
       ))}
     </div>
   );
@@ -227,11 +281,15 @@ function TruncatedUnifiedDiff({ diff, filePath }: { diff: string; filePath: stri
 
 // --- DiffViewer ---
 
-export default function DiffViewer({ diff, mode, filePath, inlineComments: _inlineComments }: {
+export default function DiffViewer({ diff, mode, filePath, blameMap, inlineComments: _inlineComments }: {
   diff: string; mode: DiffMode; filePath: string; searchQuery: string; currentMatch: number;
+  blameMap?: Map<number, BlameLine>;
   onLineClick?: (lineNumber: number) => void;
   inlineComments?: InlineCommentProps;
 }) {
+  const [hoveredBlame, setHoveredBlame] = useState<BlameLine | null>(null);
+  const onBlameHover = useCallback((b: BlameLine | null) => setHoveredBlame(b), []);
+
   if (!diff) {
     return (
       <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] text-sm">
@@ -241,10 +299,34 @@ export default function DiffViewer({ diff, mode, filePath, inlineComments: _inli
   }
 
   return (
-    <div className="diff-panel-viewport h-full overflow-auto">
-      <div className="diff-render-file">
-        <LazyPatchDiff diff={diff} mode={mode} filePath={filePath} />
+    <div className="diff-panel-viewport h-full flex flex-col">
+      <div className="flex-1 overflow-auto">
+        <div className="diff-render-file">
+          <LazyPatchDiff diff={diff} mode={mode} filePath={filePath} blameMap={blameMap} onBlameHover={onBlameHover} />
+        </div>
       </div>
+      {hoveredBlame && (
+        <div
+          className="flex items-center gap-2 px-3 flex-shrink-0 border-t border-[var(--border-color)]"
+          style={{
+            height: 28,
+            fontSize: 11,
+            fontFamily: "var(--font-mono, monospace)",
+            color: "var(--text-secondary)",
+            background: "var(--bg-secondary)",
+          }}
+        >
+          <span style={{ color: "var(--accent)", fontWeight: 600 }}>
+            {hoveredBlame.sha.slice(0, 8)}
+          </span>
+          <span style={{ color: "var(--text-primary)" }}>
+            {hoveredBlame.author}
+          </span>
+          <span style={{ opacity: 0.5 }}>
+            {relativeTime(hoveredBlame.date)}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
