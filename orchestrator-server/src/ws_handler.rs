@@ -648,6 +648,12 @@ async fn dispatch(text: &str, state: &AppState) -> String {
                 Err(e) => err_response(&id, e),
             }
         }
+        "git_push_only" => {
+            match commands::git_push_only(str_field!(p, "directory")).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
         "git_commit_only" => {
             match commands::git_commit_only(
                 str_field!(p, "directory"),

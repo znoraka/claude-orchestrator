@@ -246,46 +246,29 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
     }
   };
 
-  const handlePush = async () => {
-    if (!commitMessage.trim()) { setError("Please enter a commit message."); return; }
-    if (selected.size === 0) { setError("No files selected."); return; }
-    if (newBranch && !newBranchName.trim()) { setError("Please enter a branch name."); return; }
+  const handlePushAfterCommit = async () => {
     setIsPushing(true);
     setError(null);
-    const origBranch = branch;
     try {
-      // Create or switch to branch if toggled
-      await handleBranchSwitch(origBranch);
-
-      await stageFiles();
-      await invoke("git_commit_and_push", { directory, message: commitMessage.trim() });
+      await invoke("git_push_only", { directory });
       setIsPushing(false);
-      setPushDone(true);
+      setCommitedOnly(false);
 
       const activeBranch = newBranch ? newBranchName.trim() : branch;
       if (newBranch && !branchAlreadyExists) {
-        // New branch flow: always offer to create PR back to base
         setShowCreatePR(true);
       } else {
-        // Existing branch flow: check if a PR already exists
         if (activeBranch && activeBranch !== "main" && activeBranch !== "master") {
           try {
             const prs = await invoke<{ my_prs: { headRefName: string }[]; review_requested: { headRefName: string }[] }>("get_pull_requests", { directory });
             const allPrs = [...(prs.my_prs || []), ...(prs.review_requested || [])];
             const hasExistingPR = allPrs.some((pr) => pr.headRefName === activeBranch);
             setShowCreatePR(!hasExistingPR);
-          } catch {
-            // If we can't check, don't show the button
-          }
+          } catch {}
         }
       }
     } catch (err) {
       setError(`Push failed: ${err}`);
-      // If we created a new branch but something failed after, try to go back
-      if (newBranch && origBranch && !branchAlreadyExists) {
-        try { await invoke("git_checkout_branch", { directory, branchName: origBranch }); } catch {}
-        setBranch(origBranch);
-      }
       setIsPushing(false);
     }
   };
@@ -647,8 +630,13 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
           {pushDone ? (
             <>
               <span style={{ fontSize: 11, color: "#4ade80", fontWeight: 700, marginRight: "auto", textTransform: "uppercase", letterSpacing: "0.05em" }}>{commitedOnly ? "Committed" : "Pushed"}</span>
-              <Btn onClick={resetState} disabled={prStep === "generating" || prStep === "creating"}>Reset</Btn>
-              {showCreatePR && prStep === "idle" && (
+              <Btn onClick={resetState} disabled={prStep === "generating" || prStep === "creating" || isPushing}>Reset</Btn>
+              {commitedOnly && prStep === "idle" && (
+                <Btn onClick={handlePushAfterCommit} disabled={isPushing} primary>
+                  {isPushing ? "Pushing..." : "Push"}
+                </Btn>
+              )}
+              {!commitedOnly && showCreatePR && prStep === "idle" && (
                 <Btn onClick={handleGeneratePR} primary>
                   Create PR
                 </Btn>
@@ -669,7 +657,7 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
                   Open PR
                 </Btn>
               )}
-              <Btn onClick={handleClose} disabled={prStep === "generating" || prStep === "creating"}>Close</Btn>
+              <Btn onClick={handleClose} disabled={prStep === "generating" || prStep === "creating" || isPushing}>Close</Btn>
             </>
           ) : (
             <>
@@ -680,15 +668,9 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
               <Btn
                 onClick={handleCommit}
                 disabled={busy || isLoadingFiles || hasNoFiles || selected.size === 0 || !commitMessage.trim()}
-              >
-                {isCommitOnly ? "Committing..." : "Commit"}
-              </Btn>
-              <Btn
-                onClick={handlePush}
-                disabled={busy || isLoadingFiles || hasNoFiles || selected.size === 0 || !commitMessage.trim()}
                 primary
               >
-                {isPushing && !isCommitOnly ? "Pushing..." : "Push"}
+                {isCommitOnly ? "Committing..." : "Commit"}
               </Btn>
             </>
           )}

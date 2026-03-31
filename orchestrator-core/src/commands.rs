@@ -3673,6 +3673,43 @@ pub async fn git_commit_and_push(directory: String, message: String) -> Result<(
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
+pub async fn git_push_only(directory: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let push = git_command(&directory)
+            .args(["push"])
+            .output()
+            .map_err(|e| format!("Failed to run git push: {}", e))?;
+
+        if !push.status.success() {
+            let stderr = String::from_utf8_lossy(&push.stderr);
+            if stderr.contains("no upstream") || stderr.contains("has no upstream") || stderr.contains("--set-upstream") {
+                let branch_out = git_command(&directory)
+                    .args(["branch", "--show-current"])
+                    .output()
+                    .map_err(|e| format!("Failed to get branch: {}", e))?;
+                let branch = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
+
+                let push2 = git_command(&directory)
+                    .args(["push", "--set-upstream", "origin", &branch])
+                    .output()
+                    .map_err(|e| format!("Failed to run git push --set-upstream: {}", e))?;
+                if !push2.status.success() {
+                    return Err(format!(
+                        "git push failed: {}",
+                        String::from_utf8_lossy(&push2.stderr)
+                    ));
+                }
+            } else {
+                return Err(format!("git push failed: {}", stderr));
+            }
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 pub async fn gh_open_pr_create(directory: String, base: Option<String>) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let mut cmd = gh_in_dir(&directory);
