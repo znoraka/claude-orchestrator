@@ -380,7 +380,11 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
                     <div
                       key={`${f.path}-${i}`}
                       style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 10px", borderBottom: i < allFiles.length - 1 ? "1px solid var(--border-subtle)" : undefined, cursor: "pointer", opacity: selected.has(f.path) ? 1 : 0.45 }}
-                      onClick={() => toggleFile(f.path)}
+                      onClick={() => {
+                        invoke<string>("get_git_diff", { directory, filePath: f.path, staged: f.staged })
+                          .then((diff) => setFileDiffModal({ path: f.path, diff }))
+                          .catch((err) => setError(`Failed to get diff: ${err}`));
+                      }}
                     >
                       <Checkbox checked={selected.has(f.path)} onChange={() => toggleFile(f.path)} />
                       <span style={{ fontSize: 10, fontWeight: 700, color: STATUS_COLORS[f.status] ?? "var(--text-secondary)", width: 12, textAlign: "center", flexShrink: 0 }}>
@@ -392,20 +396,6 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
                       {f.staged && (
                         <span style={{ fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>staged</span>
                       )}
-                      <button
-                        title="View diff"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          invoke<string>("get_git_diff", { directory, filePath: f.path, staged: f.staged })
-                            .then((diff) => setFileDiffModal({ path: f.path, diff }))
-                            .catch((err) => setError(`Failed to get diff: ${err}`));
-                        }}
-                        style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-tertiary)", fontSize: 11, padding: "1px 4px", flexShrink: 0, lineHeight: 1, opacity: 0.6 }}
-                        onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = "1"; }}
-                        onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = "0.6"; }}
-                      >
-                        ⊕
-                      </button>
                     </div>
                   ))}
                 </div>
