@@ -648,6 +648,24 @@ async fn dispatch(text: &str, state: &AppState) -> String {
                 Err(e) => err_response(&id, e),
             }
         }
+        "git_commit_only" => {
+            match commands::git_commit_only(
+                str_field!(p, "directory"),
+                str_field!(p, "message"),
+            ).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
+        "git_branch_exists" => {
+            match commands::git_branch_exists(
+                str_field!(p, "directory"),
+                str_field!(p, "branchName"),
+            ).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
         "git_checkout_new_branch" => {
             match commands::git_checkout_new_branch(
                 str_field!(p, "directory"),

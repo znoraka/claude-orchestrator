@@ -3868,6 +3868,36 @@ pub async fn git_checkout_branch(directory: String, branch_name: String) -> Resu
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
+pub async fn git_commit_only(directory: String, message: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let commit = git_command(&directory)
+            .args(["commit", "-m", &message])
+            .output()
+            .map_err(|e| format!("Failed to run git commit: {}", e))?;
+        if !commit.status.success() {
+            return Err(format!(
+                "git commit failed: {}",
+                String::from_utf8_lossy(&commit.stderr)
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+pub async fn git_branch_exists(directory: String, branch_name: String) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        let output = git_command(&directory)
+            .args(["rev-parse", "--verify", &branch_name])
+            .output()
+            .map_err(|e| format!("Failed to run git rev-parse: {}", e))?;
+        Ok(output.status.success())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 pub async fn git_unstage_all(directory: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let output = git_command(&directory)

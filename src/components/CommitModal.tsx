@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { invoke } from "../lib/bridge";
 import { AGENT_PROVIDERS, type AgentProvider, type ModelOption, modelsForProvider, defaultModelForProvider } from "../types";
 import type { OpenCodeModel } from "../App";
+import FileDiffModal from "./FileDiffModal";
 
 interface GitFileEntry {
   path: string;
@@ -42,6 +43,8 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
   const [commitMessage, setCommitMessage] = useState("");
   const [isLoadingFiles, setIsLoadingFiles] = useState(true);
   const [isPushing, setIsPushing] = useState(false);
+  const [isCommitOnly, setIsCommitOnly] = useState(false);
+  const [commitedOnly, setCommitedOnly] = useState(false);
   const [pushDone, setPushDone] = useState(false);
   const [showCreatePR, setShowCreatePR] = useState(false);
   const [prStep, setPrStep] = useState<"idle" | "generating" | "preview" | "creating" | "done">("idle");
@@ -64,6 +67,8 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
   });
   const [dynamicOpencode, setDynamicOpencode] = useState<ModelOption[]>([]);
   const [dynamicCodex, setDynamicCodex] = useState<ModelOption[]>([]);
+  const [branchAlreadyExists, setBranchAlreadyExists] = useState(false);
+  const [fileDiffModal, setFileDiffModal] = useState<{ path: string; diff: string } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const resetState = () => {
@@ -78,6 +83,9 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
     setNewBranch(false);
     setNewBranchName("");
     setBaseBranch("");
+    setBranchAlreadyExists(false);
+    setIsCommitOnly(false);
+    setCommitedOnly(false);
     setIsLoadingFiles(true);
     setRefreshKey((k) => k + 1);
   };
@@ -157,6 +165,16 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [directory, visible, refreshKey]);
 
+  // Check if new branch name already exists
+  useEffect(() => {
+    if (!newBranch || !newBranchName.trim()) { setBranchAlreadyExists(false); return; }
+    let cancelled = false;
+    invoke<boolean>("git_branch_exists", { directory, branchName: newBranchName.trim() })
+      .then((exists) => { if (!cancelled) setBranchAlreadyExists(exists); })
+      .catch(() => { if (!cancelled) setBranchAlreadyExists(false); });
+    return () => { cancelled = true; };
+  }, [directory, newBranch, newBranchName]);
+
   // Auto-resize textarea
   useEffect(() => {
     if (textareaRef.current) {
@@ -182,6 +200,52 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
     });
   };
 
+  const stageFiles = async () => {
+    const toStage = allFiles.filter((f) => selected.has(f.path) && !f.staged).map((f) => f.path);
+    if (toStage.length > 0) await invoke("git_stage_files", { directory, files: toStage });
+    const toUnstage = allFiles.filter((f) => !selected.has(f.path) && f.staged).map((f) => f.path);
+    if (toUnstage.length > 0) await invoke("git_unstage_files", { directory, files: toUnstage });
+  };
+
+  const handleBranchSwitch = async (origBranch: string) => {
+    if (newBranch && newBranchName.trim()) {
+      if (branchAlreadyExists) {
+        await invoke("git_checkout_branch", { directory, branchName: newBranchName.trim() });
+      } else {
+        await invoke("git_checkout_new_branch", { directory, branchName: newBranchName.trim() });
+      }
+      setBaseBranch(origBranch);
+      setBranch(newBranchName.trim());
+    }
+  };
+
+  const handleCommit = async () => {
+    if (!commitMessage.trim()) { setError("Please enter a commit message."); return; }
+    if (selected.size === 0) { setError("No files selected."); return; }
+    if (newBranch && !newBranchName.trim()) { setError("Please enter a branch name."); return; }
+    setIsPushing(true);
+    setIsCommitOnly(true);
+    setError(null);
+    const origBranch = branch;
+    try {
+      await handleBranchSwitch(origBranch);
+      await stageFiles();
+      await invoke("git_commit_only", { directory, message: commitMessage.trim() });
+      setIsPushing(false);
+      setIsCommitOnly(false);
+      setCommitedOnly(true);
+      setPushDone(true);
+    } catch (err) {
+      setError(`Commit failed: ${err}`);
+      if (newBranch && origBranch && !branchAlreadyExists) {
+        try { await invoke("git_checkout_branch", { directory, branchName: origBranch }); } catch {}
+        setBranch(origBranch);
+      }
+      setIsPushing(false);
+      setIsCommitOnly(false);
+    }
+  };
+
   const handlePush = async () => {
     if (!commitMessage.trim()) { setError("Please enter a commit message."); return; }
     if (selected.size === 0) { setError("No files selected."); return; }
@@ -190,35 +254,24 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
     setError(null);
     const origBranch = branch;
     try {
-      // Create new branch if toggled
-      if (newBranch) {
-        await invoke("git_checkout_new_branch", { directory, branchName: newBranchName.trim() });
-        setBaseBranch(origBranch);
-        setBranch(newBranchName.trim());
-      }
+      // Create or switch to branch if toggled
+      await handleBranchSwitch(origBranch);
 
-      // Stage selected files that aren't already staged
-      const toStage = allFiles.filter((f) => selected.has(f.path) && !f.staged).map((f) => f.path);
-      if (toStage.length > 0) await invoke("git_stage_files", { directory, files: toStage });
-
-      // Unstage deselected files that were staged
-      const toUnstage = allFiles.filter((f) => !selected.has(f.path) && f.staged).map((f) => f.path);
-      if (toUnstage.length > 0) await invoke("git_unstage_files", { directory, files: toUnstage });
-
+      await stageFiles();
       await invoke("git_commit_and_push", { directory, message: commitMessage.trim() });
       setIsPushing(false);
       setPushDone(true);
 
-      if (newBranch) {
+      const activeBranch = newBranch ? newBranchName.trim() : branch;
+      if (newBranch && !branchAlreadyExists) {
         // New branch flow: always offer to create PR back to base
         setShowCreatePR(true);
       } else {
         // Existing branch flow: check if a PR already exists
-        if (branch && branch !== "main" && branch !== "master") {
+        if (activeBranch && activeBranch !== "main" && activeBranch !== "master") {
           try {
             const prs = await invoke<{ my_prs: { headRefName: string }[]; review_requested: { headRefName: string }[] }>("get_pull_requests", { directory });
             const allPrs = [...(prs.my_prs || []), ...(prs.review_requested || [])];
-            const activeBranch = newBranch ? newBranchName.trim() : branch;
             const hasExistingPR = allPrs.some((pr) => pr.headRefName === activeBranch);
             setShowCreatePR(!hasExistingPR);
           } catch {
@@ -229,7 +282,7 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
     } catch (err) {
       setError(`Push failed: ${err}`);
       // If we created a new branch but something failed after, try to go back
-      if (newBranch && origBranch) {
+      if (newBranch && origBranch && !branchAlreadyExists) {
         try { await invoke("git_checkout_branch", { directory, branchName: origBranch }); } catch {}
         setBranch(origBranch);
       }
@@ -298,6 +351,7 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
   const hasNoFiles = !isLoadingFiles && allFiles.length === 0;
 
   return (
+    <>
     <div
       style={{ position: "fixed", inset: 0, zIndex: 50, display: visible ? "flex" : "none", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.85)" }}
       onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}
@@ -352,6 +406,20 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
                       {f.staged && (
                         <span style={{ fontSize: 9, color: "var(--text-tertiary)", flexShrink: 0 }}>staged</span>
                       )}
+                      <button
+                        title="View diff"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          invoke<string>("get_git_diff", { directory, filePath: f.path, staged: f.staged })
+                            .then((diff) => setFileDiffModal({ path: f.path, diff }))
+                            .catch((err) => setError(`Failed to get diff: ${err}`));
+                        }}
+                        style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-tertiary)", fontSize: 11, padding: "1px 4px", flexShrink: 0, lineHeight: 1, opacity: 0.6 }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = "1"; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = "0.6"; }}
+                      >
+                        ⊕
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -384,27 +452,33 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
                 </div>
               </div>
               {newBranch && (
-                <input
-                  value={newBranchName}
-                  onChange={(e) => setNewBranchName(e.target.value.replace(/\s+/g, "-"))}
-                  placeholder="branch-name"
-                  disabled={busy}
-                  style={{
-                    width: "100%",
-                    marginTop: 6,
-                    background: "var(--bg-secondary)",
-                    border: "2px solid var(--border-color)",
-                    borderRadius: 0,
-                    padding: "6px 10px",
-                    fontSize: 12,
-                    fontFamily: "var(--font-mono, 'SF Mono', Menlo, monospace)",
-                    color: "var(--text-primary)",
-                    outline: "none",
-                    boxSizing: "border-box" as const,
-                  }}
-                  onFocus={(e) => { e.target.style.borderColor = "var(--accent)"; }}
-                  onBlur={(e) => { e.target.style.borderColor = "var(--border-color)"; }}
-                />
+                <div style={{ marginTop: 6 }}>
+                  <input
+                    value={newBranchName}
+                    onChange={(e) => setNewBranchName(e.target.value.replace(/\s+/g, "-"))}
+                    placeholder="branch-name"
+                    disabled={busy}
+                    style={{
+                      width: "100%",
+                      background: "var(--bg-secondary)",
+                      border: `2px solid ${branchAlreadyExists ? "var(--accent)" : "var(--border-color)"}`,
+                      borderRadius: 0,
+                      padding: "6px 10px",
+                      fontSize: 12,
+                      fontFamily: "var(--font-mono, 'SF Mono', Menlo, monospace)",
+                      color: "var(--text-primary)",
+                      outline: "none",
+                      boxSizing: "border-box" as const,
+                    }}
+                    onFocus={(e) => { e.target.style.borderColor = "var(--accent)"; }}
+                    onBlur={(e) => { e.target.style.borderColor = branchAlreadyExists ? "var(--accent)" : "var(--border-color)"; }}
+                  />
+                  {branchAlreadyExists && (
+                    <span style={{ fontSize: 10, color: "var(--accent)", marginTop: 3, display: "block" }}>
+                      Branch already exists — will switch to it
+                    </span>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -572,7 +646,7 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
         <div style={{ padding: "12px 18px", borderTop: "2px solid var(--border-color)", display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center" }}>
           {pushDone ? (
             <>
-              <span style={{ fontSize: 11, color: "#4ade80", fontWeight: 700, marginRight: "auto", textTransform: "uppercase", letterSpacing: "0.05em" }}>Pushed</span>
+              <span style={{ fontSize: 11, color: "#4ade80", fontWeight: 700, marginRight: "auto", textTransform: "uppercase", letterSpacing: "0.05em" }}>{commitedOnly ? "Committed" : "Pushed"}</span>
               <Btn onClick={resetState} disabled={prStep === "generating" || prStep === "creating"}>Reset</Btn>
               {showCreatePR && prStep === "idle" && (
                 <Btn onClick={handleGeneratePR} primary>
@@ -604,17 +678,31 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
               </Btn>
               <Btn onClick={handleClose} disabled={busy}>Close</Btn>
               <Btn
+                onClick={handleCommit}
+                disabled={busy || isLoadingFiles || hasNoFiles || selected.size === 0 || !commitMessage.trim()}
+              >
+                {isCommitOnly ? "Committing..." : "Commit"}
+              </Btn>
+              <Btn
                 onClick={handlePush}
                 disabled={busy || isLoadingFiles || hasNoFiles || selected.size === 0 || !commitMessage.trim()}
                 primary
               >
-                {isPushing ? "Pushing..." : "Push"}
+                {isPushing && !isCommitOnly ? "Pushing..." : "Push"}
               </Btn>
             </>
           )}
         </div>
       </div>
     </div>
+    {fileDiffModal && (
+      <FileDiffModal
+        path={fileDiffModal.path}
+        diff={fileDiffModal.diff}
+        onClose={() => setFileDiffModal(null)}
+      />
+    )}
+    </>
   );
 }
 
