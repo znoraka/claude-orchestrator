@@ -162,6 +162,9 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
     // Listen for PTY exit
     const unlistenExit = listen(`pty-exit-${sessionId}`, () => {
       term.write("\r\n\x1b[90m[Session ended]\x1b[0m\r\n");
+      // Try to save CWD — may fail if process is already gone, but the
+      // isActive effect above should have captured it when user last switched away.
+      invoke("save_terminal_cwd", { sessionId }).catch(() => {});
       onExitRef.current();
     });
 
@@ -190,6 +193,16 @@ export default function Terminal({ sessionId, isActive, onExit, onTitleChange, o
       invoke("save_terminal_cwd", { sessionId }).catch(console.error);
     };
   }, [sessionId]);
+
+  // Save CWD whenever terminal becomes inactive (user switches away)
+  // so it can be restored when the session is resumed later.
+  // We do this here because by the time the component unmounts or the PTY exits,
+  // the shell process may already be dead and lsof can't read its CWD.
+  useEffect(() => {
+    if (!isActive) {
+      invoke("save_terminal_cwd", { sessionId }).catch(() => {});
+    }
+  }, [isActive, sessionId]);
 
   // Focus terminal when tab becomes active
   useEffect(() => {

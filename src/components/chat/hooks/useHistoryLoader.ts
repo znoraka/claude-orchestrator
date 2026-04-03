@@ -209,6 +209,7 @@ export function useHistoryLoader({
       // Fetch messages from DB
       let tailTotal = 0;
       let tailCount = 0;
+      let tailMessages: ChatMessage[] = [];
       if (claudeSessionId) {
         try {
           const result = await invoke<MessagesResult>("get_conversation_messages_tail", {
@@ -216,7 +217,10 @@ export function useHistoryLoader({
           });
           tailTotal = result.total;
           tailCount = result.messages.length;
-          if (result.messages.length > 0) {
+          tailMessages = result.messages;
+          // Only show tail immediately if not truncated — if the tail is a subset of the full
+          // history, wait for the full fetch before rendering to avoid showing a mid-session start.
+          if (result.messages.length > 0 && tailTotal <= tailCount) {
             mergeMessages(result.messages);
           }
         } catch { }
@@ -245,7 +249,12 @@ export function useHistoryLoader({
           });
           if (cancelled) return;
           mergeMessages(allMessages);
-        } catch { }
+        } catch {
+          // Full fetch failed — fall back to showing the tail so the user sees something
+          if (tailMessages.length > 0 && !cancelled) {
+            mergeMessages(tailMessages);
+          }
+        }
       }
 
       // Load child session messages

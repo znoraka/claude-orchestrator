@@ -14,6 +14,7 @@ interface Props {
   directory: string;
   onClose: () => void;
   visible?: boolean;
+  onReviewPR?: (prNumber: number) => void;
 }
 
 function slugify(text: string): string {
@@ -36,7 +37,7 @@ const STATUS_COLORS: Record<string, string> = {
   U: "#facc15",
 };
 
-export default function CommitModal({ directory, onClose, visible = true }: Props) {
+export default function CommitModal({ directory, onClose, visible = true, onReviewPR }: Props) {
   const [allFiles, setAllFiles] = useState<GitFileEntry[]>([]);
   // selected = paths that will be included in the commit
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -656,9 +657,20 @@ export default function CommitModal({ directory, onClose, visible = true }: Prop
                 <Btn onClick={() => {}} disabled>Creating...</Btn>
               )}
               {prStep === "done" && prUrl && (
-                <Btn onClick={() => import("../lib/bridge").then(({ openUrl }) => openUrl(prUrl))} primary>
-                  Open PR
-                </Btn>
+                <>
+                  {onReviewPR && (() => {
+                    const match = prUrl.match(/\/pull\/(\d+)/);
+                    const prNumber = match ? parseInt(match[1], 10) : null;
+                    return prNumber ? (
+                      <Btn onClick={() => { onReviewPR(prNumber); onClose(); }}>
+                        Review PR
+                      </Btn>
+                    ) : null;
+                  })()}
+                  <Btn onClick={() => import("../lib/bridge").then(({ openUrl }) => openUrl(prUrl))} primary>
+                    Open PR
+                  </Btn>
+                </>
               )}
             </>
           ) : (

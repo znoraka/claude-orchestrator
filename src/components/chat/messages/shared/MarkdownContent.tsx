@@ -89,10 +89,13 @@ function extractCodeBlock(
   }
 
   const onlyChild = childNodes[0];
-  if (
-    !isValidElement<{ className?: string; children?: ReactNode }>(onlyChild) ||
-    onlyChild.type !== "code"
-  ) {
+  if (!isValidElement<{ className?: string; children?: ReactNode }>(onlyChild)) {
+    return null;
+  }
+  // Accept the native "code" element OR a custom component substituting it.
+  // When a `code` component override is provided, react-markdown passes the
+  // function as the element type instead of the string "code".
+  if (typeof onlyChild.type === "string" && onlyChild.type !== "code") {
     return null;
   }
 

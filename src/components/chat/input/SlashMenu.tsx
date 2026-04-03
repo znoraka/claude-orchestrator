@@ -16,12 +16,12 @@ export function SlashMenu({ commands, activeIndex, menuRef, onHover, onSelect }:
       {commands.map((cmd, i) => (
         <button
           key={cmd.name}
-          className={`w-full text-left px-3 py-2 flex items-baseline gap-4 text-sm transition-colors ${i === activeIndex ? "bg-[var(--accent)]/15 text-[var(--text-primary)]" : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"}`}
+          className={`w-full text-left px-3 py-2 flex items-baseline gap-4 text-sm transition-colors ${i === activeIndex ? "bg-[var(--accent)]/30 text-[var(--text-primary)]" : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"}`}
           onMouseEnter={() => onHover(i)}
           onMouseDown={(e) => { e.preventDefault(); onSelect(cmd); }}
         >
           <span className="font-mono text-[var(--accent)] shrink-0">/{cmd.name}</span>
-          <span className="text-[var(--text-tertiary)] truncate text-xs">{cmd.description}</span>
+          <span className={`truncate text-xs ${i === activeIndex ? "text-[var(--text-secondary)]" : "text-[var(--text-tertiary)]"}`}>{cmd.description}</span>
           {cmd.source === "user" && (
             <span className="text-[10px] text-[var(--text-tertiary)] opacity-60 ml-auto shrink-0">(user)</span>
           )}

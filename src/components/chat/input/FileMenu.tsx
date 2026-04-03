@@ -20,7 +20,7 @@ export function FileMenu({ suggestions, activeIndex, menuRef, onHover, onSelect 
         return (
           <button
             key={filePath}
-            className={`w-full text-left px-3 py-1.5 flex items-center gap-2 text-sm transition-colors ${i === activeIndex ? "bg-[var(--accent)]/15 text-[var(--text-primary)]" : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"}`}
+            className={`w-full text-left py-1.5 flex items-center gap-2 text-sm transition-colors ${i === activeIndex ? "bg-[var(--accent)]/20 text-[var(--text-primary)] border-l-2 border-[var(--accent)] pl-[10px] pr-3" : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] border-l-2 border-transparent pl-[10px] pr-3"}`}
             onMouseEnter={() => onHover(i)}
             onMouseDown={(e) => { e.preventDefault(); onSelect(filePath); }}
           >

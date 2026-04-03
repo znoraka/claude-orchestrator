@@ -39,6 +39,42 @@ function useCachedBranch(dir: string | undefined): string {
   }, [dir]);
   return branch;
 }
+
+// ── Shared sync status cache ──
+interface SyncStatus { ahead: number; behind: number; hasRemote: boolean }
+const syncCache = new Map<string, SyncStatus>();
+const syncListeners = new Set<() => void>();
+let syncSnapshot = 0;
+
+function subscribeSync(cb: () => void) {
+  syncListeners.add(cb);
+  return () => syncListeners.delete(cb);
+}
+function setCachedSync(dir: string, s: SyncStatus) {
+  const prev = syncCache.get(dir);
+  if (prev && prev.ahead === s.ahead && prev.behind === s.behind && prev.hasRemote === s.hasRemote) return;
+  syncCache.set(dir, s);
+  syncSnapshot++;
+  syncListeners.forEach((cb) => cb());
+}
+function fetchSyncForDir(dir: string) {
+  invoke<SyncStatus>("git_sync_status", { directory: dir })
+    .then((s) => setCachedSync(dir, s))
+    .catch(() => {});
+}
+function useSyncStatus(dir: string | undefined): SyncStatus | null {
+  const status = useSyncExternalStore(
+    subscribeSync,
+    () => (dir ? syncCache.get(dir) ?? null : null),
+  );
+  useEffect(() => {
+    if (!dir) return;
+    fetchSyncForDir(dir);
+    const interval = setInterval(() => fetchSyncForDir(dir), 30_000);
+    return () => clearInterval(interval);
+  }, [dir]);
+  return status;
+}
 import { AttachmentStrip } from "./AttachmentStrip";
 import { SlashMenu } from "./SlashMenu";
 import { FileMenu } from "./FileMenu";
@@ -147,6 +183,36 @@ export function ChatInput({
   const isShellPrefix = inputText.startsWith(">");
 
   const activeBranch = useCachedBranch(sessionDir);
+  const syncStatus = useSyncStatus(sessionDir);
+  const [isPulling, setIsPulling] = useState(false);
+  const [isPushingSync, setIsPushingSync] = useState(false);
+
+  const handlePull = async () => {
+    if (!sessionDir || isPulling) return;
+    setIsPulling(true);
+    try {
+      await invoke("git_pull", { directory: sessionDir });
+      fetchBranchForDir(sessionDir);
+      fetchSyncForDir(sessionDir);
+    } catch (e) {
+      console.error("git pull failed:", e);
+    } finally {
+      setIsPulling(false);
+    }
+  };
+
+  const handlePush = async () => {
+    if (!sessionDir || isPushingSync) return;
+    setIsPushingSync(true);
+    try {
+      await invoke("git_push_only", { directory: sessionDir });
+      fetchSyncForDir(sessionDir);
+    } catch (e) {
+      console.error("git push failed:", e);
+    } finally {
+      setIsPushingSync(false);
+    }
+  };
 
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const [branches, setBranches] = useState<string[]>([]);
@@ -359,10 +425,11 @@ export function ChatInput({
               />
             </div>
 
-            {/* Footer row: branch selector + optional hint */}
+            {/* Footer row: branch selector + sync buttons + optional hint */}
             {(activeBranch || footerHint) && (
               <div className="flex items-center justify-between">
                 {activeBranch ? (
+                  <div className="flex items-center gap-1">
                   <div className="relative" ref={branchDropdownRef}>
                     <button
                       onClick={openBranchDropdown}
@@ -413,6 +480,45 @@ export function ChatInput({
                         </div>
                       </div>
                     )}
+                  </div>
+                  {/* Pull/push buttons with ahead/behind counts */}
+                  {syncStatus?.hasRemote && (
+                    <div className="flex items-center gap-0.5">
+                      {syncStatus.behind > 0 && (
+                        <button
+                          onClick={handlePull}
+                          disabled={isPulling}
+                          title={`Pull ${syncStatus.behind} incoming commit${syncStatus.behind !== 1 ? "s" : ""}`}
+                          className="flex items-center gap-0.5 px-1 py-0.5 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] disabled:opacity-50"
+                        >
+                          {isPulling ? (
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                          ) : (
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
+                          )}
+                          <span>{syncStatus.behind}</span>
+                        </button>
+                      )}
+                      {syncStatus.ahead > 0 && (
+                        <button
+                          onClick={handlePush}
+                          disabled={isPushingSync}
+                          title={`Push ${syncStatus.ahead} outgoing commit${syncStatus.ahead !== 1 ? "s" : ""}`}
+                          className="flex items-center gap-0.5 px-1 py-0.5 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] disabled:opacity-50"
+                        >
+                          {isPushingSync ? (
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                          ) : (
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+                          )}
+                          <span>{syncStatus.ahead}</span>
+                        </button>
+                      )}
+                      {syncStatus.behind === 0 && syncStatus.ahead === 0 && (
+                        <span className="px-1 text-[10px] text-[var(--text-tertiary)] opacity-40">synced</span>
+                      )}
+                    </div>
+                  )}
                   </div>
                 ) : <div />}
                 {footerHint}

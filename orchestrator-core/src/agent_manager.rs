@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -12,6 +12,23 @@ use crate::{EventSender, ServerEvent};
 
 /// Maximum stored messages per session for replay on component remount.
 const MAX_HISTORY_MESSAGES: usize = 10_000;
+
+/// Global reference to the active AgentManager for use in exit handlers.
+static GLOBAL_MANAGER: OnceLock<Arc<Mutex<AgentManager>>> = OnceLock::new();
+
+/// Register the global manager so it can be killed from an exit handler.
+pub fn register_global(manager: Arc<Mutex<AgentManager>>) {
+    let _ = GLOBAL_MANAGER.set(manager);
+}
+
+/// Kill all agent process groups registered globally. Safe to call from any thread.
+pub fn kill_all_agents() {
+    if let Some(mgr) = GLOBAL_MANAGER.get() {
+        if let Ok(m) = mgr.lock() {
+            m.kill_all();
+        }
+    }
+}
 
 /// Directory where bridge output is persisted for session restore.
 fn history_dir() -> PathBuf {
@@ -23,6 +40,50 @@ fn history_dir() -> PathBuf {
 
 fn history_file_for(session_id: &str) -> PathBuf {
     history_dir().join(format!("{}.jsonl", session_id))
+}
+
+/// Directory where per-session PID files are stored for cross-restart cleanup.
+fn pids_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home)
+        .join(".claude-orchestrator")
+        .join("agent-pids")
+}
+
+fn pid_file_for(session_id: &str) -> PathBuf {
+    pids_dir().join(format!("{}.pid", session_id))
+}
+
+fn write_pid_file(session_id: &str, pid: u32) {
+    let dir = pids_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(pid_file_for(session_id), pid.to_string());
+}
+
+fn remove_pid_file(session_id: &str) {
+    let _ = std::fs::remove_file(pid_file_for(session_id));
+}
+
+/// Kill any agent processes left over from a previous run, then clean up PID files.
+fn cleanup_stale_pids() {
+    let dir = pids_dir();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map_or(false, |e| e == "pid") {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(pid) = content.trim().parse::<u32>() {
+                    eprintln!("[agent_manager] Killing stale process group {} from previous run", pid);
+                    #[cfg(unix)]
+                    kill_process_group(pid);
+                }
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 pub struct AgentSession {
@@ -47,6 +108,7 @@ pub struct AgentManager {
 
 impl AgentManager {
     pub fn new() -> Self {
+        cleanup_stale_pids();
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             history: Arc::new(Mutex::new(HashMap::new())),
@@ -131,6 +193,7 @@ impl AgentManager {
             )
         })?;
         let pid = child.id();
+        write_pid_file(session_id, pid);
 
         let stdin = child
             .stdin
@@ -259,6 +322,8 @@ impl AgentManager {
                     exit_code = status.code();
                 }
             }
+            // Clean up PID file — process has exited, no longer a stale orphan risk.
+            remove_pid_file(&sid_clone);
             // None means the session was already removed (intentional destroy_session kill)
             // or the process was killed by a signal — treat both as clean exit (0).
             let code = exit_code.unwrap_or(0);
@@ -362,6 +427,7 @@ impl AgentManager {
             kill_process_group(session.pid);
             let _ = session.child.kill();
         }
+        remove_pid_file(session_id);
         Ok(())
     }
 

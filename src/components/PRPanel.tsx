@@ -8,9 +8,9 @@ import { Spinner } from "./ui/spinner";
 
 interface PRPanelProps {
   directory: string;
+  workspaces?: Array<{ id: string; directory: string }>;
   isActive?: boolean;
   onResetRef?: React.RefObject<(() => void) | null>;
-  onAskClaude?: (prompt: string) => void;
   onSwitchToClaude?: () => void;
   initialPrNumber?: number;
   initialPrKey?: number;
@@ -170,10 +170,10 @@ function PRCard({
       <div
         className={`group/card border-2 px-3 py-2.5 ${
           isCurrent
-            ? "border-[var(--accent)]/40 bg-[var(--accent)]/5"
+            ? "border-[var(--accent-color)]/40 bg-[var(--accent-color)]/5"
             : "border-[var(--card-border)] bg-[var(--card-bg)] hover:border-[var(--border-color)]"
         }`}
-        style={isCurrent ? { borderLeftWidth: 3, borderLeftColor: "var(--accent)" } : undefined}
+        style={isCurrent ? { borderLeftWidth: 3, borderLeftColor: "var(--accent-color)" } : undefined}
       >
         {/* Title */}
         <div
@@ -189,7 +189,7 @@ function PRCard({
             <StatusPill pr={pr} />
             <ChecksIndicator pr={pr} />
             {isCurrent && (
-              <span className="px-2 py-0.5 text-[10px] bg-[var(--accent)]/20 text-[var(--accent)] border-2 border-[var(--accent)]/30">
+              <span className="px-2 py-0.5 text-[10px] bg-[var(--accent-color)]/20 text-[var(--accent-color)] border-2 border-[var(--accent-color)]/30">
                 current
               </span>
             )}
@@ -212,7 +212,7 @@ function PRCard({
           <div className="flex items-center gap-0.5 opacity-0 group-hover/card:opacity-100 flex-shrink-0">
             <button
               onClick={(e) => { e.stopPropagation(); onReviewPR(pr); }}
-              className="p-1 hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--accent)]"
+              className="p-1 hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--accent-color)]"
               title="Review PR diff"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
@@ -222,7 +222,7 @@ function PRCard({
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); onClaudeReview(pr.number, pr.headRefName); }}
-              className="p-1 hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--accent)]"
+              className="p-1 hover:bg-white/5 text-[var(--text-tertiary)] hover:text-[var(--accent-color)]"
               title="Claude review in new session"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
@@ -272,28 +272,60 @@ function PRCard({
   );
 }
 
-export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, onSwitchToClaude: _onSwitchToClaude, initialPrNumber, initialPrKey }: PRPanelProps) {
+// Per-workspace data cache so tabs don't lose state on switch
+interface WorkspaceCache {
+  result: PullRequestsResult | null;
+  loading: boolean;
+  currentBranch: string;
+  hasFetched: boolean;
+  reviewingPr: PullRequest | null;
+  searchQuery: string;
+}
+
+function defaultCache(): WorkspaceCache {
+  return { result: null, loading: true, currentBranch: "", hasFetched: false, reviewingPr: null, searchQuery: "" };
+}
+
+export default function PRPanel({ directory, workspaces, isActive, onResetRef, onSwitchToClaude: _onSwitchToClaude, initialPrNumber, initialPrKey }: PRPanelProps) {
   const { createSession, sessions } = useSessionContext();
-  const [result, setResult] = useState<PullRequestsResult | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [currentBranch, setCurrentBranch] = useState("");
-  const [reviewingPr, setReviewingPr] = useState<PullRequest | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
+
+  // Selected directory is independent of the active workspace — users switch via tabs
+  const [selectedDirectory, setSelectedDirectory] = useState(directory);
+
+  // Cache per-workspace data so switching tabs is instant and state is preserved
+  const cacheRef = useRef<Map<string, WorkspaceCache>>(new Map());
+
+  const getCache = (dir: string): WorkspaceCache => {
+    if (!cacheRef.current.has(dir)) {
+      cacheRef.current.set(dir, defaultCache());
+    }
+    return cacheRef.current.get(dir)!;
+  };
+
+  // Force re-render when cache changes
+  const [, forceUpdate] = useState(0);
+  const rerender = () => forceUpdate(n => n + 1);
+
+  const cache = getCache(selectedDirectory);
 
   // Expose reset function to parent via ref
   useEffect(() => {
     if (onResetRef) {
-      onResetRef.current = () => setReviewingPr(null);
+      onResetRef.current = () => {
+        getCache(selectedDirectory).reviewingPr = null;
+        rerender();
+      };
       return () => { onResetRef.current = null; };
     }
-  }, [onResetRef]);
+  }, [onResetRef, selectedDirectory]);
 
   const handleClaudeReview = useCallback(async (prNumber: number, headRefName: string) => {
-    let sessionDir = directory;
+    const dir = selectedDirectory;
+    let sessionDir = dir;
     try {
       const worktrees = await invoke<Array<{ path: string; branch: string; isMain: boolean }>>(
         "list_worktrees",
-        { directory }
+        { directory: dir }
       );
       const match = worktrees.find((wt) => wt.branch === headRefName);
       if (match) {
@@ -307,7 +339,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
     }
 
     const skipPerms = sessions.some(
-      (s) => s.directory === directory && s.dangerouslySkipPermissions
+      (s) => s.directory === dir && s.dangerouslySkipPermissions
     );
     const prSystemPrompt =
       `You are reviewing PR #${prNumber} (branch: ${headRefName}). ` +
@@ -316,122 +348,166 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
       `Do NOT skip this question even if you have dangerous permissions. ` +
       `If they say yes, use the checkout_pr_worktree MCP tool with directory="${sessionDir}", pr_number=${prNumber}, branch="${headRefName}", then cd into the resulting path.`;
     await createSession(`Review PR #${prNumber}`, sessionDir, skipPerms, prSystemPrompt, `/review ${prNumber}`);
-  }, [createSession, directory, sessions]);
+  }, [createSession, selectedDirectory, sessions]);
 
   const handleReviewPR = useCallback((pr: PullRequest) => {
-    setReviewingPr(pr);
+    getCache(selectedDirectory).reviewingPr = pr;
+    rerender();
+  }, [selectedDirectory]);
+
+  const fetchBranch = useCallback(async (dir: string) => {
+    try {
+      const status = await invoke<GitStatusResult>("get_git_status", { directory: dir });
+      getCache(dir).currentBranch = status.branch;
+      rerender();
+    } catch {
+      getCache(dir).currentBranch = "";
+      rerender();
+    }
   }, []);
 
-  const fetchBranch = useCallback(async () => {
+  const refresh = useCallback(async (dir: string) => {
+    getCache(dir).loading = true;
+    rerender();
     try {
-      const status = await invoke<GitStatusResult>("get_git_status", { directory });
-      setCurrentBranch(status.branch);
-    } catch {
-      setCurrentBranch("");
-    }
-  }, [directory]);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await invoke<PullRequestsResult>("get_pull_requests", { directory });
-      setResult(data);
+      const data = await invoke<PullRequestsResult>("get_pull_requests", { directory: dir });
+      getCache(dir).result = data;
     } catch (e) {
-      setResult({
+      getCache(dir).result = {
         reviewRequested: [],
         myPrs: [],
         ghAvailable: false,
         error: String(e),
-      });
+      };
     } finally {
-      setLoading(false);
+      getCache(dir).loading = false;
+      rerender();
     }
-  }, [directory]);
+  }, []);
 
-  const hasFetched = useRef(false);
-
-  const prevDirectoryRef = useRef(directory);
+  // Fetch on activation or when selected directory changes (if not yet fetched)
   useEffect(() => {
-    if (prevDirectoryRef.current === directory) return;
-    prevDirectoryRef.current = directory;
-    hasFetched.current = false;
-    setResult(null);
-    setReviewingPr(null);
-    setCurrentBranch("");
-  }, [directory]);
-
-  useEffect(() => {
-    if (isActive && !hasFetched.current) {
-      hasFetched.current = true;
-      refresh();
-      fetchBranch();
+    if (isActive && !getCache(selectedDirectory).hasFetched) {
+      getCache(selectedDirectory).hasFetched = true;
+      refresh(selectedDirectory);
+      fetchBranch(selectedDirectory);
     }
-  }, [isActive, refresh, fetchBranch]);
+  }, [isActive, selectedDirectory]);
 
+  // Periodic refresh
   useEffect(() => {
     if (!isActive) return;
     const interval = setInterval(() => {
-      refresh();
-      fetchBranch();
+      refresh(selectedDirectory);
+      fetchBranch(selectedDirectory);
     }, 5 * 60 * 1000);
     return () => clearInterval(interval);
-  }, [isActive, refresh, fetchBranch]);
+  }, [isActive, selectedDirectory]);
 
-  // Auto-open a specific PR when initialPrNumber is provided and PRs have loaded
+  // When a PR open is requested from outside, switch to the correct workspace tab
   const lastOpenedPrKeyRef = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (!initialPrNumber || !initialPrKey || !result) return;
+    if (!initialPrNumber || !initialPrKey) return;
     if (lastOpenedPrKeyRef.current === initialPrKey) return;
-    const allPrs = [...(result.myPrs ?? []), ...(result.reviewRequested ?? [])];
+    // Switch to the workspace that requested the PR
+    if (selectedDirectory !== directory) {
+      setSelectedDirectory(directory);
+    }
+  }, [initialPrNumber, initialPrKey, directory]);
+
+  // Auto-open the specific PR once that workspace's data is loaded
+  useEffect(() => {
+    if (!initialPrNumber || !initialPrKey || !cache.result) return;
+    if (lastOpenedPrKeyRef.current === initialPrKey) return;
+    const allPrs = [...(cache.result.myPrs ?? []), ...(cache.result.reviewRequested ?? [])];
     const pr = allPrs.find((p) => p.number === initialPrNumber);
     if (pr) {
       lastOpenedPrKeyRef.current = initialPrKey;
-      setReviewingPr(pr);
+      getCache(selectedDirectory).reviewingPr = pr;
+      rerender();
     }
-  }, [initialPrNumber, initialPrKey, result]);
+  }, [initialPrNumber, initialPrKey, cache.result]);
+
+  // Workspace tabs (only show when there are multiple workspaces)
+  const tabWorkspaces = workspaces && workspaces.length > 1 ? workspaces : null;
+
+  const setSearchQuery = (q: string) => {
+    getCache(selectedDirectory).searchQuery = q;
+    rerender();
+  };
+
+  const { result, loading, currentBranch, reviewingPr, searchQuery } = cache;
 
   if (reviewingPr) {
     return (
-      <PRReviewView
-        directory={directory}
-        prNumber={reviewingPr.number}
-        prTitle={reviewingPr.title}
-        prUrl={reviewingPr.url}
-        headRefName={reviewingPr.headRefName}
-        currentBranch={currentBranch}
-        onBack={() => setReviewingPr(null)}
-        onBranchChanged={fetchBranch}
-        onAskClaude={onAskClaude}
-        onClaudeReview={handleClaudeReview}
-      />
+      <div className="flex flex-col h-full">
+        {tabWorkspaces && (
+          <WorkspaceTabs
+            workspaces={tabWorkspaces}
+            selectedDirectory={selectedDirectory}
+            onSelect={setSelectedDirectory}
+          />
+        )}
+        <div className="flex-1 min-h-0">
+          <PRReviewView
+            directory={selectedDirectory}
+            prNumber={reviewingPr.number}
+            prTitle={reviewingPr.title}
+            prUrl={reviewingPr.url}
+            headRefName={reviewingPr.headRefName}
+            currentBranch={currentBranch}
+            onBack={() => { getCache(selectedDirectory).reviewingPr = null; rerender(); }}
+            onBranchChanged={() => fetchBranch(selectedDirectory)}
+            onClaudeReview={handleClaudeReview}
+          />
+        </div>
+      </div>
     );
   }
 
   if (loading && !result) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-[var(--text-tertiary)]">
-        <Spinner className="w-5 h-5" />
-        <span className="text-xs text-[var(--text-tertiary)]">Loading pull requests…</span>
+      <div className="flex flex-col h-full">
+        {tabWorkspaces && (
+          <WorkspaceTabs
+            workspaces={tabWorkspaces}
+            selectedDirectory={selectedDirectory}
+            onSelect={setSelectedDirectory}
+          />
+        )}
+        <div className="flex flex-col items-center justify-center flex-1 gap-3 text-[var(--text-tertiary)]">
+          <Spinner className="w-5 h-5" />
+          <span className="text-xs text-[var(--text-tertiary)]">Loading pull requests…</span>
+        </div>
       </div>
     );
   }
 
   if (result && !result.ghAvailable) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 text-[var(--text-tertiary)] px-6">
-        <svg width="28" height="28" viewBox="0 0 16 16" fill="currentColor" className="opacity-25">
-          <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
-        </svg>
-        <div className="text-center">
-          <div className="text-xs text-[var(--text-secondary)] mb-2 font-medium">
-            {result.error || "GitHub CLI not available"}
+      <div className="flex flex-col h-full">
+        {tabWorkspaces && (
+          <WorkspaceTabs
+            workspaces={tabWorkspaces}
+            selectedDirectory={selectedDirectory}
+            onSelect={setSelectedDirectory}
+          />
+        )}
+        <div className="flex flex-col items-center justify-center flex-1 gap-4 text-[var(--text-tertiary)] px-6">
+          <svg width="28" height="28" viewBox="0 0 16 16" fill="currentColor" className="opacity-25">
+            <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+          </svg>
+          <div className="text-center">
+            <div className="text-xs text-[var(--text-secondary)] mb-2 font-medium">
+              {result.error || "GitHub CLI not available"}
+            </div>
+            <button
+              onClick={() => openUrl("https://cli.github.com")}
+              className="text-[11px] text-[var(--accent-color)] hover:text-[var(--accent-hover)] hover:underline"
+            >
+              Install GitHub CLI
+            </button>
           </div>
-          <button
-            onClick={() => openUrl("https://cli.github.com")}
-            className="text-[11px] text-[var(--accent)] hover:text-[var(--accent-hover)] hover:underline"
-          >
-            Install GitHub CLI
-          </button>
         </div>
       </div>
     );
@@ -457,17 +533,25 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
 
   return (
     <div className="flex flex-col h-full">
+      {tabWorkspaces && (
+        <WorkspaceTabs
+          workspaces={tabWorkspaces}
+          selectedDirectory={selectedDirectory}
+          onSelect={setSelectedDirectory}
+        />
+      )}
+
       {/* Header */}
       <div className="flex items-center gap-2.5 pl-4 pr-10 py-3 border-b border-[var(--border-color)] flex-shrink-0">
         <span className="text-xs font-bold uppercase tracking-wider text-[var(--text-primary)]">Pull Requests</span>
         {totalCount > 0 && (
-          <span className="px-2 py-0.5 text-[10px] font-semibold bg-[var(--accent)]/15 text-[var(--accent)] border-2 border-[var(--accent)]/25 tabular-nums">
+          <span className="px-2 py-0.5 text-[10px] font-semibold bg-[var(--accent-color)]/15 text-[var(--accent-color)] border-2 border-[var(--accent-color)]/25 tabular-nums">
             {searchQuery.trim() ? `${filteredCount}/${totalCount}` : totalCount}
           </span>
         )}
         <div className="ml-auto">
           <button
-            onClick={() => { refresh(); fetchBranch(); }}
+            onClick={() => { refresh(selectedDirectory); fetchBranch(selectedDirectory); }}
             className="p-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
             title="Refresh"
           >
@@ -506,7 +590,7 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search pull requests…"
-              className="w-full bg-[var(--bg-secondary)] border-2 border-[var(--border-color)] pl-8 pr-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-tertiary)] outline-none focus:border-[var(--accent)]/50"
+              className="w-full bg-[var(--bg-secondary)] border-2 border-[var(--border-color)] pl-8 pr-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-tertiary)] outline-none focus:border-[var(--accent-color)]/50"
             />
           </div>
         </div>
@@ -539,8 +623,8 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
                     key={`my-${pr.url}`}
                     pr={pr}
                     currentBranch={currentBranch}
-                    directory={directory}
-                    onBranchChanged={fetchBranch}
+                    directory={selectedDirectory}
+                    onBranchChanged={() => fetchBranch(selectedDirectory)}
                     onReviewPR={handleReviewPR}
                     onClaudeReview={handleClaudeReview}
                   />
@@ -562,8 +646,8 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
                     key={`review-${pr.url}`}
                     pr={pr}
                     currentBranch={currentBranch}
-                    directory={directory}
-                    onBranchChanged={fetchBranch}
+                    directory={selectedDirectory}
+                    onBranchChanged={() => fetchBranch(selectedDirectory)}
                     onReviewPR={handleReviewPR}
                     onClaudeReview={handleClaudeReview}
                   />
@@ -574,6 +658,39 @@ export default function PRPanel({ directory, isActive, onAskClaude, onResetRef, 
           <div className="h-3" />
         </div>
       )}
+    </div>
+  );
+}
+
+function WorkspaceTabs({
+  workspaces,
+  selectedDirectory,
+  onSelect,
+}: {
+  workspaces: Array<{ id: string; directory: string }>;
+  selectedDirectory: string;
+  onSelect: (dir: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-0 border-b border-[var(--border-color)] flex-shrink-0 overflow-x-auto scrollbar-none">
+      {workspaces.map((ws) => {
+        const name = ws.directory.split("/").filter(Boolean).pop() ?? ws.directory;
+        const isActive = ws.directory === selectedDirectory;
+        return (
+          <button
+            key={ws.id}
+            onClick={() => onSelect(ws.directory)}
+            title={ws.directory}
+            className={`px-3 py-2 text-[11px] font-medium whitespace-nowrap border-b-2 transition-colors flex-shrink-0 ${
+              isActive
+                ? "border-[var(--accent-color)] text-[var(--accent-color)]"
+                : "border-transparent text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:border-[var(--border-color)]"
+            }`}
+          >
+            {name}
+          </button>
+        );
+      })}
     </div>
   );
 }

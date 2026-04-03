@@ -174,6 +174,14 @@ export interface PrComment {
   createdAt: string;
 }
 
+export interface PrIssueComment {
+  id: number;
+  body: string;
+  bodyHtml: string;
+  user: string;
+  createdAt: string;
+}
+
 export interface BlameLine {
   line: number;
   sha: string;

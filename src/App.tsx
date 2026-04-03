@@ -1176,6 +1176,7 @@ export default function App() {
         directory={panelDirectory}
         onClose={() => setShowCommitModal(false)}
         visible={showCommitModal}
+        onReviewPR={(prNumber) => { setOpenPrRequest({ number: prNumber, key: Date.now() }); navigateToPanel("prs"); setShowCommitModal(false); }}
       />
       {fileDiffModal && (
         <FileDiffModal
@@ -1441,20 +1442,12 @@ export default function App() {
               >
                 <PRPanel
                   directory={panelDirectory}
+                  workspaces={workspaces}
                   isActive={activePanel === "prs"}
                   onResetRef={prPanelResetRef}
                   onSwitchToClaude={() => navigateToPanel(null)}
                   initialPrNumber={openPrRequest?.number}
                   initialPrKey={openPrRequest?.key}
-                  onAskClaude={(prompt) => {
-                    if (!activeSessionId) return;
-                    const jsonLine = JSON.stringify({
-                      type: "user",
-                      message: { role: "user", content: prompt },
-                    });
-                    invoke("send_agent_message", { sessionId: activeSessionId, message: jsonLine }).catch(() => {});
-                    navigateToPanel(null);
-                  }}
                 />
               </div>
 
@@ -1747,7 +1740,7 @@ export default function App() {
                             onClick={() => quickCreate(wt.path)}
                             className={`w-full flex items-center gap-3 pl-8 pr-4 py-1.5 text-left transition-colors group ${
                               preselectedDir === wt.path
-                                ? "bg-[var(--accent)]/10 ring-1 ring-inset ring-[var(--accent)]/30"
+                                ? "bg-[var(--accent)]/20 ring-1 ring-inset ring-[var(--accent)]/60"
                                 : "hover:bg-[var(--bg-hover)]"
                             }`}
                           >
@@ -1765,7 +1758,7 @@ export default function App() {
                               </div>
                             </div>
                             {preselectedDir === wt.path && (
-                              <span className="text-[9px] text-[var(--accent)] font-medium shrink-0 opacity-70">
+                              <span className="text-[9px] text-[var(--accent)] font-medium shrink-0">
                                 Enter
                               </span>
                             )}
@@ -1807,7 +1800,7 @@ export default function App() {
                         onClick={() => quickCreate(d)}
                         className={`w-full flex items-center gap-3 px-4 py-2 text-left transition-colors group ${
                           preselectedDir === d
-                            ? "bg-[var(--accent)]/10 ring-1 ring-inset ring-[var(--accent)]/30"
+                            ? "bg-[var(--accent)]/20 ring-1 ring-inset ring-[var(--accent)]/60"
                             : "hover:bg-[var(--bg-hover)]"
                         }`}
                       >

@@ -1,11 +1,24 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "../lib/bridge";
 import { openUrl } from "../lib/bridge";
-import DiffViewer from "./DiffViewer";
+import FileDiffModal from "./FileDiffModal";
 import { Spinner } from "./ui/spinner";
-import type { DiffMode } from "./DiffViewer";
 import FileIcon from "./FileIcon";
-import type { BlameLine, PrComment, PrFileEntry } from "../types";
+import type { BlameLine, PrComment, PrFileEntry, PrIssueComment } from "../types";
+
+function relativeTime(dateStr: string): string {
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diffMs = now - then;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return `${Math.floor(days / 30)}mo ago`;
+}
 
 // Tree node for the file tree
 interface FileTreeNode {
@@ -74,20 +87,17 @@ interface PRReviewViewProps {
   currentBranch?: string;
   onBack: () => void;
   onBranchChanged?: () => void;
-  onAskClaude?: (prompt: string) => void;
   onClaudeReview?: (prNumber: number, headRefName: string) => void;
 }
 
-export default function PRReviewView({ directory, prNumber, prTitle, prUrl, headRefName, currentBranch, onBack, onBranchChanged, onAskClaude, onClaudeReview }: PRReviewViewProps) {
+export default function PRReviewView({ directory, prNumber, prTitle, prUrl, headRefName, currentBranch, onBack, onBranchChanged, onClaudeReview }: PRReviewViewProps) {
   const [files, setFiles] = useState<PrFileEntry[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
   const [fileDiff, setFileDiff] = useState("");
   const [loading, setLoading] = useState(true);
   const [comments, setComments] = useState<PrComment[]>([]);
-  const [diffMode, setDiffMode] = useState<DiffMode>(
-    () => (localStorage.getItem("git-diff-mode") as DiffMode) || "unified"
-  );
+  const [diffModalFile, setDiffModalFile] = useState<string | null>(null);
 
   const [commentLine, setCommentLine] = useState<number | null>(null);
   const [commentText, setCommentText] = useState("");
@@ -98,6 +108,10 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [worktreeLoading, setWorktreeLoading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [issueComments, setIssueComments] = useState<PrIssueComment[]>([]);
+  const [newComment, setNewComment] = useState("");
+  const [postingGeneral, setPostingGeneral] = useState(false);
+  const [prBodyHtml, setPrBodyHtml] = useState<string>("");
 
   const isCurrent = currentBranch === headRefName;
 
@@ -172,9 +186,22 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
     }
   }, [directory, prNumber]);
 
+  const loadIssueComments = useCallback(async () => {
+    try {
+      const result = await invoke<PrIssueComment[]>("get_pr_issue_comments", { directory, prNumber });
+      setIssueComments(result);
+    } catch (e) {
+      console.error("Failed to load issue comments:", e);
+    }
+  }, [directory, prNumber]);
+
   useEffect(() => {
     loadComments();
-  }, [loadComments]);
+    loadIssueComments();
+    invoke<string>("get_pr_body", { directory, prNumber })
+      .then(setPrBodyHtml)
+      .catch(() => {});
+  }, [loadComments, loadIssueComments, directory, prNumber]);
 
   useEffect(() => {
     if (!selectedFile) {
@@ -234,13 +261,38 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
     }
   }, [directory, prNumber, selectedFile, commentLine, commentText, posting, loadComments]);
 
-  const handleAskClaude = useCallback(() => {
-    if (!onAskClaude || !selectedFile) return;
-    const context = fileDiff
-      ? `Please review this diff for ${selectedFile} in PR #${prNumber}:\n\n\`\`\`diff\n${fileDiff.slice(0, 4000)}\n\`\`\``
-      : `Please review the changes in ${selectedFile} for PR #${prNumber}`;
-    onAskClaude(context);
-  }, [onAskClaude, selectedFile, fileDiff, prNumber]);
+  const handlePostGeneralComment = useCallback(async () => {
+    if (!newComment.trim() || postingGeneral) return;
+    setPostingGeneral(true);
+    try {
+      await invoke("post_pr_issue_comment", {
+        directory,
+        prNumber,
+        body: newComment.trim(),
+      });
+      setNewComment("");
+      loadIssueComments();
+      loadComments();
+    } catch (e) {
+      console.error("Failed to post comment:", e);
+      showToast(`Error posting comment: ${e}`);
+    } finally {
+      setPostingGeneral(false);
+    }
+  }, [directory, prNumber, newComment, postingGeneral, loadIssueComments, loadComments, showToast]);
+
+
+  const selectedIndex = useMemo(() => files.findIndex((f) => f.path === selectedFile), [files, selectedFile]);
+
+  const navigateFile = useCallback((delta: number) => {
+    const next = files[selectedIndex + delta];
+    if (next) {
+      setSelectedFile(next.path);
+      setDiffModalFile(next.path);
+      setCommentLine(null);
+      setBlameLines([]);
+    }
+  }, [files, selectedIndex]);
 
   const fileTree = useMemo(() => buildFileTree(files), [files]);
 
@@ -264,7 +316,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       return (
         <div
           key={file.path}
-          onClick={() => { setSelectedFile(file.path); setCommentLine(null); setBlameLines([]); }}
+          onClick={() => { setSelectedFile(file.path); setDiffModalFile(file.path); setCommentLine(null); setBlameLines([]); }}
           className={`w-full text-left py-1 pr-2 text-xs font-mono flex items-center gap-1.5 cursor-pointer ${
             isSelected
               ? "bg-[var(--accent)] text-white"
@@ -344,7 +396,7 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
         {!isCollapsed && node.children.map((child) => renderTreeNode(child, depth + 1))}
       </div>
     );
-  }, [collapsedDirs, comments, selectedFile, viewedFiles, toggleDir, toggleViewed, setSelectedFile, setCommentLine]);
+  }, [collapsedDirs, comments, selectedFile, viewedFiles, toggleDir, toggleViewed, setSelectedFile, setDiffModalFile, setCommentLine]);
 
   if (loading) {
     return (
@@ -445,14 +497,6 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
             )}
           </button>
 
-          {onAskClaude && selectedFile && (
-            <button
-              onClick={handleAskClaude}
-              className="text-[11px] font-medium text-[var(--accent)] hover:text-[var(--accent-hover)] px-2 py-1 hover:bg-[var(--accent)]/10"
-            >
-              Ask Claude
-            </button>
-          )}
 
           {onClaudeReview && (
             <button
@@ -466,16 +510,6 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
             </button>
           )}
 
-          <button
-            onClick={() => {
-              const next = diffMode === "unified" ? "split" : "unified";
-              setDiffMode(next);
-              localStorage.setItem("git-diff-mode", next);
-            }}
-            className="text-[11px] font-medium text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-2 py-1 hover:bg-[var(--bg-tertiary)]"
-          >
-            {diffMode === "unified" ? "Split" : "Unified"}
-          </button>
         </div>
       </div>
 
@@ -493,45 +527,154 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
             {fileTree.map((node) => renderTreeNode(node, 0))}
           </div>
 
-          {/* Diff viewer (with optional blame overlay) */}
-          <div className="flex-1 w-0 flex flex-col bg-[var(--bg-primary)]">
-            <div className="flex-1 overflow-auto">
-              {diffLoading ? (
-                <div className="flex items-center justify-center h-full text-[var(--text-tertiary)] gap-2">
-                  <Spinner className="w-4 h-4" />
-                  <span className="text-sm">Loading diff…</span>
-                </div>
-              ) : selectedFile ? (
-                <DiffViewer
-                  diff={fileDiff}
-                  mode={diffMode}
-                  filePath={selectedFile}
-                  searchQuery=""
-                  currentMatch={0}
-                  blameMap={blameMap}
-                  onLineClick={handleLineClick}
-                  inlineComments={{
-                    comments: fileComments,
-                    commentLine,
-                    commentText,
-                    onCommentTextChange: setCommentText,
-                    onPostComment: handlePostComment,
-                    onCancelComment: () => { setCommentLine(null); setCommentText(""); },
-                    posting,
-                  }}
-                />
-              ) : (
-                <div className="flex flex-col items-center justify-center h-full gap-2 text-[var(--text-tertiary)]">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-25">
-                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
-                    <polyline points="14 2 14 8 20 8" />
+          {/* Discussion panel — always visible */}
+          <div className="flex-1 min-w-0 flex flex-col" style={{ background: "var(--drawer-bg)" }}>
+            <div className="px-3 py-2 border-b border-[var(--border-color)] flex items-center justify-between flex-shrink-0">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--text-secondary)]">
+                Discussion
+              </span>
+              <div className="flex items-center gap-2">
+                {(issueComments.length + comments.length) > 0 && (
+                  <span className="text-[10px] text-[var(--text-tertiary)] tabular-nums">
+                    {issueComments.length + comments.length} comments
+                  </span>
+                )}
+                <button
+                  onClick={() => { loadComments(); loadIssueComments(); }}
+                  className="p-1 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                  title="Refresh comments"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="23 4 23 10 17 10" />
+                    <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" />
                   </svg>
-                  <span className="text-sm">Select a file to review</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto">
+              {/* PR description */}
+              {prBodyHtml && (
+                <div className="px-4 py-3 border-b border-[var(--border-color)]">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)] mb-2">Description</div>
+                  <div
+                    className="text-[12px] text-[var(--text-secondary)] leading-relaxed prose-comment"
+                    dangerouslySetInnerHTML={{ __html: prBodyHtml }}
+                  />
+                </div>
+              )}
+
+              {issueComments.length === 0 && comments.length === 0 && !prBodyHtml ? (
+                <div className="flex flex-col items-center justify-center h-32 gap-2 text-[var(--text-tertiary)]">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-25">
+                    <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" />
+                  </svg>
+                  <span className="text-[11px]">No comments yet</span>
+                </div>
+              ) : (
+                <div className="flex flex-col">
+                  {issueComments.map((c) => (
+                    <div key={`issue-${c.id}`} className="px-4 py-3 border-b border-[var(--border-subtle)]">
+                      <div className="flex items-center gap-1.5 mb-1.5">
+                        <span className="text-[11px] font-semibold text-[var(--text-primary)]">{c.user}</span>
+                        <span className="text-[10px] text-[var(--text-tertiary)]">{relativeTime(c.createdAt)}</span>
+                      </div>
+                      <div
+                        className="text-[12px] text-[var(--text-secondary)] leading-relaxed prose-comment"
+                        dangerouslySetInnerHTML={{ __html: c.bodyHtml }}
+                      />
+                    </div>
+                  ))}
+
+                  {comments.length > 0 && (
+                    <>
+                      {issueComments.length > 0 && (
+                        <div className="px-4 py-1.5 bg-[var(--bg-tertiary)]">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)]">Review Comments</span>
+                        </div>
+                      )}
+                      {comments.map((c) => (
+                        <div
+                          key={`review-${c.id}`}
+                          className="px-4 py-3 border-b border-[var(--border-subtle)] cursor-pointer hover:bg-[var(--bg-tertiary)]"
+                          onClick={() => { setSelectedFile(c.path); setDiffModalFile(c.path); setCommentLine(null); setBlameLines([]); }}
+                        >
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <span className="text-[11px] font-semibold text-[var(--text-primary)]">{c.user}</span>
+                            <span className="text-[10px] text-[var(--text-tertiary)]">{relativeTime(c.createdAt)}</span>
+                          </div>
+                          <div className="text-[10px] text-[var(--accent)] font-mono mb-1 truncate">
+                            {c.path}{c.line > 0 ? `:${c.line}` : ""}
+                          </div>
+                          <div
+                            className="text-[12px] text-[var(--text-secondary)] leading-relaxed prose-comment"
+                            dangerouslySetInnerHTML={{ __html: c.bodyHtml }}
+                          />
+                        </div>
+                      ))}
+                    </>
+                  )}
                 </div>
               )}
             </div>
+
+            {/* New general comment input */}
+            <div className="border-t border-[var(--border-color)] p-3 flex-shrink-0">
+              <textarea
+                value={newComment}
+                onChange={(e) => setNewComment(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    handlePostGeneralComment();
+                  }
+                }}
+                placeholder="Add a comment…"
+                rows={3}
+                className="w-full bg-[var(--bg-secondary)] border-2 border-[var(--border-color)] px-2.5 py-2 text-[12px] text-[var(--text-primary)] placeholder-[var(--text-tertiary)] outline-none focus:border-[var(--accent)]/50 resize-none font-mono"
+              />
+              <div className="flex items-center justify-between mt-1.5">
+                <span className="text-[10px] text-[var(--text-tertiary)]">
+                  {/Mac|iPhone|iPad/.test(navigator.userAgent) ? "Cmd" : "Ctrl"}+Enter to send
+                </span>
+                <button
+                  onClick={handlePostGeneralComment}
+                  disabled={!newComment.trim() || postingGeneral}
+                  className="px-3 py-1 text-[11px] font-medium bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-40 disabled:cursor-default"
+                >
+                  {postingGeneral ? "Posting…" : "Comment"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
+      )}
+
+      {/* Diff modal */}
+      {diffModalFile && (
+        <FileDiffModal
+          path={diffModalFile}
+          diff={fileDiff}
+          diffLoading={diffLoading}
+          onClose={() => { setDiffModalFile(null); setCommentLine(null); setCommentText(""); }}
+          blameMap={blameMap}
+          onLineClick={handleLineClick}
+          inlineComments={{
+            comments: fileComments,
+            commentLine,
+            commentText,
+            onCommentTextChange: setCommentText,
+            onPostComment: handlePostComment,
+            onCancelComment: () => { setCommentLine(null); setCommentText(""); },
+            posting,
+          }}
+          isViewed={viewedFiles.has(diffModalFile)}
+          onToggleViewed={() => toggleViewed(diffModalFile)}
+          hasPrev={selectedIndex > 0}
+          hasNext={selectedIndex < files.length - 1}
+          onPrevFile={() => navigateFile(-1)}
+          onNextFile={() => navigateFile(1)}
+        />
       )}
     </div>
   );

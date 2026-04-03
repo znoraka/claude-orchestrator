@@ -250,9 +250,12 @@ impl ServerState {
 
         let db = Arc::new(Mutex::new(db_conn));
 
+        let agent_manager = Arc::new(Mutex::new(AgentManager::new()));
+        agent_manager::register_global(agent_manager.clone());
+
         let state = Arc::new(Self {
             pty_manager: Mutex::new(PtyManager::new()),
-            agent_manager: Arc::new(Mutex::new(AgentManager::new())),
+            agent_manager,
             jsonl_cache: Mutex::new(JsonlCache::new()),
             pricing: PricingConfig::load(),
             file_watcher: Mutex::new(watcher),

@@ -16833,6 +16833,10 @@ async function runQuery(userMessage) {
         }
       }
     }
+    if (queryGeneration === myGeneration) {
+      abortController = null;
+      queryInProgress = false;
+    }
     emit({ type: "query_complete" });
   } catch (err) {
     log(`query() error: ${err.message}

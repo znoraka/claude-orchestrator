@@ -225,6 +225,26 @@ pub struct PrComment {
     pub created_at: String,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub(crate) struct GhIssueComment {
+    pub(crate) id: u64,
+    pub(crate) body: String,
+    pub(crate) body_html: Option<String>,
+    pub(crate) user: GhPrAuthor,
+    pub(crate) created_at: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct PrIssueComment {
+    pub id: u64,
+    pub body: String,
+    #[serde(rename = "bodyHtml")]
+    pub body_html: String,
+    pub user: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+}
+
 #[derive(Serialize, Clone)]
 pub struct PrDiffResult {
     pub files: Vec<PrFileEntry>,
@@ -3204,6 +3224,96 @@ pub async fn get_pr_comments(directory: String, pr_number: u32) -> Result<Vec<Pr
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
+pub async fn get_pr_body(directory: String, pr_number: u32) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let repo_output = gh_in_dir(&directory)
+            .args(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+            .output()
+            .map_err(|e| format!("Failed to get repo info: {}", e))?;
+        let repo = String::from_utf8_lossy(&repo_output.stdout).trim().to_string();
+        if repo.is_empty() {
+            return Err("Could not determine repository".to_string());
+        }
+
+        let output = gh_in_dir(&directory)
+            .args([
+                "api",
+                "-H", "Accept: application/vnd.github.full+json",
+                &format!("repos/{}/pulls/{}", repo, pr_number),
+                "-q", ".body_html // .body // \"\"",
+            ])
+            .output()
+            .map_err(|e| format!("Failed to get PR body: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+pub async fn get_pr_issue_comments(directory: String, pr_number: u32) -> Result<Vec<PrIssueComment>, String> {
+    tokio::task::spawn_blocking(move || {
+        let repo_output = gh_in_dir(&directory)
+            .args(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+            .output()
+            .map_err(|e| format!("Failed to get repo info: {}", e))?;
+        let repo = String::from_utf8_lossy(&repo_output.stdout).trim().to_string();
+        if repo.is_empty() {
+            return Err("Could not determine repository".to_string());
+        }
+
+        let output = gh_in_dir(&directory)
+            .args([
+                "api",
+                "-H", "Accept: application/vnd.github.full+json",
+                &format!("repos/{}/issues/{}/comments", repo, pr_number),
+            ])
+            .output()
+            .map_err(|e| format!("Failed to get issue comments: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+
+        let comments: Vec<GhIssueComment> = serde_json::from_slice(&output.stdout)
+            .map_err(|e| format!("Failed to parse issue comments: {}", e))?;
+
+        Ok(comments
+            .into_iter()
+            .map(|c| PrIssueComment {
+                id: c.id,
+                body_html: c.body_html.unwrap_or_else(|| c.body.clone()),
+                body: c.body,
+                user: c.user.login,
+                created_at: c.created_at,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+pub async fn post_pr_issue_comment(directory: String, pr_number: u32, body: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let output = gh_in_dir(&directory)
+            .args([
+                "pr", "comment",
+                &pr_number.to_string(),
+                "--body", &body,
+            ])
+            .output()
+            .map_err(|e| format!("Failed to post comment: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 pub async fn get_pr_viewed_files(directory: String, pr_number: u32) -> Result<Vec<String>, String> {
     tokio::task::spawn_blocking(move || {
         let repo_output = gh_in_dir(&directory)
@@ -3994,6 +4104,76 @@ pub async fn git_unstage_files(directory: String, files: Vec<String>) -> Result<
         if !output.status.success() {
             return Err(format!(
                 "git restore --staged failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+// ---------------------------------------------------------------------------
+// Git sync status (ahead/behind) and pull
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Clone)]
+pub struct GitSyncStatus {
+    pub ahead: u32,
+    pub behind: u32,
+    #[serde(rename = "hasRemote")]
+    pub has_remote: bool,
+}
+
+pub fn git_sync_status_sync(directory: &str) -> Result<GitSyncStatus, String> {
+    // Check if remote tracking branch exists
+    let tracking = git_command(directory)
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if !tracking.status.success() {
+        return Ok(GitSyncStatus { ahead: 0, behind: 0, has_remote: false });
+    }
+
+    let output = git_command(directory)
+        .args(["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+        .output()
+        .map_err(|e| format!("Failed to run git rev-list: {}", e))?;
+
+    if !output.status.success() {
+        return Ok(GitSyncStatus { ahead: 0, behind: 0, has_remote: true });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+    let ahead = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let behind = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+
+    Ok(GitSyncStatus { ahead, behind, has_remote: true })
+}
+
+pub async fn git_sync_status(directory: String) -> Result<GitSyncStatus, String> {
+    tokio::task::spawn_blocking(move || {
+        // Fetch quietly first to update remote refs
+        let _ = git_command(&directory)
+            .args(["fetch", "--quiet"])
+            .output();
+        git_sync_status_sync(&directory)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+pub async fn git_pull(directory: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let output = git_command(&directory)
+            .args(["pull"])
+            .output()
+            .map_err(|e| format!("Failed to run git pull: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git pull failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             ));
         }

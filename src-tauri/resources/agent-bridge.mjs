@@ -243,6 +243,14 @@ async function runQuery(userMessage) {
         }
       }
     }
+    // Reset queryInProgress BEFORE emitting query_complete so the bridge is ready
+    // for new messages by the time the frontend processes the event. Without this,
+    // a race condition occurs: the frontend's queued message arrives at stdin while
+    // the for-await loop is still awaiting its final iteration, before finally runs.
+    if (queryGeneration === myGeneration) {
+      abortController = null;
+      queryInProgress = false;
+    }
     emit({ type: "query_complete" });
   } catch (err) {
     log(`query() error: ${err.message}\n${err.stack}`);
@@ -255,7 +263,7 @@ async function runQuery(userMessage) {
     }
   } finally {
     pendingAbort = false;
-    // Only reset if this query is still the current one (not superseded by abort + new query)
+    // Ensure reset even on error paths (no-op if already done above)
     if (queryGeneration === myGeneration) {
       abortController = null;
       queryInProgress = false;

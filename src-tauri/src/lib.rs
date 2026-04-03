@@ -3483,6 +3483,26 @@ struct PrFileEntry {
     status: String, // "A" | "M" | "D" | "R"
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct GhIssueComment {
+    id: u64,
+    body: String,
+    body_html: Option<String>,
+    user: GhPrAuthor,
+    created_at: String,
+}
+
+#[derive(Serialize, Clone)]
+struct PrIssueComment {
+    id: u64,
+    body: String,
+    #[serde(rename = "bodyHtml")]
+    body_html: String,
+    user: String,
+    #[serde(rename = "createdAt")]
+    created_at: String,
+}
+
 #[derive(Serialize, Clone)]
 struct PrDiffResult {
     files: Vec<PrFileEntry>,
@@ -3682,6 +3702,99 @@ async fn get_pr_comments(directory: String, pr_number: u32) -> Result<Vec<PrComm
                 created_at: c.created_at,
             })
             .collect())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn get_pr_body(directory: String, pr_number: u32) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo_output = gh_in_dir(&directory)
+            .args(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+            .output()
+            .map_err(|e| format!("Failed to get repo info: {}", e))?;
+        let repo = String::from_utf8_lossy(&repo_output.stdout).trim().to_string();
+        if repo.is_empty() {
+            return Err("Could not determine repository".to_string());
+        }
+
+        let output = gh_in_dir(&directory)
+            .args([
+                "api",
+                "-H", "Accept: application/vnd.github.full+json",
+                &format!("repos/{}/pulls/{}", repo, pr_number),
+                "-q", ".body_html // .body // \"\"",
+            ])
+            .output()
+            .map_err(|e| format!("Failed to get PR body: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn get_pr_issue_comments(directory: String, pr_number: u32) -> Result<Vec<PrIssueComment>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo_output = gh_in_dir(&directory)
+            .args(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+            .output()
+            .map_err(|e| format!("Failed to get repo info: {}", e))?;
+        let repo = String::from_utf8_lossy(&repo_output.stdout).trim().to_string();
+        if repo.is_empty() {
+            return Err("Could not determine repository".to_string());
+        }
+
+        let output = gh_in_dir(&directory)
+            .args([
+                "api",
+                "-H", "Accept: application/vnd.github.full+json",
+                &format!("repos/{}/issues/{}/comments", repo, pr_number),
+            ])
+            .output()
+            .map_err(|e| format!("Failed to get issue comments: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+
+        let comments: Vec<GhIssueComment> = serde_json::from_slice(&output.stdout)
+            .map_err(|e| format!("Failed to parse issue comments: {}", e))?;
+
+        Ok(comments
+            .into_iter()
+            .map(|c| PrIssueComment {
+                id: c.id,
+                body_html: c.body_html.unwrap_or_else(|| c.body.clone()),
+                body: c.body,
+                user: c.user.login,
+                created_at: c.created_at,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+async fn post_pr_issue_comment(directory: String, pr_number: u32, body: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = gh_in_dir(&directory)
+            .args([
+                "pr", "comment",
+                &pr_number.to_string(),
+                "--body", &body,
+            ])
+            .output()
+            .map_err(|e| format!("Failed to post comment: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+        Ok(())
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -4396,8 +4509,9 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                // The orchestrator-server thread will be killed when the
-                // process exits. Just exit cleanly.
+                // Kill all agent bridge processes before the process exits so
+                // they don't become dangling orphans after app close or restart.
+                orchestrator_core::agent_manager::kill_all_agents();
                 window.app_handle().exit(0);
             }
         })

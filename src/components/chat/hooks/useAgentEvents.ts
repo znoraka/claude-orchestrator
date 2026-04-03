@@ -42,6 +42,7 @@ interface AgentEventsProps {
   onClearPendingPromptRef: React.MutableRefObject<(() => void) | undefined>;
   onRenameRef: React.MutableRefObject<((name: string) => void) | undefined>;
   onMarkTitleGeneratedRef: React.MutableRefObject<(() => void) | undefined>;
+  onPermissionModeChangeRef: React.MutableRefObject<((mode: "bypassPermissions" | "plan") => void) | undefined>;
   queuedQuestionAnswerRef: React.MutableRefObject<Record<string, string> | null>;
   sdkMessageToChatMessage: (msg: Record<string, unknown>, isHistoryReplay?: boolean) => ChatMessage | null;
   parseContentWithImages: (raw: string) => ContentBlock[];
@@ -60,7 +61,7 @@ export function useAgentEvents(props: AgentEventsProps) {
     pendingPromptConsumedRef, currentModelRef, titleGeneratedRef,
     streamAccumulator,
     onExitRef, onQuestionChangeRef, onClaudeSessionIdRef, onAvailableModelsRef,
-    onUsageUpdateRef, onClearPendingPromptRef, onRenameRef, onMarkTitleGeneratedRef,
+    onUsageUpdateRef, onClearPendingPromptRef, onRenameRef, onMarkTitleGeneratedRef, onPermissionModeChangeRef,
     queuedQuestionAnswerRef,
     sdkMessageToChatMessage,
   } = props;
@@ -219,6 +220,12 @@ export function useAgentEvents(props: AgentEventsProps) {
           }
         }
 
+        for (const block of content) {
+          if (block.type === "tool_use" && block.name === "EnterPlanMode") {
+            onPermissionModeChangeRef.current?.("plan");
+          }
+        }
+
         scheduleFlush();
       }
       return;
@@ -294,8 +301,13 @@ export function useAgentEvents(props: AgentEventsProps) {
         invoke("send_agent_message", { sessionId, message: restoreMsg }).catch(() => { });
       }
       if (!queuedMessageRef.current && !pendingPermissionRef.current) {
-        invoke("destroy_agent_session", { sessionId }).catch(() => {});
-        bridgeReadyRef.current = false;
+        // Only destroy the bridge for providers that exit after each query (claude-code).
+        // Codex/OpenCode bridges stay alive between turns, maintaining thread state in memory.
+        const provider = sessionRef.current?.provider;
+        if (provider === "claude-code") {
+          invoke("destroy_agent_session", { sessionId }).catch(() => {});
+          bridgeReadyRef.current = false;
+        }
       }
       return;
     }
@@ -325,6 +337,9 @@ export function useAgentEvents(props: AgentEventsProps) {
     if (msgType === "permission_request") {
       setPendingPermission({ toolName: msg.toolName as string, input: msg.input as Record<string, unknown> });
       onQuestionChangeRef.current?.(true);
+      if (msg.toolName === "EnterPlanMode") {
+        onPermissionModeChangeRef.current?.("plan");
+      }
       if (msg.toolName === "ExitPlanMode") {
         sendNotification({ title: "Plan ready", body: sessionRef.current?.name || "A session needs your approval" });
       }

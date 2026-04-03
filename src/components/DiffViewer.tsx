@@ -105,16 +105,26 @@ export const DIFF_UNSAFE_CSS = `
     --diffs-font-size: 12px;
     --diffs-line-height: 20px;
   }
+  [data-column-number] {
+    cursor: pointer;
+  }
+  [data-column-number]:hover {
+    background: rgba(255,255,255,0.08);
+  }
 `;
 
 // --- Relative time helper ---
 
 function relativeTime(dateStr: string): string {
-  const d = new Date(dateStr + "T00:00:00");
+  const d = new Date(dateStr.includes("T") ? dateStr : dateStr + "T00:00:00");
   const now = new Date();
-  const days = Math.floor((now.getTime() - d.getTime()) / 86400000);
-  if (days < 1) return "today";
-  if (days === 1) return "yesterday";
+  const diffMs = now.getTime() - d.getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
   if (days < 30) return `${days}d ago`;
   const months = Math.floor(days / 30);
   if (months < 12) return `${months}mo ago`;
@@ -122,39 +132,54 @@ function relativeTime(dateStr: string): string {
   return `${years}y ago`;
 }
 
-// --- Blame hover bridge ---
-// Polls Pierre's getHoveredLine and writes the blame to a ref so the parent can read it.
+// --- Hover bridge ---
+// Polls Pierre's getHoveredLine and reports blame + hovered line to parent.
 
-function BlameHoverBridge({ getHoveredLine, blameMap, onBlameChange }: {
+function HoverBridge({ getHoveredLine, blameMap, onBlameChange, onHoveredLineChange }: {
   getHoveredLine: () => { lineNumber: number; side: string } | undefined;
-  blameMap: Map<number, BlameLine>;
-  onBlameChange: (blame: BlameLine | null) => void;
+  blameMap?: Map<number, BlameLine>;
+  onBlameChange?: (blame: BlameLine | null) => void;
+  onHoveredLineChange?: (line: number | null) => void;
 }) {
   useEffect(() => {
-    let prev: string | null = null;
+    let prevBlame: string | null = null;
+    let prevLine: number | null = null;
     let raf: number;
     const poll = () => {
       const hovered = getHoveredLine();
-      const b = hovered ? (blameMap.get(hovered.lineNumber) ?? null) : null;
-      const key = b?.sha ?? null;
-      if (key !== prev) { prev = key; onBlameChange(b); }
+      const lineNum = hovered?.lineNumber ?? null;
+      if (lineNum !== prevLine) {
+        prevLine = lineNum;
+        onHoveredLineChange?.(lineNum);
+      }
+      if (blameMap && onBlameChange) {
+        const b = hovered ? (blameMap.get(hovered.lineNumber) ?? null) : null;
+        const key = b?.sha ?? null;
+        if (key !== prevBlame) { prevBlame = key; onBlameChange(b); }
+      }
       raf = requestAnimationFrame(poll);
     };
     raf = requestAnimationFrame(poll);
-    return () => { cancelAnimationFrame(raf); onBlameChange(null); };
-  }, [getHoveredLine, blameMap, onBlameChange]);
+    return () => {
+      cancelAnimationFrame(raf);
+      onBlameChange?.(null);
+      onHoveredLineChange?.(null);
+    };
+  }, [getHoveredLine, blameMap, onBlameChange, onHoveredLineChange]);
 
-  return null; // renders nothing inside the diff
+  return null;
 }
 
 // --- PatchDiff wrapper ---
 
-export function PierreDiff({ diff, mode, filePath, blameMap, onBlameHover }: {
+export function PierreDiff({ diff, mode, filePath, blameMap, onBlameHover, onHoveredLineChange, commentedLines }: {
   diff: string;
   mode: DiffMode;
   filePath: string;
   blameMap?: Map<number, BlameLine>;
   onBlameHover?: (blame: BlameLine | null) => void;
+  onHoveredLineChange?: (line: number | null) => void;
+  commentedLines?: Set<number>;
 }) {
   // Ensure the patch has proper git diff headers for @pierre/diffs to parse
   const patch = useMemo(() => {
@@ -164,13 +189,26 @@ export function PierreDiff({ diff, mode, filePath, blameMap, onBlameHover }: {
   }, [diff, filePath]);
 
   const hasBlame = !!blameMap && blameMap.size > 0 && !!onBlameHover;
+  const needsHover = hasBlame || !!onHoveredLineChange;
+
+  const unsafeCSS = useMemo(() => {
+    if (!commentedLines?.size) return DIFF_UNSAFE_CSS;
+    const lineCSS = Array.from(commentedLines)
+      .map(n => `[data-line="${n}"] [data-column-number] { background: rgba(59,130,246,0.15) !important; box-shadow: inset 2px 0 0 #3b82f6; }`)
+      .join("\n");
+    return DIFF_UNSAFE_CSS + "\n" + lineCSS;
+  }, [commentedLines]);
 
   const renderHoverUtility = useCallback(
     (getHoveredLine: () => { lineNumber: number; side: string } | undefined) => {
-      if (!blameMap || blameMap.size === 0 || !onBlameHover) return null;
-      return <BlameHoverBridge getHoveredLine={getHoveredLine} blameMap={blameMap} onBlameChange={onBlameHover} />;
+      return <HoverBridge
+        getHoveredLine={getHoveredLine}
+        blameMap={blameMap}
+        onBlameChange={onBlameHover}
+        onHoveredLineChange={onHoveredLineChange}
+      />;
     },
-    [blameMap, onBlameHover]
+    [blameMap, onBlameHover, onHoveredLineChange]
   );
 
   return (
@@ -183,10 +221,10 @@ export function PierreDiff({ diff, mode, filePath, blameMap, onBlameHover }: {
         overflow: "scroll",
         themeType: "dark",
         disableFileHeader: true,
-        unsafeCSS: DIFF_UNSAFE_CSS,
-        enableHoverUtility: hasBlame,
+        unsafeCSS,
+        enableHoverUtility: needsHover,
       }}
-      renderHoverUtility={hasBlame ? renderHoverUtility : undefined}
+      renderHoverUtility={needsHover ? renderHoverUtility : undefined}
     />
   );
 }
@@ -218,7 +256,7 @@ function splitIntoHunks(diffText: string): string[] {
   return chunks;
 }
 
-function LazyHunk({ hunk, mode, filePath, blameMap, onBlameHover }: { hunk: string; mode: DiffMode; filePath: string; blameMap?: Map<number, BlameLine>; onBlameHover?: (blame: BlameLine | null) => void }) {
+function LazyHunk({ hunk, mode, filePath, blameMap, onBlameHover, onHoveredLineChange, commentedLines }: { hunk: string; mode: DiffMode; filePath: string; blameMap?: Map<number, BlameLine>; onBlameHover?: (blame: BlameLine | null) => void; onHoveredLineChange?: (line: number | null) => void; commentedLines?: Set<number> }) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
 
@@ -234,21 +272,21 @@ function LazyHunk({ hunk, mode, filePath, blameMap, onBlameHover }: { hunk: stri
   const estimatedHeight = hunk.split("\n").length * 20;
   return (
     <div ref={ref} style={{ minHeight: visible ? undefined : estimatedHeight }}>
-      {visible && <PierreDiff diff={hunk} mode={mode} filePath={filePath} blameMap={blameMap} onBlameHover={onBlameHover} />}
+      {visible && <PierreDiff diff={hunk} mode={mode} filePath={filePath} blameMap={blameMap} onBlameHover={onBlameHover} onHoveredLineChange={onHoveredLineChange} commentedLines={commentedLines} />}
     </div>
   );
 }
 
-function LazyPatchDiff({ diff, mode, filePath, blameMap, onBlameHover }: { diff: string; mode: DiffMode; filePath: string; blameMap?: Map<number, BlameLine>; onBlameHover?: (blame: BlameLine | null) => void }) {
+function LazyPatchDiff({ diff, mode, filePath, blameMap, onBlameHover, onHoveredLineChange, commentedLines }: { diff: string; mode: DiffMode; filePath: string; blameMap?: Map<number, BlameLine>; onBlameHover?: (blame: BlameLine | null) => void; onHoveredLineChange?: (line: number | null) => void; commentedLines?: Set<number> }) {
   const lineCount = diff.split("\n").length;
   if (lineCount < LAZY_THRESHOLD) {
-    return <PierreDiff diff={diff} mode={mode} filePath={filePath} blameMap={blameMap} onBlameHover={onBlameHover} />;
+    return <PierreDiff diff={diff} mode={mode} filePath={filePath} blameMap={blameMap} onBlameHover={onBlameHover} onHoveredLineChange={onHoveredLineChange} commentedLines={commentedLines} />;
   }
   const hunks = splitIntoHunks(diff);
   return (
     <div>
       {hunks.map((hunk, i) => (
-        <LazyHunk key={i} hunk={hunk} mode={mode} filePath={filePath} blameMap={blameMap} onBlameHover={onBlameHover} />
+        <LazyHunk key={i} hunk={hunk} mode={mode} filePath={filePath} blameMap={blameMap} onBlameHover={onBlameHover} onHoveredLineChange={onHoveredLineChange} commentedLines={commentedLines} />
       ))}
     </div>
   );
@@ -281,14 +319,71 @@ function TruncatedUnifiedDiff({ diff, filePath }: { diff: string; filePath: stri
 
 // --- DiffViewer ---
 
-export default function DiffViewer({ diff, mode, filePath, blameMap, inlineComments: _inlineComments }: {
+export default function DiffViewer({ diff, mode, filePath, blameMap, onLineClick, inlineComments, onBlameChange }: {
   diff: string; mode: DiffMode; filePath: string; searchQuery: string; currentMatch: number;
   blameMap?: Map<number, BlameLine>;
   onLineClick?: (lineNumber: number) => void;
   inlineComments?: InlineCommentProps;
+  onBlameChange?: (blame: BlameLine | null) => void;
 }) {
   const [hoveredBlame, setHoveredBlame] = useState<BlameLine | null>(null);
-  const onBlameHover = useCallback((b: BlameLine | null) => setHoveredBlame(b), []);
+  const [hoveredLine, setHoveredLine] = useState<number | null>(null);
+  const onBlameHover = useCallback((b: BlameLine | null) => { setHoveredBlame(b); onBlameChange?.(b); }, [onBlameChange]);
+  const onHoveredLineChange = useCallback((line: number | null) => setHoveredLine(line), []);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Build a map of line -> comments for quick lookup
+  const commentsByLine = useMemo(() => {
+    if (!inlineComments?.comments.length) return null;
+    const m = new Map<number, PrComment[]>();
+    for (const c of inlineComments.comments) {
+      if (c.line > 0) {
+        const arr = m.get(c.line) || [];
+        arr.push(c);
+        m.set(c.line, arr);
+      }
+    }
+    return m.size > 0 ? m : null;
+  }, [inlineComments?.comments]);
+
+  const hoveredComments = hoveredLine && commentsByLine ? (commentsByLine.get(hoveredLine) ?? null) : null;
+
+  const commentedLines = useMemo(() => {
+    if (!commentsByLine) return undefined;
+    return new Set(commentsByLine.keys());
+  }, [commentsByLine]);
+
+  // Delegate click on line number cells rendered by @pierre/diffs (shadow DOM)
+  // Pierre renders: <div data-line="N"> <span data-column-number> <span data-line-number-content>N</span> </span> ... </div>
+  // We use composedPath() to traverse into the shadow root.
+  useEffect(() => {
+    if (!onLineClick || !containerRef.current) return;
+    const handler = (e: MouseEvent) => {
+      const path = e.composedPath() as HTMLElement[];
+      let clickedOnLineNumber = false;
+      let lineNumber: number | null = null;
+
+      for (const el of path) {
+        if (!(el instanceof HTMLElement)) continue;
+        // Check if click was on the line-number column
+        if (el.hasAttribute("data-column-number")) {
+          clickedOnLineNumber = true;
+        }
+        // Find the parent line div with data-line
+        if (el.hasAttribute("data-line")) {
+          lineNumber = parseInt(el.getAttribute("data-line")!, 10);
+          break;
+        }
+      }
+
+      if (clickedOnLineNumber && lineNumber != null && !isNaN(lineNumber)) {
+        onLineClick(lineNumber);
+      }
+    };
+    const container = containerRef.current;
+    container.addEventListener("click", handler);
+    return () => container.removeEventListener("click", handler);
+  }, [onLineClick]);
 
   if (!diff) {
     return (
@@ -299,13 +394,34 @@ export default function DiffViewer({ diff, mode, filePath, blameMap, inlineComme
   }
 
   return (
-    <div className="diff-panel-viewport h-full flex flex-col">
+    <div className="diff-panel-viewport h-full flex flex-col relative" ref={containerRef}>
       <div className="flex-1 overflow-auto">
         <div className="diff-render-file">
-          <LazyPatchDiff diff={diff} mode={mode} filePath={filePath} blameMap={blameMap} onBlameHover={onBlameHover} />
+          <LazyPatchDiff diff={diff} mode={mode} filePath={filePath} blameMap={blameMap} onBlameHover={onBlameHover} onHoveredLineChange={commentsByLine ? onHoveredLineChange : undefined} commentedLines={commentedLines} />
         </div>
       </div>
-      {hoveredBlame && (
+      {/* Comment tooltip on hovered line */}
+      {hoveredComments && (
+        <div
+          className="absolute left-16 right-4 z-20 border-2 border-[var(--accent)]/40 shadow-lg max-h-64 overflow-y-auto pointer-events-none"
+          style={{ bottom: (hoveredBlame && !onBlameChange) ? 36 : 8, background: "var(--bg-primary)" }}
+        >
+          {hoveredComments.map((c) => (
+            <div key={c.id} className="px-3 py-2 border-b border-[var(--border-subtle)] last:border-b-0">
+              <div className="flex items-center gap-1.5 mb-1">
+                <span className="text-[11px] font-semibold text-[var(--text-primary)]">{c.user}</span>
+                <span className="text-[10px] font-mono text-[var(--accent)]">L{c.line}</span>
+                <span className="text-[10px] text-[var(--text-tertiary)]">{relativeTime(c.createdAt)}</span>
+              </div>
+              <div
+                className="text-[12px] text-[var(--text-secondary)] leading-relaxed prose-comment"
+                dangerouslySetInnerHTML={{ __html: c.bodyHtml }}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+      {hoveredBlame && !onBlameChange && (
         <div
           className="flex items-center gap-2 px-3 flex-shrink-0 border-t border-[var(--border-color)]"
           style={{

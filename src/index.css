@@ -891,6 +891,33 @@ label:has(> select#reasoning-effort) select {
   height: 100%;
 }
 
+/* ── PR comment prose ─────────────────────────────────────────────── */
+.prose-comment { word-break: break-word; }
+.prose-comment p { margin: 0.25em 0; }
+.prose-comment code {
+  font-size: 0.85em;
+  padding: 0.15em 0.35em;
+  background: var(--bg-tertiary);
+  font-family: var(--font-mono, monospace);
+}
+.prose-comment pre {
+  margin: 0.5em 0;
+  padding: 0.5em;
+  background: var(--bg-tertiary);
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+.prose-comment pre code { padding: 0; background: none; }
+.prose-comment a { color: var(--accent); text-decoration: underline; }
+.prose-comment blockquote {
+  border-left: 2px solid var(--border-color);
+  margin: 0.5em 0;
+  padding-left: 0.75em;
+  color: var(--text-tertiary);
+}
+.prose-comment ul, .prose-comment ol { margin: 0.25em 0; padding-left: 1.25em; }
+.prose-comment img { max-width: 100%; }
+
 /* ── Brutalist utility overrides ──────────────────────────────────── */
 
 /* Kill all border-radius */

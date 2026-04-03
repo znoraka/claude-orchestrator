@@ -42,6 +42,15 @@ function repoRoot(dir: string): string {
   return dir;
 }
 
+/** Extract worktree name from a session directory, or null if it's the main tree. */
+function sessionWorktreeName(dir: string): string | null {
+  const wtIdx = dir.indexOf("/.worktrees/");
+  if (wtIdx !== -1) return dir.slice(wtIdx + "/.worktrees/".length).split("/")[0] || null;
+  const clIdx = dir.indexOf("/.claude/worktrees/");
+  if (clIdx !== -1) return dir.slice(clIdx + "/.claude/worktrees/".length).split("/")[0] || null;
+  return null;
+}
+
 /** Color for the repo root (shared across worktrees). */
 export function repoColor(dir: string): string {
   const base = repoRoot(dir);
@@ -136,6 +145,11 @@ export default memo(function SessionTab({
   const hasError = session.status === "stopped" && session.exitCode !== undefined && session.exitCode !== 0;
   const hasDraft = session.hasDraft && isRunning;
 
+  const worktreeLabel = useMemo(() => {
+    if (!session.directory) return null;
+    return sessionWorktreeName(session.directory);
+  }, [session.directory]);
+
   const timeLabel = useMemo(() => {
     const ts = session.lastMessageAt || session.lastActiveAt || session.createdAt;
     if (!ts) return null;
@@ -207,6 +221,18 @@ export default memo(function SessionTab({
               }}
             >
               {session.name}
+            </span>
+          )}
+          {worktreeLabel && (
+            <span
+              className="shrink-0 text-[10px] px-1 py-px font-semibold tracking-wide"
+              style={{
+                color: directoryColor(session.directory),
+                background: `color-mix(in srgb, ${directoryColor(session.directory)} 15%, transparent)`,
+              }}
+              title={`Worktree: ${worktreeLabel}`}
+            >
+              {worktreeLabel}
             </span>
           )}
           {session.sessionType === "terminal" && (

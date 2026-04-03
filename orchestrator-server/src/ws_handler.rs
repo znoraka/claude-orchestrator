@@ -722,6 +722,18 @@ async fn dispatch(text: &str, state: &AppState) -> String {
         "list_branches" => {
             respond(&id, commands::list_branches(str_field!(p, "directory")))
         }
+        "git_sync_status" => {
+            match commands::git_sync_status(str_field!(p, "directory")).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
+        "git_pull" => {
+            match commands::git_pull(str_field!(p, "directory")).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
         "get_branch_diff" => {
             respond(&id, commands::get_branch_diff(
                 str_field!(p, "directory"),
@@ -811,6 +823,34 @@ async fn dispatch(text: &str, state: &AppState) -> String {
             match commands::get_pr_comments(
                 str_field!(p, "directory"),
                 p.get("prNumber").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            ).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
+        "get_pr_body" => {
+            match commands::get_pr_body(
+                str_field!(p, "directory"),
+                p.get("prNumber").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            ).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
+        "get_pr_issue_comments" => {
+            match commands::get_pr_issue_comments(
+                str_field!(p, "directory"),
+                p.get("prNumber").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            ).await {
+                Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
+                Err(e) => err_response(&id, e),
+            }
+        }
+        "post_pr_issue_comment" => {
+            match commands::post_pr_issue_comment(
+                str_field!(p, "directory"),
+                p.get("prNumber").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                str_field!(p, "body"),
             ).await {
                 Ok(v) => ok_response(&id, serde_json::to_value(v).unwrap()),
                 Err(e) => err_response(&id, e),

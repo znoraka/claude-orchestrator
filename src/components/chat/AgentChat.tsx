@@ -190,6 +190,7 @@ const AgentChat = memo(function AgentChat({
   const onMarkTitleGeneratedRef = useRef(onMarkTitleGenerated); onMarkTitleGeneratedRef.current = onMarkTitleGenerated;
   const onClearPendingPromptRef = useRef(onClearPendingPrompt); onClearPendingPromptRef.current = onClearPendingPrompt;
   const onUsageUpdateRef = useRef(onUsageUpdate); onUsageUpdateRef.current = onUsageUpdate;
+  const onPermissionModeChangeRef = useRef(onPermissionModeChange); onPermissionModeChangeRef.current = onPermissionModeChange;
   const onCreateTerminalRef = useRef(onCreateTerminal); onCreateTerminalRef.current = onCreateTerminal;
   const currentModelRef = useRef(currentModel); currentModelRef.current = currentModel;
 
@@ -624,7 +625,7 @@ const AgentChat = memo(function AgentChat({
     streamAccumulator,
     currentStreamIdRef,
     onExitRef, onQuestionChangeRef, onClaudeSessionIdRef, onAvailableModelsRef,
-    onUsageUpdateRef, onClearPendingPromptRef, onRenameRef, onMarkTitleGeneratedRef,
+    onUsageUpdateRef, onClearPendingPromptRef, onRenameRef, onMarkTitleGeneratedRef, onPermissionModeChangeRef,
     queuedQuestionAnswerRef,
     sdkMessageToChatMessage,
     parseContentWithImages,
