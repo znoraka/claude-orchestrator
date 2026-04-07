@@ -11,7 +11,7 @@ export const AGENT_PROVIDERS: { id: AgentProvider; label: string; models: ModelO
   {
     id: "claude-code",
     label: "Claude Code",
-    defaultModel: "claude-opus-4-6",
+    defaultModel: "claude-sonnet-4-6",
     models: [
       { id: "claude-opus-4-6", name: "Opus 4.6", desc: "Most capable for complex work" },
       { id: "claude-sonnet-4-6", name: "Sonnet 4.6", desc: "Best for everyday tasks" },

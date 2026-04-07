@@ -764,6 +764,47 @@ export default function App() {
     }
   }, [panelDirectory]);
 
+  const handleCommitOpenInChat = useCallback(async (files: string[], opts: { newBranch: boolean; branchName: string }) => {
+    const fileList = files.map((f) => `- ${f}`).join("\n");
+
+    let branchContext: string;
+    if (opts.newBranch && opts.branchName) {
+      branchContext = `The user wants to create a new branch named "${opts.branchName}" before committing.`;
+    } else if (opts.newBranch) {
+      branchContext = "The user wants to create a new branch. Suggest a slug derived from the commit message and ask for confirmation.";
+    } else {
+      branchContext = "Commit on the current branch.";
+    }
+
+    const systemPrompt = `You are a git commit assistant. Your job is to commit, push, and optionally create a PR for the user's selected files.
+
+IMPORTANT: At every decision point, use AskUserQuestion with clickable options so the user can confirm with a single click. Never ask the user to type a response when a choice would do.
+
+Follow these steps:
+
+1. STAGE FILES: If the /commit slash command is available, use it. Otherwise stage only the specified files manually.
+
+2. COMMIT MESSAGE: Read the diffs of the selected files, generate a good commit message, and display it as a formatted code block in your response text. Then AFTER showing the message, use AskUserQuestion to ask for confirmation:
+   - question: "Proceed with this commit message?"
+   - options: ["Yes, commit", "Let me edit the message"]
+   If the user wants to edit, let them type a new message, then ask again.
+
+3. BRANCH: ${branchContext}
+
+4. COMMIT & PUSH: After confirmation, commit and push to remote.
+
+5. PR CHECK: After pushing, check if a PR already exists for this branch (use gh pr list or similar). If no PR exists and the branch is not main/master, ask:
+   - question: "Create a pull request?"
+   - options: ["Yes, create a PR", "No, skip"]
+   If yes, generate a PR title and description and create it.`;
+
+    const prompt = `Please commit and push the following files:\n\n${fileList}`;
+
+    setShowCommitModal(false);
+    const newId = await createSession("Commit", panelDirectory, false, systemPrompt, prompt);
+    navigate({ to: "/session/$sessionId", params: { sessionId: newId } });
+  }, [panelDirectory, createSession, navigate]);
+
   // Worktree creation dialog
   const [showWorktreeDialog, setShowWorktreeDialog] = useState(false);
   const [worktreeRepoDir, setWorktreeRepoDir] = useState("");
@@ -1176,7 +1217,7 @@ export default function App() {
         directory={panelDirectory}
         onClose={() => setShowCommitModal(false)}
         visible={showCommitModal}
-        onReviewPR={(prNumber) => { setOpenPrRequest({ number: prNumber, key: Date.now() }); navigateToPanel("prs"); setShowCommitModal(false); }}
+        onOpenInChat={handleCommitOpenInChat}
       />
       {fileDiffModal && (
         <FileDiffModal
