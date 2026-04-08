@@ -404,6 +404,23 @@ export default function Sidebar({
 
                 const color = repoColor(workspace.directory);
 
+                // Workspace-level busy detection
+                const workspaceBusySessions = sessions.filter((s) => {
+                  if (s.archived) return false;
+                  const usage = sessionUsage.get(s.id);
+                  if (s.sessionType === "terminal") return terminalBusyIds?.has(s.id) ?? false;
+                  return s.status === "running" || s.status === "starting" || usage?.isBusy;
+                });
+                const isWorkspaceBusy = workspaceBusySessions.length > 0;
+                // Find the most prominent running command to surface in the header
+                const runningCommand = (() => {
+                  for (const s of workspaceBusySessions) {
+                    const cmd = terminalCommands?.get(s.id);
+                    if (cmd) return cmd;
+                  }
+                  return null;
+                })();
+
                 return (
                   <SortableWorkspaceItem key={workspace.id} id={workspace.id}>
                     {(dragListeners) => (
@@ -439,7 +456,17 @@ export default function Sidebar({
                     {dirName}
                   </span>
                   <span className="text-[11px] text-[var(--text-tertiary)] shrink-0 flex items-center gap-1">
-                    {sessions.filter((s) => !s.archived).length}
+                    {isWorkspaceBusy ? (
+                      runningCommand ? (
+                        <span className="text-[10px] px-1.5 py-px bg-emerald-500/20 text-emerald-400 font-semibold truncate max-w-[80px]" title={runningCommand}>
+                          {runningCommand}
+                        </span>
+                      ) : (
+                        <Spinner className="w-3 h-3" />
+                      )
+                    ) : (
+                      sessions.filter((s) => !s.archived).length
+                    )}
                   </span>
                 </button>
 
