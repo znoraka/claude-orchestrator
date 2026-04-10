@@ -93,7 +93,7 @@ export default function FileDiffModal({ path, diff, onClose, diffLoading, blameM
             </svg>
           </button>
 
-          {/* Prev / Next */}
+          {/* Prev / Viewed / Next */}
           {(onPrevFile || onNextFile) && (
             <div className="flex items-center gap-0.5 shrink-0">
               <button
@@ -106,6 +106,28 @@ export default function FileDiffModal({ path, diff, onClose, diffLoading, blameM
                   <polyline points="10 4 6 8 10 12" />
                 </svg>
               </button>
+              {onToggleViewed && (
+                <button
+                  onClick={onToggleViewed}
+                  className="flex items-center gap-1.5 text-[11px] font-medium shrink-0 px-2 py-1 hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                  title={isViewed ? "Mark as not viewed" : "Mark as viewed"}
+                >
+                  <span
+                    className={`flex-shrink-0 w-4 h-4 border-2 flex items-center justify-center ${
+                      isViewed
+                        ? "bg-[var(--success)] border-[var(--success)]"
+                        : "border-[var(--text-tertiary)]/50 hover:border-[var(--text-secondary)]"
+                    }`}
+                  >
+                    {isViewed && (
+                      <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M2 6l3 3 5-5" />
+                      </svg>
+                    )}
+                  </span>
+                  Viewed
+                </button>
+              )}
               <button
                 onClick={onNextFile}
                 disabled={!hasNext}
@@ -123,30 +145,6 @@ export default function FileDiffModal({ path, diff, onClose, diffLoading, blameM
             {filename}
           </span>
           <span className="font-mono text-xs text-[var(--text-tertiary)] truncate max-w-[40%]">{path}</span>
-
-          {/* Viewed checkbox */}
-          {onToggleViewed && (
-            <button
-              onClick={onToggleViewed}
-              className="flex items-center gap-1.5 text-[11px] font-medium shrink-0 px-2 py-1 hover:bg-[var(--bg-tertiary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
-              title={isViewed ? "Mark as not viewed" : "Mark as viewed"}
-            >
-              <span
-                className={`flex-shrink-0 w-4 h-4 border-2 flex items-center justify-center ${
-                  isViewed
-                    ? "bg-[var(--success)] border-[var(--success)]"
-                    : "border-[var(--text-tertiary)]/50 hover:border-[var(--text-secondary)]"
-                }`}
-              >
-                {isViewed && (
-                  <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M2 6l3 3 5-5" />
-                  </svg>
-                )}
-              </span>
-              Viewed
-            </button>
-          )}
 
           <button
             onClick={toggleDiffMode}

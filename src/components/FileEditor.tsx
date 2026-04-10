@@ -7,6 +7,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { syntaxHighlighting, bracketMatching } from "@codemirror/language";
 import { oneDarkHighlightStyle } from "../utils/oneDarkHighlight";
+import { useToast } from "./Toast";
 
 interface Props {
   baseDirectory?: string;
@@ -126,7 +127,7 @@ export default function FileEditor({ baseDirectory, initialFilePath, onClose }: 
   const [useVim, setUseVim] = useState(() => localStorage.getItem(EDITOR_MODE_KEY) !== "false");
   const [vimMode, setVimMode] = useState("NORMAL");
   const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
-  const [error, setError] = useState<string | null>(null);
+  const { showError } = useToast();
   const [suggestions, setSuggestions] = useState<{ path: string; isDir: boolean }[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [pathFocused, setPathFocused] = useState(!initialFilePath);
@@ -141,9 +142,8 @@ export default function FileEditor({ baseDirectory, initialFilePath, onClose }: 
       await invoke("write_file", { filePath: loadedPath, content });
       originalContent.current = content;
       setModified(false);
-      setError(null);
     } catch (e: any) {
-      setError(String(e));
+      showError(String(e));
     }
   }, [loadedPath]);
 
@@ -152,7 +152,6 @@ export default function FileEditor({ baseDirectory, initialFilePath, onClose }: 
     try {
       const content = await invoke<string>("read_file", { filePath: path });
       setLoadedPath(path);
-      setError(null);
       originalContent.current = content;
       setModified(false);
 
@@ -204,9 +203,9 @@ export default function FileEditor({ baseDirectory, initialFilePath, onClose }: 
       setPathFocused(false);
       view.focus();
     } catch (e: any) {
-      setError(String(e));
+      showError(String(e));
     }
-  }, [useVim]);
+  }, [useVim, showError]);
 
   // Cmd+S to save, Escape to close (standard mode only)
   useEffect(() => {
@@ -414,13 +413,6 @@ export default function FileEditor({ baseDirectory, initialFilePath, onClose }: 
             ✕
           </button>
         </div>
-
-        {/* Error banner */}
-        {error && (
-          <div className="px-3 py-1.5 text-xs text-red-400 bg-red-400/10 border-b border-red-400/20">
-            {error}
-          </div>
-        )}
 
         {/* Editor area */}
         <div className="flex-1 min-h-0 overflow-hidden" ref={editorRef}>

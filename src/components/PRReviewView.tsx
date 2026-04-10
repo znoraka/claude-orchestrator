@@ -5,6 +5,7 @@ import FileDiffModal from "./FileDiffModal";
 import { Spinner } from "./ui/spinner";
 import FileIcon from "./FileIcon";
 import type { BlameLine, PrComment, PrFileEntry, PrIssueComment } from "../types";
+import { useToast } from "./Toast";
 
 function relativeTime(dateStr: string): string {
   const now = Date.now();
@@ -107,31 +108,26 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
   const [blameLines, setBlameLines] = useState<BlameLine[]>([]);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [worktreeLoading, setWorktreeLoading] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
   const [issueComments, setIssueComments] = useState<PrIssueComment[]>([]);
   const [newComment, setNewComment] = useState("");
   const [postingGeneral, setPostingGeneral] = useState(false);
   const [prBodyHtml, setPrBodyHtml] = useState<string>("");
+  const { showError, showInfo } = useToast();
 
   const isCurrent = currentBranch === headRefName;
-
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 3000);
-  }, []);
 
   const handleCheckout = useCallback(async () => {
     setCheckoutLoading(true);
     try {
       await invoke<string>("checkout_pr", { directory, prNumber });
       onBranchChanged?.();
-      showToast(`Checked out #${prNumber}`);
+      showInfo(`Checked out #${prNumber}`);
     } catch (err) {
-      showToast(`Error: ${err}`);
+      showError(String(err));
     } finally {
       setCheckoutLoading(false);
     }
-  }, [directory, prNumber, onBranchChanged, showToast]);
+  }, [directory, prNumber, onBranchChanged, showError, showInfo]);
 
   const handleWorktree = useCallback(async () => {
     setWorktreeLoading(true);
@@ -141,13 +137,13 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
         prNumber,
         headRefName,
       });
-      showToast(`Worktree: ${path}`);
+      showInfo(`Worktree: ${path}`);
     } catch (err) {
-      showToast(`Error: ${err}`);
+      showError(String(err));
     } finally {
       setWorktreeLoading(false);
     }
-  }, [directory, prNumber, headRefName, showToast]);
+  }, [directory, prNumber, headRefName, showError, showInfo]);
 
   const toggleViewed = useCallback((file: string) => {
     const willBeViewed = !viewedFiles.has(file);
@@ -275,11 +271,11 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
       loadComments();
     } catch (e) {
       console.error("Failed to post comment:", e);
-      showToast(`Error posting comment: ${e}`);
+      showError(`Error posting comment: ${e}`);
     } finally {
       setPostingGeneral(false);
     }
-  }, [directory, prNumber, newComment, postingGeneral, loadIssueComments, loadComments, showToast]);
+  }, [directory, prNumber, newComment, postingGeneral, loadIssueComments, loadComments, showError]);
 
 
   const selectedIndex = useMemo(() => files.findIndex((f) => f.path === selectedFile), [files, selectedFile]);
@@ -411,11 +407,6 @@ export default function PRReviewView({ directory, prNumber, prTitle, prUrl, head
 
   return (
     <div className="flex flex-col h-full relative">
-      {toast && (
-        <div className="absolute right-12 top-2 z-10 px-2 py-1 text-[10px] bg-[var(--bg-secondary)] border-2 border-[var(--border-color)] shadow-lg text-[var(--text-secondary)] max-w-[220px] truncate">
-          {toast}
-        </div>
-      )}
       {/* Header */}
       <div className="flex items-center gap-2 pl-3 pr-10 py-2 border-b border-[var(--border-color)] flex-shrink-0">
         <button

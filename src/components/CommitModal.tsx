@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "../lib/bridge";
 import FileDiffModal from "./FileDiffModal";
+import { useToast } from "./Toast";
 
 interface GitFileEntry {
   path: string;
@@ -28,8 +29,8 @@ export default function CommitModal({ directory, onClose, visible = true, onOpen
   const [allFiles, setAllFiles] = useState<GitFileEntry[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [isLoadingFiles, setIsLoadingFiles] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [branch, setBranch] = useState("");
+  const { showError } = useToast();
   const [newBranch, setNewBranch] = useState(false);
   const [newBranchName, setNewBranchName] = useState("");
   const [refreshKey] = useState(0);
@@ -65,7 +66,7 @@ export default function CommitModal({ directory, onClose, visible = true, onOpen
       })
       .catch((err) => {
         if (cancelled) return;
-        setError(`Failed to get git status: ${err}`);
+        showError(`Failed to get git status: ${err}`);
         setIsLoadingFiles(false);
       });
 
@@ -149,7 +150,7 @@ export default function CommitModal({ directory, onClose, visible = true, onOpen
                     onClick={() => {
                       invoke<string>("get_git_diff", { directory, filePath: f.path, staged: f.staged })
                         .then((diff) => setFileDiffModal({ path: f.path, diff }))
-                        .catch((err) => setError(`Failed to get diff: ${err}`));
+                        .catch((err) => showError(`Failed to get diff: ${err}`));
                     }}
                   >
                     <Checkbox checked={selected.has(f.path)} onChange={() => toggleFile(f.path)} />
@@ -208,11 +209,6 @@ export default function CommitModal({ directory, onClose, visible = true, onOpen
             </div>
           )}
 
-          {error && (
-            <div style={{ background: "rgba(239,68,68,0.1)", border: "2px solid rgba(239,68,68,0.3)", borderRadius: 0, padding: "8px 10px", fontSize: 12, color: "#f87171" }}>
-              {error}
-            </div>
-          )}
         </div>
 
         {/* Footer */}

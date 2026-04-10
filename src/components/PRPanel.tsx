@@ -5,6 +5,7 @@ import type { PullRequest, PullRequestsResult, GitStatusResult } from "../types"
 import { useSessionContext } from "../contexts/SessionContext";
 import PRReviewView from "./PRReviewView";
 import { Spinner } from "./ui/spinner";
+import { useToast } from "./Toast";
 
 interface PRPanelProps {
   directory: string;
@@ -125,14 +126,9 @@ function PRCard({
 }) {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [worktreeLoading, setWorktreeLoading] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
+  const { showError, showInfo } = useToast();
 
   const isCurrent = currentBranch === pr.headRefName;
-
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 3000);
-  };
 
   const handleCheckout = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -140,9 +136,9 @@ function PRCard({
     try {
       await invoke<string>("checkout_pr", { directory, prNumber: pr.number });
       onBranchChanged();
-      showToast(`Checked out #${pr.number}`);
+      showInfo(`Checked out #${pr.number}`);
     } catch (err) {
-      showToast(`Error: ${err}`);
+      showError(String(err));
     } finally {
       setCheckoutLoading(false);
     }
@@ -157,9 +153,9 @@ function PRCard({
         prNumber: pr.number,
         headRefName: pr.headRefName,
       });
-      showToast(`Worktree: ${path}`);
+      showInfo(`Worktree: ${path}`);
     } catch (err) {
-      showToast(`Error: ${err}`);
+      showError(String(err));
     } finally {
       setWorktreeLoading(false);
     }
@@ -263,11 +259,6 @@ function PRCard({
           </div>
         </div>
       </div>
-      {toast && (
-        <div className="absolute right-5 top-2 z-10 px-2 py-1 text-[10px] bg-[var(--bg-secondary)] border-2 border-[var(--border-color)] shadow-lg text-[var(--text-secondary)] max-w-[200px] truncate">
-          {toast}
-        </div>
-      )}
     </div>
   );
 }

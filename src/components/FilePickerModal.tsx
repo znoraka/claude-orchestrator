@@ -6,6 +6,7 @@ import { defaultKeymap } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { syntaxHighlighting, bracketMatching } from "@codemirror/language";
 import { oneDarkHighlightStyle } from "../utils/oneDarkHighlight";
+import { useToast } from "./Toast";
 
 export interface FileReference {
   filePath: string;
@@ -59,7 +60,7 @@ export default function FilePickerModal({ directory, onSelect, onClose, initialF
   const [loadedFile, setLoadedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { showError } = useToast();
   const isViewOnly = !!initialFile;
 
   const searchRef = useRef<HTMLInputElement>(null);
@@ -87,12 +88,11 @@ export default function FilePickerModal({ directory, onSelect, onClose, initialF
     searchTimerRef.current = setTimeout(async () => {
       try {
         const files = await invoke<string[]>("search_project_files", { directory, query });
-        setError(null);
         setResults(files);
         setSelectedIdx(0);
       } catch (err) {
         console.error("search_project_files failed:", err, "directory:", directory);
-        setError(`Could not list files in ${directory}`);
+        showError(`Could not list files in ${directory}`);
         setResults([]);
       } finally {
         setLoading(false);
@@ -339,16 +339,13 @@ export default function FilePickerModal({ directory, onSelect, onClose, initialF
         ) : !loadedFile ? (
           /* File search results */
           <div ref={resultsRef} className="flex-1 overflow-y-auto min-h-0">
-            {error && (
-              <div className="px-4 py-4 text-xs text-red-400 text-center">{error}</div>
-            )}
-            {!error && results.length === 0 && query && !loading && (
+            {results.length === 0 && query && !loading && (
               <div className="px-4 py-8 text-sm text-[var(--text-tertiary)] text-center">No files found</div>
             )}
-            {!error && results.length === 0 && query && loading && (
+            {results.length === 0 && query && loading && (
               <div className="px-4 py-8 text-sm text-[var(--text-tertiary)] text-center">Searching…</div>
             )}
-            {!error && results.length === 0 && !query && (
+            {results.length === 0 && !query && (
               <div className="px-4 py-8 text-sm text-[var(--text-tertiary)] text-center">
                 Type to search for files in this project
               </div>
